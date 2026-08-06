@@ -94,7 +94,7 @@ G^R_\epsilon(\omega) =
 \frac{1}{\omega+\mu-\epsilon-\Sigma^R(\omega)},
 \qquad
 \rho_\epsilon(\omega) =
--\frac{1}{\pi}\operatorname{Im}G^R_\epsilon(\omega).
+-\frac{1}{\pi}\mathrm{Im}\,G^R_\epsilon(\omega).
 $$
 
 The general dimensionless moments (described in the accompanying notes) are
@@ -120,7 +120,7 @@ The code first evaluates
 
 $$
 J_{mn}(\Omega)=\frac{1}{D}\int d\epsilon\,\Phi_m(\epsilon)
-\left[-\frac{1}{\pi}\operatorname{Im}
+\left[-\frac{1}{\pi}\mathrm{Im}\,
 \frac{D}{\Omega-\epsilon}\right]^n,
 $$
 
@@ -200,8 +200,8 @@ The positional arguments are:
 | `o` | Power of frequency in the outer integral |
 | `T` | Temperature in the chosen energy unit |
 | `mu` | Chemical potential |
-| `resigma.dat` | Table of \(\omega,\operatorname{Re}\Sigma(\omega)\) |
-| `imsigma.dat` | Table of \(\omega,\operatorname{Im}\Sigma(\omega)\) |
+| `resigma.dat` | Table of \(\omega,\mathrm{Re}\,\Sigma(\omega)\) |
+| `imsigma.dat` | Table of \(\omega,\mathrm{Im}\,\Sigma(\omega)\) |
 
 Options:
 
@@ -235,11 +235,11 @@ omega_1  ReSigma_1         omega_1  ImSigma_1
 
 Both files should have the same number of rows and identical, strictly
 increasing frequency grids. The retarded convention
-\(\operatorname{Im}\Sigma^R\le 0\) is required.
+\(\mathrm{Im}\,\Sigma^R\le 0\) is required.
 
 The following numerical policies are important when interpreting results:
 
-- Input values with \(\operatorname{Im}\Sigma>-10^{-8}\) are replaced by
+- Input values with \(\mathrm{Im}\,\Sigma>-10^{-8}\) are replaced by
   \(-10^{-8}\), including positive noncausal values.
 - Outside the input interval, `ReSigma` is held at its nearest endpoint and
   `ImSigma` is set to \(-10^{-10}\).
