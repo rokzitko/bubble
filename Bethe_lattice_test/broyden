@@ -1,0 +1,55 @@
+#!/usr/bin/perl
+# Mathematica script wrapper with error checking
+# Rok Zitko, rzitko@gwdg.de, Jan, Oct 2008
+# $Id$
+
+chomp(my $iter = `getiter`);
+my $nextiter = $iter+1;
+
+chomp($offset = `getparam offset param.loop`);
+chomp($alpha = `getparam alpha param.loop`);
+chomp($goal = `getparam goal param.loop`);
+chomp($M = `getparam M param.loop`);
+
+use POSIX;
+my $pid = getpid();
+my $time = time();
+my $fn = "unique-$pid-$time.m";
+open(F,">$fn") or die "Can't open $fn for writing.";
+
+# *******************************************************
+print F <<ENDOFSCRIPT;
+
+offset=$offset;
+alpha=$alpha;
+iter=$iter;
+M=$M;
+goal=$goal;
+<<broyden.m;
+
+ENDOFSCRIPT
+# *******************************************************
+
+-e "$fn" or die "Failed!?";
+
+my $result = "Delta-$nextiter-broyden.dat";
+unlink $result;
+
+while (!-e $result) {
+    system("math -batchinput -batchoutput < $fn");
+    if (-e "ERROR") {
+	print "Failure, exiting...\n";
+	exit(1);
+    }
+    if (!-e $result) {
+	print "$result not found - broyden failed. Will retry in 10 seconds.\n";
+	sleep(10);
+    }
+}
+
+# Eventual postprocessing
+chomp(my $clip = `getparam clip param.loop`);
+system "clipy b $clip $result >Delta.dat";
+
+unlink $fn
+  or die "Can't remove temporary script file $fn.";

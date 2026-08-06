@@ -1,0 +1,36 @@
+#!/usr/bin/perl
+# Mathematica script wrapper with error checking
+# Rok Zitko, rzitko@gwdg.de, Jan, Oct 2008, Mar 2009, June 2012
+
+use POSIX;
+my $pid = getpid();
+my $time = time();
+my $fn = "unique-$pid-$time.m";
+open(F,">$fn") or die "Can't open $fn for writing.";
+
+# *******************************************************
+print F <<ENDOFSCRIPT;
+
+<<bandDOS.m;
+
+ENDOFSCRIPT
+# *******************************************************
+
+-e "$fn" or die "Failed!?";
+
+$ENV{'DISPLAY'} = '';
+
+my $result = 'res/imaw.dat';
+unlink $result;
+
+while (!-e $result) {
+    system("math -batchinput -batchoutput < $fn") == 0
+      or die "Failed: $?";
+    if (!-e $result) {
+	print "bandDOS failed. Will retry in 10 seconds.\n";
+	sleep(10);
+    }
+}
+
+unlink $fn
+  or die "Can't remove temporary script file $fn.";

@@ -1,0 +1,79 @@
+#!/usr/bin/env perl
+# Calculation of the effective hybridisation function
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Oct 2008, May 2009
+
+use warnings;
+use Math::Complex;
+require 'misc.pl';
+my $pi = pi;
+
+my $fnfirst = 'DeltaFirst.dat';
+my $outfn = 'Delta.dat';
+
+chomp(my $positiveshift = `getparam clip param.loop`);
+chomp(my $iter = `getiter`);
+print "dmftDOS - iter=$iter positiveshift=$positiveshift\n";
+
+my @Delta = iterproc($iter);
+
+open(RES, ">$outfn") or die "Can't open $outfn: $!. Stopped";
+foreach (@Delta) {
+    my $x = $_->[0];
+    my $y = $_->[1];
+    
+    if ($y < $positiveshift) {
+	$y = $positiveshift;
+    }
+    
+    print RES "$x $y\n";
+}
+close RES;
+    
+sub iterproc {
+    my $iter = shift;
+    if ($iter <= 0) {
+	return load($fnfirst);
+    }
+    
+    my $prefix = "dmft/$iter";
+    print "Loading $prefix\n";
+    my @omega = readcol("$prefix-imaw.dat", 1);
+    my @imG =   readcol("$prefix-imaw.dat", 2);
+    my @reG =   readcol("$prefix-reaw.dat", 2);
+    my @imS =   readcol("$prefix-imsigma.dat", 2);
+    my @reS =   readcol("$prefix-resigma.dat", 2);
+    
+    my @l = ();
+    my $len = @omega;
+    for ($i = 0; $i < $len; $i++) {
+	my $o = $omega[$i];
+	my $G = $reG[$i] + i * $imG[$i];
+	my $sigma = $reS[$i] + i * $imS[$i];
+	my $GF = -$pi * $G; # difference between DOS and Im GF !
+	
+	# G_0^-1 = G^-1_local + Sigma
+	my $g01 = 1/$GF + $sigma;
+	
+	# Delta(z) = Im(z-G_0^-1)
+	my $D = -Im($o - $g01);
+	
+	push(@l, [$o, $D]);
+    }
+    
+    return @l;
+}
+
+sub load {
+    my $fn = shift;
+    open(F, "<$fn") or die "Can't open $fn: $!. Stopped";
+    print "Loading $fn\n";
+    my @l;
+    while (<F>) {
+	next if /^#/;
+	chomp;
+	my ($x, $y) = split;
+	push(@l, [$x, $y]);
+    }
+    close(F);
+    return @l;
+}

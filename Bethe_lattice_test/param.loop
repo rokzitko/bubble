@@ -1,0 +1,89 @@
+#!/usr/bin/env looper
+# Rok Zitko, rok.zitko@ijs.si, Oct 2016
+#
+#PRELUDE: $Nz=4; $EPS=`cat param.eps`;
+#AUTOLOOP: odesolv1 ; nin
+#AFTER: subslurm2_4series 4 4 12000 02:59:59
+#CONTINUE
+
+[extra]
+# Impurity level (equal to -mu)
+eps=$EPS
+
+# Kondo parameters
+spin=1/2
+Jkondo=0.4
+B=0
+
+[dmft]
+Nz=4
+clip=1e-5
+
+# Conduction band occupancy
+goal=0.8
+
+# Broyden
+offset=1
+M=1000
+alpha=0.5
+
+[param]
+xmax=20
+adapt=false
+tri=cpp
+preccpp=2000
+prec=100
+
+symtype=QS
+model=../model.m
+
+fixeps=1e-10
+
+U=0
+delta=-999
+Gamma=-999
+
+Lambda=2.0
+Tmin=1e-7
+keepmin=500
+# !!
+keepenergy=8
+keep=12000
+
+discretization=Z
+band=asymode
+bandrescale=10
+dos=../Delta.dat
+
+@$z = 1.0/$Nz; $z <= 1.00001; $z += 1/$Nz
+z=$z
+!print "$cnt $z\n";
+
+strategy=kept
+ops=A_d self_d n_d n_d_ud Himp Hhyb Hpot O_d SdSk
+specd=A_d-A_d self_d-A_d O_d-O_d
+
+prec_xy=12
+
+mmadebug=2
+
+fdm=true
+fdmexpv=true
+
+broaden=false
+savebins=true
+bins=500
+
+T=0.27
+
+broaden_max=40
+broaden_ratio=1.01
+broaden_min=1e-6
+broaden_alpha=0.3
+broaden_gamma=0.2
+
+width_custom=20
+prec_custom=14
+
+done=true
+lastalloverride=true

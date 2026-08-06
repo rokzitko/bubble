@@ -1,0 +1,88 @@
+#!/usr/bin/perl
+# Rok Zitko, rok.zitko@ijs.si, Oct 2012
+
+# This is kinetic energy PER SPIN !!
+
+# V2
+
+use warnings;
+
+chomp(my $TD = `getparam T param.loop`);
+
+my $fnim = "imsigma.dat";
+-e $fnim or die "Can't find $fnim!\n";
+my $fnre = "resigma.dat";
+-e $fnre or die "Can't find $fnre!\n";
+
+my $Tstr = sprintf("%-20.15f", $TD);
+print "T=$Tstr\n";
+
+use POSIX;
+my $pid = getpid();
+my $time = time();
+my $fn = "unique-$pid-$time.m";
+
+open(F,">$fn") or die "Can't open $fn for writing.";
+
+# *******************************************************
+print F <<ENDOFSCRIPT;
+
+MyImport[fn_] := Module[{l},
+    l = Import[fn];
+    If[l === \$Failed, Print["Failed importing ", fn]; Exit[]];
+    l
+];
+
+CLIP = 10^-7;
+IMSIGMA = 10^-7;
+LIMOMEGA = 30;
+
+calcEkin[T_] :=
+  Module[{is, rs, lsigma, sigma, f, DOS0, DOS, G, rho, A, int1, Ekin1,
+	    Gs, rhos, As, int2, Ekin2},
+	    
+clip[x_] := If[x > -CLIP, -CLIP, x];
+
+t = MyImport["imsigma.dat"];
+t = Map[{First[#], clip[Last[#]]}&, t];
+im = Map[{First[#], I Last[#]}&, t];
+t = MyImport["resigma.dat"];
+re = Map[{First[#],   Last[#]}&, t];
+t = re + im;
+t[[All,1]] = re[[All,1]];
+
+sigma = Interpolation[t];
+
+      f[omega_] := 1/(1 + Exp[omega/T]);
+
+      DOS[eps_] := (2/Pi) Sqrt[1 - eps^2];
+
+     (* NEW CODE: no mu in Gs[], because already contained in sigma. *)
+      Gs[eps_, omega_] := 1/(omega - eps - sigma[omega] + I IMSIGMA);
+      rhos[eps_, omega_] := Im[Gs[eps, omega]];
+      As[eps_, omega_] := -1/(Pi) rhos[eps, omega];
+
+      int2[omega_ /; NumericQ[omega]] := 
+        NIntegrate[DOS[eps] As[eps, omega] eps, {eps, -1, 0, +1}, MaxRecursion -> 30, WorkingPrecision -> 16];
+
+      Ekin = Re @ NIntegrate[int2[omega] f[omega], {omega, -LIMOMEGA, -5, -3, -1, -0.1, 0, 0.1, 1, 3, 5, LIMOMEGA},
+	       MaxRecursion -> 35, WorkingPrecision -> 14];
+
+      (* Ekin is the true kinetic energy (as a function of n). *)
+      (* Phi(mu) = Ekin(n) - mu n. *)
+      {{Ekin}}
+  ];
+
+res = calcEkin[$Tstr];
+
+Print[res];
+
+Export["ekin.dat", res];
+
+ENDOFSCRIPT
+# *******************************************************
+
+-e "$fn" or die "Failed!?";
+
+system("math -batchinput -batchoutput < $fn");
+unlink $fn;

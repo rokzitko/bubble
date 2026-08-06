@@ -1,0 +1,7 @@
+1 - constant Im, Re = 0
+2 - linear Im, Re = 0
+3 - constant Im and Re
+4 - linear Im and Re
+5 - small constant Im, linear Re [problems for n=3]
+21 - small Im = -0.01
+22 - small Im = -0.001 [problems!]

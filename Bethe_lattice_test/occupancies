@@ -1,0 +1,54 @@
+#!/usr/bin/env perl
+# Calculate occupancies, weights and their differences between
+# successive iterations.
+# Rok Zitko, zitko@theorie.physik.uni-goettingen, Oct 2008
+
+# CHANGE LOG
+
+use warnings;
+
+my $iter = `getiter`;
+
+my $ntot = `extractcolumn customfdm.avg n_d`;
+chomp($ntot);
+
+diff("c-self", "DIFFS_C");
+
+my $fnn = "dmft/$iter-occup.dat";
+open(OUT, ">$fnn") or die "Can't open $fnn. Stopped.\n";
+print OUT "$ntot\n";
+close(OUT);
+
+my $mu = `cat param.eps`;
+chomp($mu);
+
+system "cp param.eps dmft/$iter-mu.dat";
+
+open(OUT, ">>PARAM") or die "Can't open PARAM. Stopped.\n";
+print OUT "$mu $ntot\n";
+close(OUT);
+
+sub diff {
+ return if ($iter == 1);
+    
+ my $what = shift;
+ my $output = shift;
+    
+ my $fn1 = "dmft/$iter-$what.dat";
+ my $previous = $iter-1;
+ my $fn2 = "dmft/$previous-$what.dat";
+
+ -e $fn1 or die "$fn1 does not exist. Stopped";
+ -e $fn2 or die "$fn2 does not exist. Stopped";
+    
+ my $diff = `subtracty $fn1 $fn2 | integrateabs`;
+ my $occupancydiff = `subtracty $fn1 $fn2 | integrateneg`;
+ chomp ($diff, $occupancydiff);
+
+ print "diff($fn1 - $fn2)=$diff\n";
+ print "occupancy diff=$occupancydiff\n";
+    
+ open(OUT, ">>$output") or die "Can't append to $output: $!. Stopped";
+ print OUT "$iter $diff\n";
+ close OUT;
+}

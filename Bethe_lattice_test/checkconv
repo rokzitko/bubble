@@ -1,0 +1,40 @@
+#!/usr/bin/env perl
+# Check for the convergence of the DMFT calculation.
+# Returns 0 if we need to continue, 1 if convergence is achieved.
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Oct 2008
+
+use warnings;
+
+my $convergencelimit = 1e-6;
+
+# ***
+
+my $iter = `getiter`;
+print "checkconv, iter=$iter\n";
+
+exit 0 if $iter <= 1;
+
+my $fn = "DIFFS_C";
+exit 0 if !-e $fn;
+
+open(F, "<$fn") or die "Can't open $fn: $!. Stopped";
+my @l = <F>;
+close F;
+
+my $last = $l[-1];
+chomp($last);
+($iter2, $diff) = split(' ', $last, 2);
+if ($iter != $iter2) {
+    warn "Iteration number in ITER and $fn do not agree.\n";
+}
+
+my $abs = abs($diff);
+if ($abs < $convergencelimit) {
+    print "Convergence achieved! $abs < $convergencelimit\n";
+    system "touch CONVERGED"; # create a flag file
+    system "./ekin ; ./transport ; ./cond.opt.sweep";
+    exit(1);
+} else {
+    print "Not converged yet. $abs > $convergencelimit\n";
+    exit(0);
+}

@@ -1,0 +1,323 @@
+\documentclass[prb,amsmath,amssymb,onecolumn,nopacs,floatfix,longbibliography]{revtex4-1}
+\usepackage{graphicx}
+\usepackage[english]{babel}
+\usepackage{times}
+\usepackage{dcolumn}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{units}
+\usepackage{color}
+
+\begin{document}
+
+\title{Evaluation of integrals in transport calculations within the DMFT}
+
+\author{Rok \v{Z}itko}
+
+\date{\today}
+
+\begin{abstract}
+\end{abstract}
+
+%\pacs{72.10.Fk, 72.15.Qm}
+
+% 72.10.Fk Scattering by point defects, dislocations, surfaces, and
+% other imperfections (including Kondo effect)
+% 72.15.Qm Scattering mechanisms and Kondo effect (see also 75.20.Hr
+% Local moments in compounds and alloys; Kondo effect, valence
+% fluctuations, heavy fermions in magnetic properties and materials)
+% 72.25.Dc Spin polarized transport in semiconductors
+
+\maketitle
+
+\newcommand{\vc}[1]{{\mathbf{#1}}}
+\newcommand{\vck}{\vc{k}}
+\newcommand{\braket}[2]{\langle#1|#2\rangle}
+\newcommand{\expv}[1]{\langle #1 \rangle}
+\newcommand{\corr}[1]{\langle\langle #1 \rangle\rangle}
+\newcommand{\ket}[1]{| #1 \rangle}
+\newcommand{\Tr}{\mathrm{Tr}}
+\newcommand{\kor}[1]{\langle\langle #1 \rangle\rangle}
+\newcommand{\degg}{^\circ}
+\renewcommand{\Im}{\mathrm{Im}}
+\renewcommand{\Re}{\mathrm{Re}}
+\newcommand{\dtN}{{\dot N}}
+\newcommand{\dtQ}{{\dot Q}}
+\newcommand{\sgn}{\mathrm{sgn}}
+\newcommand{\beq}[1]{\begin{equation} #1 \end{equation}}
+\newcommand{\one}{\mathbf{1}}
+
+
+\section{Introduction}
+
+The behavior of single-particle excitations in a material can be
+theoretically described using the formalism of Green's functions. We
+define the spectral function $\rho$ and the Green's function $G$ as
+\beq{
+\begin{split}
+\rho(\omega,\vc{k}) &= -\frac{1}{\pi} \Im G(\omega,\vc{k}), \\
+G(\omega,\vc{k}) &= \frac{1}{\omega+\mu-\epsilon_\vc{k}-\Sigma(\omega,\vc{k})},
+\end{split}
+}
+%
+where $\epsilon_\vc{k}$ is the energy of an electron with momentum
+$\vc{k}$, $\omega$ is frequency, $\mu$ is the chemical potential, and
+$\Sigma(\omega,\vc{k})$ is called the self-energy function which
+describes the effects of interactions.
+$\Sigma(\omega,\vc{k})$ is a complex function such that
+$\Im\Sigma(\omega,\vc{k})<0$ for all arguments, which is a consequence
+of causality and guarantees that the spectral function
+$\rho(\omega,\vc{k})$ is a positive quantity. 
+
+The conductivity of a material is related to the current-current
+correlations (Kubo's formula). The current, in turn, is proportional
+to the velocity of electrons $v(\vc{k})=d\epsilon_\vc{k}/dk$ and their
+distribution function $A(\vc{k})$ (the fraction of electrons with
+momentum $\vc{k}$). The correlators are quadratic in $v(\vc{k})$ and
+$A(\vc{k})$, and we need to sum over contributions from all $\vc{k}$.
+In some cases, the $\vc{k}$ dependence enters only through the
+dependence of $\epsilon_\vc{k}$, and the $\vc{k}$ sum can be replaced
+by an integral over electron energy $\epsilon=\epsilon_\vc{k}$.
+
+In the limit of infinite dimensions, the self-energy becomes purely
+local, $\Sigma=\Sigma(\omega)$, and there are no vertex corrections.
+The conductivity can then be evaluated from a simple double
+integration over electron energy $\epsilon$ and frequency $\omega$
+(bubble formula). This holds for other transport properties as well.
+For metals, the integrals become difficult to evaluate in the limit of
+low temperatures because of sharply peaked (almost singular)
+contributions close to the Fermi level, because for a Fermi-liquid
+system the self-energy $\Sigma$ behaves as
+%
+\beq{
+\Sigma(\omega) \approx \Re \Sigma(0) + \omega \left( 1- \frac{1}{Z}
+\right) - i \frac{1}{Z^2} [ (\pi k_B T)^2 + \omega^2 ],
+}
+%
+thus the broadening ($\Im\Sigma$) becomes small in the $\omega \to 0$,
+$T \to 0$ limit. Here $0<Z\leq 1$ is the quasiparticle residue, $k_B$
+is the Boltzmann constant, and $T$ is the temperature. More generally,
+such intergrals are difficult to evaluate whenever $\Im \Sigma$ becomes
+small.
+
+Our goal is to perform the $\epsilon$ integration in the bubble
+formula analytically and reduce the problem to a simpler numerical
+quadrature over $\omega$ only. We need an accurate and precise result
+in short time. The code needs to be robust with respect to
+$\Sigma(\omega)$ because the self-energy can be affected with
+numerical noise and is not necessarily very smooth.
+
+In the following $k_B=\hbar=1$.
+
+
+\section{Problem definition}
+
+\newcommand{\de}{\mathrm{d}\epsilon}
+\newcommand{\dom}{\mathrm{d}\omega}
+
+We consider the (dimensionless) integrals
+%
+\beq{
+I_{mno} = \frac{1}{D} \int_{-\infty}^\infty \de\, \Phi_m(\epsilon)
+\int_{-\infty}^{+\infty} \dom \left( -\frac{\partial f(\omega)}{\partial
+\omega} \right) \left[ D \rho(\omega,\epsilon) \right]^n 
+\left( \frac{\omega}{D} \right)^o,
+}
+%
+where $\Phi_m(\epsilon)$ is one of the (dimensionless) functions
+%
+\beq{
+\begin{split}
+\Phi_1(\epsilon) &= 1 \times b(\epsilon), \\
+\Phi_2(\epsilon) &= \epsilon/D \times b(\epsilon), \\
+\Phi_3(\epsilon) &= [1-(\epsilon/D)^2]^{1/2} \times b(\epsilon), \\
+\Phi_4(\epsilon) &= (\epsilon/D) [1-(\epsilon/D)^2]^{1/2} \times b(\epsilon), \\
+\Phi_5(\epsilon) &= [1-(\epsilon/D)^2]^{3/2} \times b(\epsilon), \\
+\Phi_6(\epsilon) &= (\epsilon/D) [1-(\epsilon/D)^2]^{3/2} \times b(\epsilon), \\
+\Phi_7(\epsilon) &= \exp[-2 (\epsilon/\sigma)^2], \\
+\Phi_8(\epsilon) &= (\epsilon/\sigma) \exp[-2(\epsilon/\sigma)^2].
+\end{split}
+}
+%
+$b(\epsilon)$ is a box function which is equal to 1 in the interval
+$[-D:D]$ and zero otherwise. For $m=1,\ldots,6$ the $\epsilon$
+integral thus extends from $-D$ to $D$, for $m=7,8$ it extends over
+the full real axis. For flat band ($m=1,2$) and the Bethe lattice
+($m=3-7$), $D$ has the meaning of the band half-width, for
+hypercubic lattice ($m=7,8$) it is just a rescale factor. By default,
+$D=1$ and $\sigma=1$, which are commonly used conventions. The
+expressions with the factor of $\epsilon$ are used in the expressions
+for the Hall transport \cite{arsenault2013}.
+
+$f(\omega)=1/(1+e^{\omega/T})$ is the Fermi function at temperature
+$T$. We use the convention that the argument $\omega=0$ corresponds to
+the chemical potential in $G$, $\rho$ and $f$. The chemical potential
+$\mu$ only appears as the shift in the denominator of $G$.
+
+$n$ and $o$ are some integers. $n=2,3$, $o=0,1,2$ are of particular
+interest. For conductivity, $n=2$, $o=0$. For thermopower, $n=2$,
+$o=1$. For thermal transport, $n=2$, $o=2$. For Hall conductivity,
+$n=3$, $o=1$. For Hall thermoconductivity, $n=3$, $o=2$. (The code
+does not deal with the prefactors to $I_{mno}$ to find these physical
+quantities, it just computes the dimensionless integral $I_{mno}$ and
+it is up to the user to decide what to do with the resulting number.
+In particular, it is to be noted that $\rho$ is defined here as the
+spectral function including the $\pi$ factor.)
+
+The input are the indexes $m$, $n$ and $o$, temperature $T$, chemical
+potential $\mu$, and tabulated $\Sigma(\omega)$, i.e., a file
+containing columns $\{\omega,\Re\Sigma(\omega),\Im\Sigma(\omega)\}$.
+
+The output is $I_{mno}$ (real quantity) and optionally an error
+estimate.
+
+
+\section{Implementation}
+
+The $\epsilon$ integrals
+%
+\beq{
+J_{mn}(\Omega) = \frac{1}{D} \int_{-\infty}^\infty \de\, \Phi_m(\epsilon)
+\left[ -\frac{1}{\pi} \Im \frac{D}{\Omega-\epsilon} \right]^{n}
+}
+%
+are evaluated analytically in Mathematica for all $m$ and $n=2,3$.
+These twelve (dimensionless) functions take $\Omega$ as input and
+return a real quantity as output. It may be assumed that $\Im \Omega >
+0$ (and the code needs to assert that this is indeed the case). In
+practice, we will always take $\Omega=\omega-\Sigma(\omega)$ as
+argument.
+
+The resulting expressions are to be converted to C code and saved to a
+file which will be included from the main program written in C or C++.
+This step of the code generation has to be fully automated (no
+copy/pasting!) and performed, for example, through evaluating a
+Mathematica notebook or script.
+
+In the main program, $\Sigma(\omega)$ is read from a file and
+interpolated; the user can choose between linear and higher-order
+(cubic spline, Akima spline) interpolation. GNU scientific library (GSL)
+interpolation object are used for this purpose.
+
+\newcommand{\mn}{\mathrm{min}}
+\newcommand{\mx}{\mathrm{max}}
+\newcommand{\dx}{\mathrm{d}x}
+
+The $\omega$ integration
+%
+\beq{
+I_{mno} = \int_{-\infty}^{+\infty} \dom \left(
+-\frac{\partial f(\omega)}{\partial \omega} \right)
+J_{mn}[\omega-\Sigma(\omega)]
+(\omega/D)^o
+}
+%
+is then performed. The tabulated $\Sigma$ defines the integral
+boundaries ($\omega_\mn$ and $\omega_\mx$) to be used instead of
+($-\infty$, $+\infty$). In other words, $\Im\Sigma$ is assumed to be
+zero outside the interpolation interval.
+
+The derivative of the Fermi function can be written as
+%
+\beq{
+-\frac{\partial f(\omega)}{\partial\omega} = \frac{1}
+{2T(1+\cosh x)}
+}
+%
+where $x=\omega/T$. Because of this weight function, the main
+contribution to the integral comes from the interval $x \in [-5:5]$.
+The idea is thus to rewrite the integral $I_{mn}$ in terms of the
+variable $x$,
+%
+\beq{
+I_{mno} = \int \dx\, g(x) J_{mn}[T x - \Sigma(T x)] \left(
+\frac{T x}{D} \right)^o,
+}
+%
+where $g(x)=1/(2+2\cosh(x))$. The suitable upper limits to $x$
+integration have to be recalculated from $\omega_\mn$ and
+$\omega_\mx$, but can be constrained within some sensible limits
+(e.g., -40 and 40) because $-\partial f/\partial \omega$ is
+exponentially decreasing and beyond 40 it is smaller than numerical
+round-off errors.
+
+The integration is to be performed with the GSL quadrature routines
+with adaptive grid algoritms. It would be of interest to separately
+perform the integration for $x>0$ and $x<0$, with an option to display
+the partial results (if verbosity is increased using {\tt -v}, see
+below).
+
+
+\section{Invocation}
+
+The executable is named {\tt bubble}. The syntax is:
+
+{\tt bubble [-v] [-i <i>] [-p <p>] [-D <D>] [-s <sigma>] 
+m n o T mu Sigmafile}
+
+The switch {\tt -v} enables verbose output (e.g. error estimates). By
+default, only the final result $I_{mno}$ is given as the output.
+
+{\tt i} controls the order of interpolation: $i=1$ is linear
+interpolation, $i=2$ is quadratic interpolation, $i=3$ is Akima spline
+interpolation.
+
+{\tt p} controls the precision of the numerical integration.
+
+The defaults are $D=1$, $\sigma=1$. They can be changed to
+{\tt D} and {\tt sigma}.
+
+
+
+\section{Testing}
+
+The code can be tested using the limit of constant relaxation time,
+$\Sigma(\omega)=-i\Gamma$ with some constant $\Gamma>0$. Then
+$I_{mno}$ can be evaluated analytically for different $T$ and the
+results compared to the output of {\tt bubble}. A suitable
+input file then consists simply of two lines:
+
+{\tt omega\_min 0 -Gamma}
+
+{\tt omega\_max 0 -Gamma}
+
+Testing also has to be automated and rerunnable (to be useful as
+a regression test).
+
+Additionally, we want to test using real-life examples of
+$\Sigma(\omega)$ taken from DMFT(NRG) calculations for the Hubbard
+model, and compare against the known results for the transport quantities.
+
+
+\section{Concluding remarks}
+
+In the future we might be interested in additional functions
+$\Phi_m(\epsilon)$ corresponding to different lattices (e.g. square,
+cubic).
+
+
+\nocite{bevilacqua2013}
+
+\bibliography{bubble}
+
+
+\end{document}
+
+
+ For non-interacting electron, the conductivity is
+hence proportional to
+%
+\beq{
+\label{bubble}
+\sum_\vc{k} v_\vc{k}^2 A(\vc{k})^2 = \int \mathrm{d}\epsilon \sum_\vc{k}
+\delta(\epsilon-\epsilon_k) v(\epsilon)^2 A(\epsilon)^2
+= \int \mathrm{d}\epsilon\, r(\epsilon) v^2(\epsilon)^2 A(\epsilon)^2,
+}
+%
+the assumption here being that $v(\vc{k})$ and $A(\vc{k})$ depend on
+$\vc{k}$ only through the energy $\epsilon_\vc{k}$. We have introduced
+the density of states functions $r(\epsilon)=\sum_\vc{k}
+\delta(\epsilon-\epsilon_\vc{k})$. Under certain conditions, a similar
+expression as Eq.~\eqref{bubble} can be written for interacting systems
+in terms of the spectral function $\rho$ in place of the distribution
+function $A$.
+

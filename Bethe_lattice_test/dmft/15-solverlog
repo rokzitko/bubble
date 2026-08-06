@@ -1,0 +1,18 @@
+# Discretization ODE solver [** adaptable mesh **]
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Nov 2008
+# $Id: adapt.cc,v 1.4 2009/11/06 14:49:42 rok Exp $
+# ++ POSITIVE
+# ++ FIXED-GRID
+# Lambda=2 bandrescale=10 xmax=20 xfine=5 output_step=0.015625 dx_fine=1e-05 dx_fast=0.0001
+# allowed_error=1e-10 max_subdiv=10 max_abs=100
+# ../Delta.dat - POS - interval [ 1.00175958761624e-06 : 40 ]
+Rescaled to the interval [ 1.00175958761624e-07 : 0.0001 ]
+# min[rho]=0.0001 max[rho]=4.565148010996788
+# rho(0)=4.412855049148355 rho(1)=0.0001
+# intA=0.4796693874806039
+# x_last=20
+# f_last=0.7213476528460125 [f_last/factor=9.199786299256564]
+# eps_last=3.814697265625e-06 (smallest energy point considered [input])
+# Eps_last=2.751722918876696e-06 (smallest energy scale obtained [output])
+# max_error=2.615264445231095e-13 (maximum integration error)
+# Elapsed 0.9 s

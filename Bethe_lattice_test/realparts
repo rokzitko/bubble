@@ -1,0 +1,28 @@
+#!/usr/bin/env perl
+# Calculate real parts of Green's functions
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Oct 2008
+
+use warnings;
+use Sys::Hostname;
+
+my $host = hostname;
+
+my $kkexe = "kk";
+
+chdir "res";
+
+my @l = qw( c-imF c-imG );
+
+my ($in, $out);
+foreach (@l) {
+    $in = "$_.dat";
+    ($out = $in) =~ s/im/re/;
+    kk($in, $out);
+}
+
+sub kk {
+    my ($in, $out) = @_;
+    -e $in or die "Input file not found: $in. Stopped";
+    system("$kkexe $in $out");
+    -e $out or die "Output file not found:$ out. Stopped";
+}

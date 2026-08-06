@@ -1,0 +1,63 @@
+#!/usr/bin/env perl
+# Copy the (processed) results of the current NRG iteration.
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Oct 2008
+
+# CHANGE LOG
+# 7.2.2012 - expectation values
+
+use File::Copy;
+
+my $iter = `getiter`;
+
+sub cp {
+    my $fn = shift;
+    copy("res/$fn", "dmft/$iter-$fn") 
+      or die "Copying $fn failed: $!, stopped";
+}
+
+sub cp0 {
+    my $fn = shift;
+    copy("$fn", "dmft/$iter-$fn")
+      or warn "Warning: Copying solverlog failed: $!";
+}
+
+sub cp1 {
+    my $fn = shift;
+    copy("1/$fn", "dmft/$iter-$fn")
+      or warn "Warning: Copying solverlog failed: $!";
+}
+
+# Whatever spectral functions we are interested in.
+cp("c-imG.dat");
+cp("c-self.dat");
+cp("f-imG.dat");
+
+# The following are *required* for the DMFT loop
+cp("imsigma.dat");
+cp("resigma.dat");
+cp("imaw.dat");
+cp("reaw.dat");
+
+# Best-so-far results for post-processing. (2016)
+system "cp -v res/imsigma.dat imsigma.dat";
+system "cp -v res/resigma.dat resigma.dat";
+system "cp -v res/imaw.dat imaw.dat";
+system "cp -v res/reaw.dat reaw.dat";
+system "cp -v res/c-self.dat self.dat";
+system "cp -v Delta.dat DeltaLast.dat";
+
+# NRG iteration logs, etc.
+cp1("solverlog");
+cp1("solverlogneg");
+cp1("custom");
+cp1("log");
+cp1("td");
+
+# Expectation values
+cp0("custom");
+cp0("custom.avg");
+cp0("customfdm");                                                               
+cp0("customfdm.avg");
+
+copy("Delta.dat", "dmft/$iter-Delta.dat")
+  or warn "Warning: Copying Delta failed: $!";

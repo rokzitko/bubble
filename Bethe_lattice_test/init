@@ -1,0 +1,64 @@
+#!/usr/bin/env perl
+# Create initial hybridisation function for DMFT calculation
+# Version for Bethe lattice
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Oct 2008
+
+use warnings;
+
+my $max = `getparam broaden_max param.loop`;
+my $ratio = `getparam broaden_ratio param.loop`;
+my $min = `getparam broaden_min param.loop`;
+
+chomp ($max, $ratio, $min);
+print "init - Bethe lattice\n";
+print "broaden: max=$max ratio=$ratio min=$min\n";
+
+my @l = ();
+for (my $x = $max; $x >= $min; $x /= $ratio) {
+    my $xpos = $x;
+    my $ypos = initialfn($xpos);
+    my $xneg = -$x;
+    my $yneg = initialfn($xneg);
+    push(@l, [$xpos, $ypos]);
+    push(@l, [$xneg, $yneg]);
+}
+
+my @sorted = sort { $a->[0] <=> $b->[0] } @l;
+
+my $fn = "DeltaFirst.dat";
+open(OUT, ">$fn") or die "Can't open $fn: $!. Stopped";
+foreach (@sorted) {
+    my ($x, $y) = @$_;
+    print OUT "$x $y\n";
+}
+close(OUT);
+
+sub initialfn 
+{
+    my $x = shift;
+    my $shift = 0.0;
+    return bethe($x-$shift);
+}
+
+sub unitstep 
+{
+    my $x = shift;
+    if ($x < 0) {
+	return 0;
+    } elsif ($x > 0) {
+	return 1;
+    } else {
+	return 0.5;
+    }
+}
+
+sub bethe 
+{
+    my $x = shift;
+    my $sq = $x**2;
+    if (1-$sq < 0) {
+	return 0.0;
+    } else {
+	return 0.5 * sqrt(1-$sq);
+    }
+}

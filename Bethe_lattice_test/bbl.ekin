@@ -1,0 +1,25 @@
+#!/usr/bin/env perl
+# Rok Zitko, rok.zitko@ijs.si, June 2017
+# version 1
+# Tested to agree with Mathematica code (transport, v4)
+
+use strict;
+use warnings;
+use Math::Complex;
+
+my $verbose = 1;
+
+chomp(my $T = `getparam T param.loop`);
+
+my $factor = 2/pi;
+# Bethe DOS normalization. J_41 already includes A(w)=-Im[G]/pi.
+
+my $res;
+$res = `bubble -f 4 1 0 $T 0 resigma.dat imsigma.dat`;
+
+my $ekin = $factor*$res;
+print "$ekin\n";
+
+open (O, ">ekin.dat.new");
+print O "$ekin\n";
+close(O);

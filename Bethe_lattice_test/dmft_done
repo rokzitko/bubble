@@ -1,0 +1,106 @@
+#!/usr/bin/env perl
+# Script that runs after the iteration is finished
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de
+
+use warnings;
+use Term::ANSIColor qw(:constants);
+
+-e "res" or error("res/ does not exist, stopped");
+
+# Clean up first
+system "rm -f res/*";
+
+# Average spectral functions
+msg("average");
+system "./average";
+
+(-e "res/c-imF.dat" && -e "res/c-imG.dat")
+or error("Spectral functions not found, stopped");
+
+# Compute real parts
+msg("realparts");
+system "./realparts";
+
+(-e "res/c-reF.dat" && -e "res/c-reG.dat")
+or error("Real parts of Green's functions not found, stopped");
+
+# Expectation values
+system ("gatherlastlines custom");
+system ("columnavg_comment custom >custom.avg");
+system ("gatherlastlines customfdm");
+system ("columnavg_comment customfdm >customfdm.avg");
+
+# Compute self-energy
+msg("sigmatrick");
+system "./sigmatrick";
+
+(-e "res/imsigma.dat" && -e "res/resigma.dat")
+or error("Self-energy not found, stopped");
+
+# Compute G_script
+msg("bandDOS");
+system "./bandDOS";
+
+(-e "res/imaw.dat" && -e "res/reaw.dat")
+or error("(Lattice) spectral functions not found, stopped");
+
+# Increase iteration number (0 -> 1 initially)
+msg("newiter");
+system "newiter";
+
+# Copy results of postprocessing
+msg("copyresults");
+system "./copyresults";
+
+#exit();
+
+# Compute occupancies (after copyresults!)
+msg("occupancies");
+system "./occupancies";
+
+#exit();
+
+# Compute input for next NRG iteration
+system "mv Delta.dat Delta.dat.OLD"; # save a copy!
+msg("dmftDOS");
+system "./dmftDOS";
+
+-e "Delta.dat" or error("Hybridisation function not found, stopped");
+
+my $iter = `getiter`;
+chomp($iter);
+my $nextiter = $iter+1;
+system "cp Delta.dat Delta-$nextiter.dat";
+
+my $offset = `getparam offset param.loop`;
+
+if ($iter >= $offset) {
+  # Perform the Broyden mixing [as a correction to Delta.dat obtained
+  # by simple mixing]
+  system "./broyden";
+}
+    
+msg("delete_NRG_output");
+system "delete_NRG_output";
+
+# RECURSION!
+system "./checkconv";
+if (!-e "CONVERGED" && !-e "STOP") {
+  system "./param.loop";
+#  system "./dmft_done";
+}
+
+sub msg 
+{
+    my $msg = shift;
+    print RED, "$msg\n", RESET;
+}
+
+sub error
+{
+    my $msg = shift;
+    open(F, ">ERROR") or die "Can't create an ERROR flag file, stopped";
+    print F "Error: $msg\n";
+    close(F);
+    die $msg;
+}

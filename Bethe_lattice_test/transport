@@ -1,0 +1,112 @@
+#!/usr/bin/env perl
+# Rok Zitko, 2016
+# v3 - added thermopower
+# v4 - powers of T corrected, unlink first, MaxRecursion increased, unlink tmp, NInt parameters, Off messages
+#
+# Bethe lattice
+# Results in units of sigma_MIR and rho_MIR.
+
+use warnings;
+
+# Remove old results
+unlink "imsigma-clipped.dat", "condMIR.dat", "rhoMIR.dat", "rhoMIRv2.dat", "thermopowerS.dat", "kappa.dat", "ZT.dat", "LL.dat";
+
+chomp(my $TD = `getparam T param.loop`);
+print "T/D=$TD\n";
+
+$beta = 1/$TD;
+
+open(F, ">tmp.tmp") or die;
+print F <<ENDSCRIPT;
+
+Phi[eps_] = (1-eps^2)^(3/2);
+
+CLIP = 10^-7;
+clip[x_] := If[x > -CLIP, -CLIP, x];
+
+t = Import["imsigma.dat"]; (* no res/ !! *)
+t = Map[{First[#], clip[Last[#]]}&, t];
+im = Map[{First[#], I Last[#]}&, t];
+t = Import["resigma.dat"];
+re = Map[{First[#], Last[#]}&, t];
+t = re + im;
+t[[All,1]] = re[[All,1]];
+
+l = Map[{First[#], Im[Last[#]]}&, t];
+Export["imsigma-clipped.dat", l];
+
+\\[CapitalSigma] = Interpolation[t, InterpolationOrder -> 2];
+
+beta = $beta;
+T=1/beta;
+
+Print["Sigma(0)=", \\[CapitalSigma][0] ];
+Print["Sigma(T)=", \\[CapitalSigma][T] ];
+Print["Sigma(2T)=", \\[CapitalSigma][2T] ];
+
+Off[NIntegrate::slwcon]; (* Low verbosity... *)
+
+cond = NIntegrate[(1/4 beta Sech[(beta w)/2]^2) Phi[eps] (Im[1/(w - eps - \\[CapitalSigma] [w] )])^2, {w, -5T, 0, 5T}, {eps, -1, 0, 1}, 
+MaxRecursion -> 100, WorkingPrecision -> 14, Method -> {"GlobalAdaptive", "SymbolicProcessing" -> 0}];
+
+condMIR = cond * 2/Pi;
+rhoMIR = 1/condMIR;
+
+Print["cond_MIR=", condMIR];
+Print["rho_MIR=", rhoMIR];
+Export["condMIR.dat", {{condMIR}}]
+Export["rhoMIR.dat", {{rhoMIR}}]
+
+
+(* 12 Sep 2016 *)
+(* A0 = condMIR * T/e_0^2. Units: e^2=1 *)
+
+(* Large error in A1 for too small lim, such as lim=5T. *)
+(* Error in A0 only 0.5% *)
+lim = 20T;
+
+A0 = (2/Pi) NIntegrate[(1/4 Sech[(beta w)/2]^2) Phi[eps] (Im[1/(w - eps - \\[CapitalSigma] [w] )])^2, {w, -lim, 0, lim}, {eps, -1, 0, 1},     MaxRecursion -> 100, WorkingPrecision -> 15, Method -> {"GlobalAdaptive", "SymbolicProcessing" -> 0, "MaxErrorIncreases" -> 10000}];
+A1 = (2/Pi) NIntegrate[(1/4 Sech[(beta w)/2]^2) Phi[eps] (w/T) (Im[1/(w - eps - \\[CapitalSigma] [w] )])^2, {w, -lim, 0, lim}, {eps, -1, 0, 1},   MaxRecursion -> 100, WorkingPrecision -> 15, Method -> {"GlobalAdaptive", "SymbolicProcessing" -> 0, "MaxErrorIncreases" -> 10000}];
+A2 = (2/Pi) NIntegrate[(1/4 Sech[(beta w)/2]^2) Phi[eps] (w/T)^2 (Im[1/(w - eps - \\[CapitalSigma] [w] )])^2, {w, -lim, 0, lim}, {eps, -1, 0, 1}, MaxRecursion -> 100, WorkingPrecision -> 15, Method -> {"GlobalAdaptive", "SymbolicProcessing" -> 0, "MaxErrorIncreases" -> 10000}];
+
+Print[{A0,A1,A2}];
+
+condMIRv2 = A0 / T;
+rhoMIRv2 = 1/condMIRv2;
+
+Print["cond_MIR_v2=", condMIRv2];
+Print["rho_MIR_v2=", rhoMIRv2];
+Export["rhoMIRv2.dat", {{rhoMIRv2}}];
+
+thermopowerS = -A1/A0;
+
+Print["thermopowerS=", thermopowerS];
+Export["thermopowerS.dat", {{thermopowerS}}];
+
+(* Thermal conductivity *)
+  
+kappa = (A2-A1^2/A0);
+
+Print["kappa=", kappa];
+Export["kappa.dat", {{kappa}}];
+
+(* Figure of merit *)
+  
+ZT = thermopowerS^2 condMIR T / kappa;
+
+Print["ZT=", ZT];
+Export["ZT.dat", {{ZT}}];
+
+(* Lorentz number *)
+
+LL = A2/A0;
+
+Print["Lorentz=", LL];
+Export["LL.dat", {{LL}}];
+
+ENDSCRIPT
+  
+close(F);
+
+system "math -batchinput -batchoutput <tmp.tmp";
+unlink "tmp.tmp";

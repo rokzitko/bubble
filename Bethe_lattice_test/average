@@ -1,0 +1,47 @@
+#!/usr/bin/env perl
+# Averaging of raw spectral functions
+# Rok Zitko, rok.zitko@ijs.si, 2012-2016
+
+use strict;
+use warnings;
+
+my $outdir = "res";
+system "mkdir -p $outdir";
+-d $outdir or die "Failed to create $outdir.";
+
+chomp(my $Nz = `getparam Nz param.loop`);
+chomp(my $min = `getparam broaden_min param.loop`);
+chomp(my $max = `getparam broaden_max param.loop`);
+chomp(my $ratio = `getparam broaden_ratio param.loop`);
+chomp(my $T = `getparam T param.loop`);
+chomp(my $alpha = `getparam broaden_alpha param.loop`);
+chomp(my $gamma = `getparam broaden_gamma param.loop`);
+
+print "average raw spectra\n";
+print "Nz=$Nz min=$min max=$max ratio=$ratio T=$T alpha=$alpha gamma=$gamma\n";
+
+my $pr = "FDM_dens"; # prefix
+
+# Conduction band
+avg("spec_${pr}_A_d-A_d.bin",    "res/c-imG.dat");
+avg("spec_${pr}_self_d-A_d.bin", "res/c-imF.dat");
+avg("spec_${pr}_O_d-O_d.bin",    "res/f-imG.dat");
+
+sub avg
+{
+    my $in = shift;
+    my $out = shift;
+    
+    unlink "$out";
+    system "broaden -x $gamma -m $min -M $max -r $ratio   $in $Nz $alpha $T 1e-9";
+    if ($?) {
+	system "echo Broadening of $in failed: $? >>>ERROR";
+	die "broaden failed: $?\n";                                                                                                                                                                                                                
+    }
+    my $specfn = "spec.dat";
+    if (!-e $specfn) {
+	system "echo Failed to produce broadened spectrum $specfn -> $out. >>>ERROR";
+	die "broaden failed\n";
+    }
+    system "mv $specfn $out";
+}

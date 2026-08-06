@@ -1,0 +1,55 @@
+#!/usr/bin/env perl
+
+$verbose = 0;
+
+$nr = shift;
+$suffix = shift;
+print "nr=$nr suffix=$suffix\n";
+
+open (F, "<reference_data_$nr$suffix.dat") or die;
+
+$ctrok = 0;
+$ctrfailed = 0;
+
+while (<F>) {
+    ($m,$n,$o,$T,$expected) = split;
+    $mu = 0.0;
+    
+    # -i 1
+    open (R, "../bubble -i 1 -v $m -c 15 -a 1e-7 -r 1e-8 -k 1 $n $o $T $mu resigma_$nr.dat imsigma_$nr.dat |") or die;
+    while (<R>) {
+       print if $verbose;
+	if (/Result\s*=\s*(\S*)/) {
+	    $result = $1;
+	    $diff = $result-$expected;
+	    
+	    if (abs($expected) < 1e-6) {
+	      $ok = abs($diff) < 1e-4; # absolute error
+	    } else {
+	      $ok = abs($diff)/abs($expected) < 1e-4; # relative error
+	    }
+	    
+	    if ($ok) {
+		$ctrok++;
+		$status = "OK";
+	    } else {
+		$ctrfailed++;
+		$status = " ** FAILED **";
+	    }
+	    
+	}
+    }
+    close R;
+    print "m=$m n=$n o=$o T=$T expected=$expected result=$result diff=$diff $status\n";
+    if ($verbose) {
+      print "\n";
+    }
+    
+#    exit(1);
+}
+
+print "OK=$ctrok FAILED=$ctrfailed\n";
+
+	    
+    
+    

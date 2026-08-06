@@ -1,0 +1,14 @@
+#!/usr/bin/env perl
+# dmft_init - prepare a new DMFT run (called from dmft_monitor)
+# Rok Zitko, zitko@theorie.physik.uni-goettingen.de, Oct 2008
+
+if (!-d "dmft") {
+  mkdir "dmft" or die "Can't create subdir dmft, stopped";
+}
+
+if (!-d "res") {
+    mkdir "res" or die "Cant create subdit res, stopped";
+}
+
+-e "DeltaFirst.dat" or system "./init";
+-e "Delta.dat" or system "./dmftDOS";
