@@ -26,6 +26,7 @@ supplied separately.
 - Fermi-derivative transport moments, finite-frequency optical conductivity,
   occupied spectral moments, and frequency-resolved DOS output.
 - DC, optical-limit, and independent Bethe-lattice regression tests.
+- Clean-limit kernel checks against independent high-precision quadrature.
 
 ## Quick Start
 
@@ -131,6 +132,48 @@ The current analytic kernels use \(D=1\) and \(\sigma=1\). Consequently,
 temperature, chemical potential, frequency, band energy, and self-energy must
 all be expressed in the same energy unit, normally the half-bandwidth. The
 conventions \(k_B=\hbar=1\) are used.
+
+### Clean-Limit Kernels
+
+The phrase *clean-limit kernel* refers to \(J_{mn}(z)\) evaluated when the
+single-particle scattering rate is very small. It is an evaluation regime, not
+an additional transport function \(\Phi_m\). Writing
+
+$$
+z=x+iy,
+\qquad
+x=\omega+\mu-\mathrm{Re}\,\Sigma^R(\omega),
+\qquad
+y=-\mathrm{Im}\,\Sigma^R(\omega)>0,
+$$
+
+the spectral factor for \(D=1\) is the Lorentzian
+
+$$
+A_y(x-\epsilon)
+=\frac{y}{\pi[(x-\epsilon)^2+y^2]}.
+$$
+
+The clean limit is \(y\to0^+\), where this Lorentzian becomes increasingly
+narrow and tends to \(\delta(x-\epsilon)\). If \(x\) is strictly inside a band
+and \(\Phi_m\) is smooth there, the leading behavior is
+
+$$
+J_{m1}(x+iy)\longrightarrow\Phi_m(x),
+\qquad
+J_{m2}(x+iy)\sim\frac{\Phi_m(x)}{2\pi y},
+\qquad
+J_{m3}(x+iy)\sim\frac{3\Phi_m(x)}{8\pi^2y^2}.
+$$
+
+Thus the `n=2` and `n=3` kernels become large even though their energy width
+shrinks. Outside a finite band they instead vanish as \(O(y^n)\), while at a
+band edge the behavior depends on how \(\Phi_m\) approaches zero. These very
+different scales make direct quadrature and cancellation-prone closed formulas
+unreliable. The built-in clean-limit implementation uses factored finite-band
+expressions, exterior moment expansions, and conditioned Gaussian/Faddeeva
+identities to retain accuracy in all three regions. The `-s` option sets the
+minimum linewidth used when the supplied self-energy is even cleaner.
 
 ## Transport Moments
 
@@ -368,8 +411,11 @@ still syntactically required but are not used in this mode. `-d` overwrites
 
 ## Numerical Method
 
-- The analytic \(J_{mn}\) expressions were generated from Mathematica
+- The \(n=0,1\) analytic \(J_{mn}\) expressions originate from Mathematica
   calculations documented under `notes/`.
+- Built-in \(n=2,3\) kernels use cancellation-free finite-band formulas,
+  exterior moment expansions, and conditioned Faddeeva identities. Gaussian
+  transition cases have a direct positive-quadrature fallback.
 - Built-in optical kernels use analytic Hilbert transforms and stable divided
   differences rather than generated two-frequency expressions.
 - The remaining frequency integral uses adaptive GSL `qag` quadrature.
@@ -384,8 +430,10 @@ still syntactically required but are not used in this mode. `-d` overwrites
 
 ## Validation
 
-The repository contains three complementary sets of checks. `make check` runs
-legacy suite 1 and both optical checks without invoking Mathematica.
+The repository contains complementary DC, clean-kernel, and optical checks.
+`make check` runs legacy suite 1, the audited clean-limit legacy suites, the
+pointwise clean-kernel suite, and both optical checks without invoking
+Mathematica.
 
 ### Legacy Regression Data
 
@@ -398,9 +446,31 @@ cd regression
 ./run_tests 1
 ```
 
-The current implementation passes 372 of the 384 historical comparisons. The
-12 remaining cases are confined to the clean-limit `n=3` and suite `22` cases
-marked as problematic in `regression/README`.
+The current implementation passes all 384 legacy suite rows. References in
+clean-limit suites `5` and `22*` were independently regenerated for the finite
+integration interval used by `run_tests`; parity-forced zeros were preserved
+exactly.
+
+### Clean-Kernel Regression
+
+`regression/clean_kernel_references.dat` contains pointwise values for all
+built-in kernels with `n=2,3`. It covers interior points, exact and nearby band
+edges, clean exterior points, Gaussian pole/tail transitions, broad
+linewidths, and exact parity. Most frozen values were generated at 100 decimal
+digits after the substitution
+
+$$
+\epsilon=x+y\tan\theta,
+$$
+
+which removes the narrow Lorentzian peak from the numerical quadrature. Finite
+exterior points without a peak in the band use direct high-precision energy
+quadrature. To print the regenerated table, install the optional Python package
+`mpmath` and run:
+
+```bash
+python3 regression/generate_clean_kernel_references.py
+```
 
 ### Optical Regression
 

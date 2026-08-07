@@ -40,6 +40,7 @@ bubble
 *.exe
 *.out
 *.app
+/regression/clean_kernel_tests
 
 # Build directories
 build/

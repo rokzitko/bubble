@@ -1,0 +1,37 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin qw($Bin);
+
+my @runs = (
+    [5, ''],
+    [22, ''],
+    [22, 'a'],
+    [22, 'b'],
+    [22, 'c'],
+);
+my $total_ok = 0;
+my $total_failed = 0;
+
+for my $run (@runs) {
+    my ($number, $suffix) = @$run;
+    my @command = ("$Bin/run_tests", $number);
+    push @command, $suffix if length $suffix;
+    open my $output, '-|', @command or die "Cannot run @command: $!\n";
+
+    my $summary;
+    while (<$output>) {
+        $summary = $_ if /^OK=\d+ FAILED=\d+\s*$/;
+    }
+    close $output or die "@command failed\n";
+    defined $summary or die "No summary from @command\n";
+    $summary =~ /OK=(\d+) FAILED=(\d+)/ or die "Invalid summary: $summary";
+    $total_ok += $1;
+    $total_failed += $2;
+    chomp $summary;
+    print "LEGACY CLEAN suite=$number$suffix $summary\n";
+}
+
+print "LEGACY CLEAN OK=$total_ok FAILED=$total_failed\n";
+exit($total_failed == 0 ? 0 : 1);

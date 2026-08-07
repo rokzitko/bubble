@@ -321,7 +321,11 @@ complex<double> Erfi(complex<double> z) {
 
 const complex<double> I(0,1);
 
+double J_builtin(int kernel, int power, complex<double> z);
+
 // Functions Jmn, for m = 1,...,8 and n = 0,1,2,3
+// The historical generated n=2,3 expressions are retained with a _generated
+// suffix for provenance; production dispatch uses the stable functions below.
 double J_10(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
@@ -335,13 +339,13 @@ double J_11(complex<double> OMEGA) {
 }
 
 
-double J_12(complex<double> OMEGA) {
+double J_12_generated(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
    return ((2*y*(1 + pow(y,2) - pow(x,2)) + (pow(y,2) + pow(1 - x,2)) * (pow(y,2) + pow(1 + x,2))*(atan((1 - x)/y) + atan((1 + x)/y))))/(2.*y*pow(M_PI,2)*(pow(y,2) + pow(1 - x,2))*(pow(y,2) + pow(1 + x,2)));
 }
 
-double J_13(complex<double> OMEGA) {
+double J_13_generated(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
    return ((2 * y * (pow(1 + pow(y,2),2) * (3 + 5 * pow(y,2)) - (9 + 2 * pow(y,2) + pow(y,4)) * pow(x,2) + 9 * (1 - y) * (1 + y) * pow(x,4) - 3 * pow(x,6)) + 3 * pow(1 + 2 * (y - x) * (y + x) + pow(pow(y,2) + pow(x,2),2),2) * (atan((1 - x)/y) + atan((1 + x)/y))))/(8. * pow(y,2) * pow(M_PI,3) * pow(1+ 2 * (y - x) * (y + x) + pow(pow(y,2) + pow(x,2),2),2));
@@ -360,13 +364,13 @@ double J_21(complex<double> OMEGA) {
 }
 
 
-double J_22(complex<double> OMEGA) {
+double J_22_generated(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
    return  (x*(-2*y*(-1 + pow(x,2) + pow(y,2)) - (pow(-1 + x,2) + pow(y,2))*(pow(1 + x,2) + pow(y,2))*atan((-1 + x)/y) +(pow(-1 + x,2) + pow(y,2))*(pow(1 + x,2) + pow(y,2))*atan((1 + x)/y)))/(2.*pow(M_PI,2)*y*(pow(-1 + x,2) + pow(y,2))*(pow(1 + x,2) + pow(y,2)));
 }
 
-double J_23(complex<double> OMEGA) {
+double J_23_generated(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
    return -(x*(6*pow(-1 + pow(x,2),3)*y + 2*(-11 + 2*pow(x,2) + 9*pow(x,4))*pow(y,3) + 2*(-5 + 9*pow(x,2))*pow(y,5) + 6*pow(y,7) + 3*pow(pow(x,4) + 2*pow(x,2)*(-1 + pow(y,2)) + pow(1 + pow(y,2),2),2)*atan((-1 + x)/y) - 3*pow(pow(x,4) + 2*pow(x,2)*(-1 + pow(y,2)) + pow(1 + pow(y,2),2),2)*atan((1 + x)/y)))/(8.*pow(M_PI,3)*pow(y,2)*pow(pow(x,4) + 2*pow(x,2)*(-1 + pow(y,2)) + pow(1 + pow(y,2),2),2));
@@ -387,7 +391,7 @@ double J_31(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_32(complex<double> OMEGA) {
+double J_32_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -395,7 +399,7 @@ double J_32(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_33(complex<double> OMEGA) {
+double J_33_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -419,7 +423,7 @@ double J_41(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_42(complex<double> OMEGA) {
+double J_42_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -428,7 +432,7 @@ double J_42(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_43(complex<double> OMEGA) {
+double J_43_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -452,7 +456,7 @@ double J_51(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_52(complex<double> OMEGA) {
+double J_52_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -461,7 +465,7 @@ double J_52(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_53(complex<double> OMEGA) {
+double J_53_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -485,7 +489,7 @@ double J_61(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_62(complex<double> OMEGA) {
+double J_62_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -494,7 +498,7 @@ double J_62(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_63(complex<double> OMEGA) {
+double J_63_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -518,7 +522,7 @@ double J_71(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_72(complex<double> OMEGA) {
+double J_72_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -527,7 +531,7 @@ double J_72(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_73(complex<double> OMEGA) {
+double J_73_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -550,7 +554,7 @@ double J_81(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_82(complex<double> OMEGA) {
+double J_82_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -559,7 +563,7 @@ double J_82(complex<double> OMEGA) {
    return z.real();
 }
 
-double J_83(complex<double> OMEGA) {
+double J_83_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -567,6 +571,23 @@ double J_83(complex<double> OMEGA) {
     
    return z.real();
 }
+
+double J_12(complex<double> z) { return J_builtin(1, 2, z); }
+double J_13(complex<double> z) { return J_builtin(1, 3, z); }
+double J_22(complex<double> z) { return J_builtin(2, 2, z); }
+double J_23(complex<double> z) { return J_builtin(2, 3, z); }
+double J_32(complex<double> z) { return J_builtin(3, 2, z); }
+double J_33(complex<double> z) { return J_builtin(3, 3, z); }
+double J_42(complex<double> z) { return J_builtin(4, 2, z); }
+double J_43(complex<double> z) { return J_builtin(4, 3, z); }
+double J_52(complex<double> z) { return J_builtin(5, 2, z); }
+double J_53(complex<double> z) { return J_builtin(5, 3, z); }
+double J_62(complex<double> z) { return J_builtin(6, 2, z); }
+double J_63(complex<double> z) { return J_builtin(6, 3, z); }
+double J_72(complex<double> z) { return J_builtin(7, 2, z); }
+double J_73(complex<double> z) { return J_builtin(7, 3, z); }
+double J_82(complex<double> z) { return J_builtin(8, 2, z); }
+double J_83(complex<double> z) { return J_builtin(8, 3, z); }
 
 // Gsl function as an integrand for general J integral 
 // (when there is no analytical expression for it)
@@ -789,6 +810,7 @@ double J_mn (complex<double> OMEGA)
       case 8:
 	 return J_80(OMEGA);
       }
+	 break;
 
    case 1:
       switch (m) {
@@ -809,56 +831,26 @@ double J_mn (complex<double> OMEGA)
       case 8:
 	 return J_81(OMEGA);
       }
+	 break;
             
    case 2:
-      switch (m) {
-      case 1:
-	 return J_12(OMEGA);
-      case 2:
-	 return J_22(OMEGA);
-      case 3:
-	 return J_32(OMEGA);
-      case 4:
-	 return J_42(OMEGA);
-      case 5:
-	 return J_52(OMEGA);
-      case 6:
-	 return J_62(OMEGA);
-      case 7:
-	 return J_72(OMEGA);
-      case 8:
-	 return J_82(OMEGA);
-      }
-      
    case 3:
-      switch (m) {
-      case 1:
-	 return J_13(OMEGA);
-      case 2:
-	 return J_23(OMEGA);
-      case 3:
-	 return J_33(OMEGA);
-      case 4:
-	 return J_43(OMEGA);
-      case 5:
-	 return J_53(OMEGA);
-      case 6:
-	 return J_63(OMEGA);
-      case 7:
-	 return J_73(OMEGA);
-      case 8:
-	 return J_83(OMEGA);
-      }
+      if (1 <= m && m <= 8)
+	 return J_builtin(m, n, OMEGA);
+      break;
       
    default:
-      cerr << "Jmn not implemented for m=" << m << ", n=" << n << endl;
-      abort();
+      break;
    }
+
+   cerr << "Jmn not implemented for m=" << m << ", n=" << n << endl;
+   abort();
 }
 
 struct hilbert_pair {
    complex<double> value;
    complex<double> derivative;
+   complex<double> second_derivative;
 };
 
 // H_m(z) = integral Phi_m(epsilon)/(z-epsilon) d epsilon.
@@ -875,25 +867,33 @@ hilbert_pair flat_hilbert(int kernel, complex<double> z)
 	 for (int k = 0; k < 64; ++k, term *= u2)
 	    value += 2.0*term/(2*k + 1.0);
 
-	 return hilbert_pair{value, -2.0*u2/(1.0 - u2)};
+	 return hilbert_pair{value,
+	    -2.0*u2/(1.0 - u2),
+	    4.0*u*u2/((1.0 - u2)*(1.0 - u2))};
       }
 
       complex<double> value = 0.0;
       complex<double> derivative = 0.0;
+      complex<double> second_derivative = 0.0;
       complex<double> term = u2;
       for (int k = 1; k < 64; ++k, term *= u2) {
 	 value += 2.0*term/(2*k + 1.0);
 	 derivative -= 4.0*k*term*u/(2*k + 1.0);
+	 second_derivative += 4.0*k*term*u2;
       }
-      return hilbert_pair{value, derivative};
+      return hilbert_pair{value, derivative, second_derivative};
    }
 
    const complex<double> value1 = log(z + 1.0) - log(z - 1.0);
    const complex<double> derivative1 = 2.0/(1.0 - z*z);
+   const complex<double> second_derivative1 =
+      4.0*z/((1.0 - z*z)*(1.0 - z*z));
    if (kernel == 1)
-      return hilbert_pair{value1, derivative1};
+      return hilbert_pair{value1, derivative1, second_derivative1};
 
-   return hilbert_pair{z*value1 - 2.0, value1 + z*derivative1};
+   return hilbert_pair{z*value1 - 2.0,
+		       value1 + z*derivative1,
+		       2.0*derivative1 + z*second_derivative1};
 }
 
 hilbert_pair gaussian_hilbert_asymptotic(int kernel, complex<double> z)
@@ -904,18 +904,22 @@ hilbert_pair gaussian_hilbert_asymptotic(int kernel, complex<double> z)
    complex<double> power = 1.0;
    complex<double> value7 = 0.0;
    complex<double> derivative7 = 0.0;
+   complex<double> second_derivative7 = 0.0;
    complex<double> value8 = 0.0;
    complex<double> derivative8 = 0.0;
+   complex<double> second_derivative8 = 0.0;
    double moment = mass;
 
    for (int k = 0; k < 32; ++k) {
       const complex<double> term = moment*power;
       value7 += term*u;
       derivative7 -= (2*k + 1.0)*term*u*u;
+      second_derivative7 += (2*k + 1.0)*(2*k + 2.0)*term*u*u*u;
 
       if (k != 0) {
 	 value8 += term;
 	 derivative8 -= 2.0*k*term*u;
+	 second_derivative8 += 2.0*k*(2*k + 1.0)*term*u*u;
       }
 
       power *= u2;
@@ -923,8 +927,8 @@ hilbert_pair gaussian_hilbert_asymptotic(int kernel, complex<double> z)
    }
 
    if (kernel == 7)
-      return hilbert_pair{value7, derivative7};
-   return hilbert_pair{value8, derivative8};
+      return hilbert_pair{value7, derivative7, second_derivative7};
+   return hilbert_pair{value8, derivative8, second_derivative8};
 }
 
 bool lower_half_plane(complex<double> z)
@@ -942,12 +946,18 @@ hilbert_pair kernel_hilbert(int kernel, complex<double> z)
       const complex<double> t = 1.0/(z + root);
 
       if (kernel == 3)
-	 return hilbert_pair{M_PI*t, -M_PI*t/root};
+	 return hilbert_pair{M_PI*t, -M_PI*t/root, M_PI/(root*root*root)};
       if (kernel == 4)
-	 return hilbert_pair{0.5*M_PI*t*t, -M_PI*t*t/root};
+	 return hilbert_pair{0.5*M_PI*t*t,
+			     -M_PI*t*t/root,
+			     M_PI*t*t*(z + 2.0*root)/(root*root*root)};
       if (kernel == 5)
-	 return hilbert_pair{0.25*M_PI*t*(3.0 - t*t), -1.5*M_PI*t*t};
-      return hilbert_pair{0.125*M_PI*t*t*(2.0 - t*t), -M_PI*t*t*t};
+	 return hilbert_pair{0.25*M_PI*t*(3.0 - t*t),
+			     -1.5*M_PI*t*t,
+			     3.0*M_PI*t*t/root};
+      return hilbert_pair{0.125*M_PI*t*t*(2.0 - t*t),
+			  -M_PI*t*t*t,
+			  3.0*M_PI*t*t*t/root};
    }
 
    if (kernel == 7 || kernel == 8) {
@@ -960,14 +970,540 @@ hilbert_pair kernel_hilbert(int kernel, complex<double> z)
 	 ? I*M_PI*Faddeeva::w(-sqrt2*z)
 	 : -I*M_PI*Faddeeva::w(sqrt2*z);
       const complex<double> derivative7 = 4.0*mass - 4.0*z*value7;
+      const complex<double> second_derivative7 = -4.0*value7 - 4.0*z*derivative7;
 
       if (kernel == 7)
-	 return hilbert_pair{value7, derivative7};
-      return hilbert_pair{z*value7 - mass, value7 + z*derivative7};
+	 return hilbert_pair{value7, derivative7, second_derivative7};
+      return hilbert_pair{z*value7 - mass,
+			  value7 + z*derivative7,
+			  2.0*derivative7 + z*second_derivative7};
    }
 
    cerr << "Optical kernel not implemented for m=" << kernel << endl;
    exit(EXIT_FAILURE);
+}
+
+namespace {
+
+const long double PI_L = acosl(-1.0L);
+
+void compensated_add(long double term, long double &sum, long double &correction)
+{
+   const long double adjusted = term - correction;
+   const long double updated = sum + adjusted;
+   correction = (updated - sum) - adjusted;
+   sum = updated;
+}
+
+long double finite_moment_series(int kernel, int power, long double x, long double y)
+{
+   // Expanding J itself avoids cancellation between Hilbert-transform terms
+   // when the Lorentzian center is far from a finite band.
+   const long double radius = hypotl(x, y);
+   const long double inverse_radius = 1.0L/radius;
+   const long double cosine = x/radius;
+   long double gegenbauer_previous = 0.0L;
+   long double gegenbauer = 1.0L;
+   long double inverse_power = 1.0L;
+   long double moment = 0.0L;
+
+   if (kernel == 3)
+      moment = PI_L/2.0L;
+   else if (kernel == 4)
+      moment = PI_L/8.0L;
+   else if (kernel == 5)
+      moment = 3.0L*PI_L/8.0L;
+   else if (kernel == 6)
+      moment = PI_L/16.0L;
+
+   long double sum = 0.0L;
+   long double correction = 0.0L;
+   int negligible_terms = 0;
+   for (int k = 0; k <= 160; ++k) {
+      long double kernel_moment = 0.0L;
+      if (kernel == 1 && k % 2 == 0) {
+         kernel_moment = 2.0L/(k + 1.0L);
+      } else if (kernel == 2 && k % 2 == 1) {
+         kernel_moment = 2.0L/(k + 2.0L);
+      } else if (kernel == 3 && k % 2 == 0) {
+         kernel_moment = moment;
+         moment *= (k + 1.0L)/(k + 4.0L);
+      } else if (kernel == 4 && k % 2 == 1) {
+         kernel_moment = moment;
+         moment *= (k + 2.0L)/(k + 5.0L);
+      } else if (kernel == 5 && k % 2 == 0) {
+         kernel_moment = moment;
+         moment *= (k + 1.0L)/(k + 6.0L);
+      } else if (kernel == 6 && k % 2 == 1) {
+         kernel_moment = moment;
+         moment *= (k + 2.0L)/(k + 7.0L);
+      }
+
+      if (kernel_moment != 0.0L) {
+         const long double term = kernel_moment*gegenbauer*inverse_power;
+         compensated_add(term, sum, correction);
+         if (k > 12 && fabsl(term) <=
+             4.0L*numeric_limits<double>::epsilon()*fabsl(sum))
+            ++negligible_terms;
+         else
+            negligible_terms = 0;
+         if (negligible_terms == 3)
+            break;
+      }
+
+      const long double next_gegenbauer =
+         (2.0L*(k + power)*cosine*gegenbauer
+          - (k + 2.0L*power - 1.0L)*gegenbauer_previous)/(k + 1.0L);
+      gegenbauer_previous = gegenbauer;
+      gegenbauer = next_gegenbauer;
+      inverse_power *= inverse_radius;
+   }
+
+   const long double scaled_y = y/(PI_L*radius);
+   return powl(scaled_y, power)*sum/powl(radius, power);
+}
+
+long double flat_exterior_kernel(int kernel, int power, long double x, long double y)
+{
+   const long double distance = x - 1.0L;
+   const long double eta = y/distance;
+   const long double eta2 = eta*eta;
+   const long double ratio = distance/(x + 1.0L);
+   const long double ratio2 = ratio*ratio;
+   int coefficient_index = 2*power - 1;
+   long double ratio_power = powl(ratio, coefficient_index);
+   long double ratio_previous = ratio_power/ratio;
+   long double binomial = 1.0L;
+   long double eta_power = 1.0L;
+   long double sign = 1.0L;
+   long double sum = 0.0L;
+   long double correction = 0.0L;
+
+   for (int j = 0; j < 96; ++j) {
+      const long double h1 = (ratio_power - 1.0L)/coefficient_index;
+      long double h = h1;
+      if (kernel == 2) {
+         const long double h1_previous =
+            (1.0L - ratio_previous)/(coefficient_index - 1.0L);
+         h = x*h1 + distance*h1_previous;
+      }
+
+      const long double term = sign*binomial*(-h)*eta_power;
+      compensated_add(term, sum, correction);
+      if (j > 8 && fabsl(term) <=
+          4.0L*numeric_limits<long double>::epsilon()*fabsl(sum))
+         break;
+
+      binomial *= (power + j)/(j + 1.0L);
+      eta_power *= eta2;
+      sign = -sign;
+      coefficient_index += 2;
+      ratio_power *= ratio2;
+      ratio_previous *= ratio2;
+   }
+
+   return powl(eta, power)*sum/
+      (powl(PI_L, power)*powl(distance, power - 1));
+}
+
+long double flat_kernel(int kernel, int power, long double x, long double y)
+{
+   const long double y2 = y*y;
+   const long double lower_distance = 1.0L - x;
+   const long double upper_distance = 1.0L + x;
+   const long double lower_denominator = lower_distance*lower_distance + y2;
+   const long double upper_denominator = upper_distance*upper_distance + y2;
+   const long double a1 = lower_distance/lower_denominator
+      + upper_distance/upper_denominator;
+   const long double theta = atan2l(2.0L*y, (x - 1.0L)*(x + 1.0L) + y2);
+   const long double j12 = (theta + y*a1)/(2.0L*PI_L*PI_L*y);
+
+   if (power == 2) {
+      if (kernel == 1)
+         return j12;
+      return x*(j12 - 2.0L*y2/
+         (PI_L*PI_L*lower_denominator*upper_denominator));
+   }
+
+   const long double a2 = lower_distance/(lower_denominator*lower_denominator)
+      + upper_distance/(upper_denominator*upper_denominator);
+   const long double j13 = (3.0L*theta + 3.0L*y*a1 + 2.0L*y*y2*a2)/
+      (8.0L*PI_L*PI_L*PI_L*y2);
+   if (kernel == 1)
+      return j13;
+   return x*(j13 - y*y2*(lower_denominator + upper_denominator)/
+      (PI_L*PI_L*PI_L*lower_denominator*lower_denominator*
+       upper_denominator*upper_denominator));
+}
+
+long double square_root_kernel(int kernel, int power, long double x, long double y)
+{
+   // These branch variables keep every numerator nonnegative for x >= 0 and
+   // avoid subtracting nearly equal square roots at and outside the band edge.
+   const long double y2 = y*y;
+   const long double band_coordinate = (x - 1.0L)*(x + 1.0L);
+   const long double radius = hypotl(band_coordinate - y2, 2.0L*x*y);
+   const long double sum_coordinate = band_coordinate + y2;
+   const long double a = sum_coordinate >= 0.0L
+      ? 2.0L*y2/(radius + sum_coordinate)
+      : (radius - sum_coordinate)/2.0L;
+   const long double q = sqrtl(y2 + a);
+   const long double g = a/(q + y);
+   const long double scale = a*a + y2;
+   long double numerator;
+
+   if (power == 2) {
+      if (kernel == 3)
+         numerator = q*a*a/scale;
+      else if (kernel == 4)
+         numerator = x*a*a*a/(q*scale);
+      else if (kernel == 5)
+         numerator = g*g*(q + 2.0L*y);
+      else
+         numerator = x*g*g*g*(q + 3.0L*y)/q;
+      return numerator/(2.0L*PI_L*y);
+   }
+
+   if (kernel == 3) {
+      numerator = q*a*a*a*(3.0L*a*a*a + 7.0L*a*y2 + 4.0L*y2*y2)/
+         (scale*scale*scale);
+   } else if (kernel == 4) {
+      numerator = x*a*a*a*a*
+         (3.0L*a*a*a + 2.0L*a*a*y2 + 7.0L*a*y2 + 6.0L*y2*y2)/
+         (q*scale*scale*scale);
+   } else if (kernel == 5) {
+      numerator = 3.0L*q*a*a*a/scale;
+   } else {
+      numerator = 3.0L*x*a*a*a*a/(q*scale);
+   }
+   return numerator/(8.0L*PI_L*PI_L*y2);
+}
+
+bool gaussian_tail_kernel(int kernel, int power, long double x, long double y,
+                          long double &result)
+{
+   // The algebraic moment series misses an exponentially small near-real pole;
+   // in the narrow exterior sector both contributions are needed.
+   const long double radius2 = x*x + y*y;
+   const long double alpha = -2.0L*x/radius2;
+   const long double beta = 1.0L/radius2;
+   long double coefficient_previous = 0.0L;
+   long double coefficient = 1.0L;
+   long double moment = sqrtl(PI_L/2.0L);
+   if (kernel == 8)
+      moment /= 4.0L;
+
+   long double sum = 0.0L;
+   long double correction = 0.0L;
+   long double block_maximum = 0.0L;
+   long double previous_block_maximum = numeric_limits<long double>::infinity();
+   int block_terms = 0;
+   int rising_blocks = 0;
+   bool converged = false;
+
+   for (int k = 0; k <= 255; ++k) {
+      if ((kernel == 7 && k % 2 == 0) || (kernel == 8 && k % 2 == 1)) {
+         const long double term = moment*coefficient;
+         compensated_add(term, sum, correction);
+         block_maximum = max(block_maximum, fabsl(term));
+         ++block_terms;
+
+         if (kernel == 7)
+            moment *= (k + 1.0L)/4.0L;
+         else
+            moment *= (k + 2.0L)/4.0L;
+
+         if (block_terms == 4) {
+            if (block_maximum <= 8.0L*numeric_limits<double>::epsilon()*fabsl(sum)) {
+               converged = true;
+               break;
+            }
+            if (block_maximum > previous_block_maximum)
+               ++rising_blocks;
+            else
+               rising_blocks = 0;
+            if (rising_blocks >= 2)
+               return false;
+            previous_block_maximum = block_maximum;
+            block_maximum = 0.0L;
+            block_terms = 0;
+         }
+      }
+
+      const long double next_coefficient =
+         -(alpha*(k + power)*coefficient
+           + beta*(k + 2.0L*power - 1.0L)*coefficient_previous)/(k + 1.0L);
+      coefficient_previous = coefficient;
+      coefficient = next_coefficient;
+   }
+
+   if (!converged)
+      return false;
+
+   const long double radius = sqrtl(radius2);
+   result = powl(y/(PI_L*radius), power)*sum/powl(radius, power);
+
+   if (y < x && x*y <= 0.25L) {
+      const complex<long double> z(x, y);
+      const complex<long double> gaussian = exp(-2.0L*z*z);
+      complex<long double> psi;
+      complex<long double> psi_derivative;
+      complex<long double> psi_second_derivative;
+      if (kernel == 7) {
+         psi = gaussian;
+         psi_derivative = -4.0L*z*gaussian;
+         psi_second_derivative = (16.0L*z*z - 4.0L)*gaussian;
+      } else {
+         psi = z*gaussian;
+         psi_derivative = (1.0L - 4.0L*z*z)*gaussian;
+         psi_second_derivative = (16.0L*z*z*z - 12.0L*z)*gaussian;
+      }
+
+      if (power == 2) {
+         result += (psi.real()/y + psi_derivative.imag())/(2.0L*PI_L);
+      } else {
+         result += (3.0L*psi.real()/(y*y) + 3.0L*psi_derivative.imag()/y
+                    - psi_second_derivative.real())/(8.0L*PI_L*PI_L);
+      }
+   }
+
+   return isfinite(result) && result >= 0.0L;
+}
+
+bool gaussian_hilbert_kernel(int kernel, int power, double x, double y,
+                             long double &result)
+{
+   const complex<double> z(x, y);
+   const double mass = sqrt(M_PI/2.0);
+   const complex<double> h7 = -I*M_PI*Faddeeva::w(sqrt(2.0)*z);
+   const complex<double> h7_derivative = 4.0*mass - 4.0*z*h7;
+   const complex<double> h7_second_derivative = -4.0*h7 - 4.0*z*h7_derivative;
+   complex<double> h = h7;
+   complex<double> derivative = h7_derivative;
+   complex<double> second_derivative = h7_second_derivative;
+
+   const double error0 = abs(h7);
+   const double error1 = 4.0*mass + 4.0*abs(z)*error0;
+   const double error2 = 4.0*error0 + 4.0*abs(z)*error1;
+   double propagated0 = error0;
+   double propagated1 = error1;
+   double propagated2 = error2;
+
+   if (kernel == 8) {
+      h = z*h7 - mass;
+      derivative = h7 + z*h7_derivative;
+      second_derivative = 2.0*h7_derivative + z*h7_second_derivative;
+      propagated0 = abs(z)*error0 + mass;
+      propagated1 = error0 + abs(z)*error1;
+      propagated2 = 2.0*error1 + abs(z)*error2;
+   }
+
+   long double numerator;
+   long double propagated_error;
+   if (power == 2) {
+      numerator = static_cast<long double>(derivative.real())
+         - static_cast<long double>(h.imag())/y;
+      propagated_error = propagated1 + propagated0/y;
+      result = numerator/(2.0L*PI_L*PI_L);
+   } else {
+      numerator = static_cast<long double>(second_derivative.imag())
+         + 3.0L*static_cast<long double>(derivative.real())/y
+         - 3.0L*static_cast<long double>(h.imag())/(y*y);
+      propagated_error = propagated2 + 3.0L*propagated1/y
+         + 3.0L*propagated0/(y*y);
+      result = numerator/(8.0L*PI_L*PI_L*PI_L);
+   }
+
+   if (!isfinite(result) || result < 0.0L || numerator == 0.0L)
+      return false;
+   const long double relative_error = numeric_limits<double>::epsilon()*
+      propagated_error/fabsl(numerator);
+   return relative_error <= 1.0e-11L;
+}
+
+struct gaussian_quadrature_params {
+   int kernel;
+   int power;
+   long double x;
+   long double y;
+   bool local_coordinate;
+};
+
+double gaussian_quadrature_integrand(double argument, void *raw_params)
+{
+   const gaussian_quadrature_params &params =
+      *static_cast<gaussian_quadrature_params *>(raw_params);
+   const long double x = params.x;
+   const long double y = params.y;
+   const long double epsilon = params.local_coordinate
+      ? x + y*argument : argument;
+   if (epsilon < 0.0L || epsilon > 10.0L)
+      return 0.0;
+
+   const long double qminus = params.local_coordinate
+      ? y*y*(1.0L + static_cast<long double>(argument)*argument)
+      : (x - epsilon)*(x - epsilon) + y*y;
+   const long double qplus = (x + epsilon)*(x + epsilon) + y*y;
+   const long double gaussian = expl(-2.0L*epsilon*epsilon);
+   long double rational;
+   if (params.kernel == 7) {
+      rational = 1.0L/powl(qminus, params.power)
+         + 1.0L/powl(qplus, params.power);
+   } else if (params.power == 2) {
+      rational = epsilon*4.0L*x*epsilon*(qplus + qminus)/
+         (qminus*qminus*qplus*qplus);
+   } else {
+      rational = epsilon*4.0L*x*epsilon*
+         (qplus*qplus + qplus*qminus + qminus*qminus)/
+         (qminus*qminus*qminus*qplus*qplus*qplus);
+   }
+
+   long double value = gaussian*rational*powl(y/PI_L, params.power);
+   if (params.local_coordinate)
+      value *= y;
+   return static_cast<double>(value);
+}
+
+bool integrate_gaussian_segment(gsl_function &function,
+                                double lower, double upper,
+                                gsl_integration_workspace *workspace,
+                                long double &sum)
+{
+   if (!(lower < upper))
+      return true;
+   double value;
+   double error;
+   const int status = gsl_integration_qag(&function, lower, upper, 0.0, 2.0e-13,
+      300, GSL_INTEG_GAUSS61, workspace, &value, &error);
+   if (!isfinite(value) || !isfinite(error))
+      return false;
+   if (status != GSL_SUCCESS && status != GSL_EROUND) {
+      if (status != GSL_ESING || sum == 0.0L ||
+          fabsl(value) + error > 1.0e-12L*fabsl(sum))
+         return false;
+   }
+   sum += value;
+   return true;
+}
+
+bool gaussian_quadrature_kernel(int kernel, int power,
+                                long double x, long double y,
+                                long double &result)
+{
+   // This path is only used when cancellation diagnostics reject the exact
+   // Faddeeva identities and the asymptotic series is not applicable.
+   gsl_set_error_handler_off();
+   gsl_integration_workspace *workspace = gsl_integration_workspace_alloc(300);
+   if (workspace == NULL)
+      return false;
+
+   const long double local_scale = y < 1.0e-7L ? 1.0e6L : 1024.0L;
+   const long double local_lower = min(10.0L, max(0.0L, x - local_scale*y));
+   const long double local_upper = max(0.0L, min(10.0L, x + local_scale*y));
+   const double landmarks[] = {0.0, 0.25, 0.5, 1.0, 2.0, 3.0,
+                               4.0, 5.0, 6.0, 8.0, 10.0};
+   vector<double> direct_points(landmarks, landmarks + sizeof(landmarks)/sizeof(*landmarks));
+   direct_points.push_back(static_cast<double>(local_lower));
+   direct_points.push_back(static_cast<double>(local_upper));
+   sort(direct_points.begin(), direct_points.end());
+   direct_points.erase(unique(direct_points.begin(), direct_points.end()), direct_points.end());
+
+   gaussian_quadrature_params params = {kernel, power, x, y, false};
+   gsl_function function;
+   function.function = &gaussian_quadrature_integrand;
+   function.params = &params;
+   long double sum = 0.0L;
+   bool success = true;
+   if (local_lower < local_upper) {
+      const double local_landmarks[] = {-1.0e5, -1.0e4, -1.0e3, -256.0, -64.0,
+         -16.0, -4.0, -1.0, 0.0, 1.0, 4.0, 16.0, 64.0, 256.0,
+         1.0e3, 1.0e4, 1.0e5};
+      vector<double> local_points;
+      const double lower = static_cast<double>((local_lower - x)/y);
+      const double upper = static_cast<double>((local_upper - x)/y);
+      local_points.push_back(lower);
+      for (size_t i = 0; i < sizeof(local_landmarks)/sizeof(*local_landmarks); ++i)
+         if (lower < local_landmarks[i] && local_landmarks[i] < upper)
+            local_points.push_back(local_landmarks[i]);
+      local_points.push_back(upper);
+
+      params.local_coordinate = true;
+      for (size_t i = 1; success && i < local_points.size(); ++i)
+         success = integrate_gaussian_segment(function, local_points[i - 1],
+            local_points[i], workspace, sum);
+   }
+
+   params.local_coordinate = false;
+   for (size_t i = 1; success && i < direct_points.size(); ++i) {
+      const double lower = direct_points[i - 1];
+      const double upper = direct_points[i];
+      const long double midpoint = 0.5L*(lower + upper);
+      if (local_lower < midpoint && midpoint < local_upper)
+         continue;
+      success = integrate_gaussian_segment(function, lower, upper, workspace, sum);
+   }
+
+   gsl_integration_workspace_free(workspace);
+   result = sum;
+   return success && isfinite(result) && result >= 0.0L;
+}
+
+long double gaussian_kernel(int kernel, int power, long double x, long double y)
+{
+   long double result;
+   if ((x >= 5.5L || hypotl(x, y) >= 8.0L) &&
+       gaussian_tail_kernel(kernel, power, x, y, result))
+      return result;
+
+   if (gaussian_hilbert_kernel(kernel, power,
+                               static_cast<double>(x), static_cast<double>(y), result))
+      return result;
+
+   if (gaussian_quadrature_kernel(kernel, power, x, y, result))
+      return result;
+
+   cerr << "Gaussian clean-limit kernel integration failed for m=" << kernel
+        << ", n=" << power << ", z=(" << static_cast<double>(x)
+        << "," << static_cast<double>(y) << ")" << endl;
+   exit(EXIT_FAILURE);
+}
+
+} // namespace
+
+double J_builtin(int kernel, int power, complex<double> z)
+{
+   if (kernel < 1 || kernel > 8 || (power != 2 && power != 3) ||
+       !isfinite(z.real()) || !isfinite(z.imag()) || z.imag() == 0.0) {
+      cerr << "Invalid built-in kernel request: m=" << kernel
+           << ", n=" << power << ", z=" << z << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   const long double x = fabsl(static_cast<long double>(z.real()));
+   const long double y = fabsl(static_cast<long double>(z.imag()));
+   if (kernel % 2 == 0 && x == 0.0L)
+      return 0.0;
+
+   long double value;
+   if (kernel <= 6) {
+      if (hypotl(x, y) >= 2.0L) {
+         value = finite_moment_series(kernel, power, x, y);
+      } else if (kernel <= 2 && x > 1.0L && y < 0.75L*(x - 1.0L)) {
+         value = flat_exterior_kernel(kernel, power, x, y);
+      } else if (kernel <= 2) {
+         value = flat_kernel(kernel, power, x, y);
+      } else {
+         value = square_root_kernel(kernel, power, x, y);
+      }
+   } else {
+      value = gaussian_kernel(kernel, power, x, y);
+   }
+
+   if (kernel % 2 == 0 && z.real() < 0.0)
+      value = -value;
+   if (power % 2 == 1 && z.imag() < 0.0)
+      value = -value;
+   return static_cast<double>(value);
 }
 
 bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
@@ -1037,6 +1573,8 @@ double J_m2_optical(complex<double> z1, complex<double> z2)
 {
    if (m == 0)
       return J_0_optical(z1, z2);
+   if (z1 == z2)
+      return J_builtin(m, 2, z1);
 
    const complex<double> cross = hilbert_divided_difference(m, conj(z1), z2);
    const complex<double> same = hilbert_divided_difference(m, z1, z2);
@@ -1375,7 +1913,8 @@ void calc_optical()
    }
 }
 
-int main (int argc, char *argv[]) 
+#ifndef BUBBLE_NO_MAIN
+int main (int argc, char *argv[])
 {
    cmd_line(argc, argv);
 
@@ -1392,3 +1931,4 @@ int main (int argc, char *argv[])
     
    return 0;
 }
+#endif

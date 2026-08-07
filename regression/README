@@ -1,7 +1,23 @@
+Legacy outer-integral regression suites
+
 1 - constant Im, Re = 0
 2 - linear Im, Re = 0
 3 - constant Im and Re
 4 - linear Im and Re
-5 - small constant Im, linear Re [problems for n=3]
+5 - small constant Im, linear Re
 21 - small Im = -0.01
-22 - small Im = -0.001 [problems!]
+22 - small Im = -0.001
+
+The optional suffix selects another reference table while retaining the base
+self-energy files. For example, `./run_tests 22 b` reads
+`reference_data_22b.dat`, `resigma_22.dat`, and `imsigma_22.dat`.
+
+The suite 5 and 22* references were independently regenerated at 70-100
+decimal digits for the exact finite-cutoff command used by `run_tests`. The
+energy integral used epsilon = x + gamma tan(theta), and the outer integral was
+performed over omega/T in [-15,15]. Exact Hilbert-transform evaluations and
+independent quadrature agreed on the nonzero values; all parity-forced zeros
+remain exact.
+
+Pointwise clean-limit tests are in `clean_kernel_references.dat`. Their optional
+100-decimal-digit mpmath generator is `generate_clean_kernel_references.py`.
