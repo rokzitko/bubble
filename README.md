@@ -20,7 +20,8 @@ supplied separately.
 - Analytic band-energy integrals for flat, semicircular, Bethe lattice, and
   Gaussian kernels.
 - Numerical support for arbitrary tabulated kernels \(\Phi(\epsilon)\).
-- Spectral-function powers \(n=0,1,2,3\) and frequency moments \(\omega^o\).
+- Built-in spectral-function powers \(n=0,1,2,3\), arbitrary nonnegative
+  powers for tabulated kernels, and frequency moments \(\omega^o\).
 - Linear, cubic-spline, or Akima interpolation of a tabulated self-energy.
 - Adaptive Gauss-Kronrod integration through GSL.
 - Fermi-derivative transport moments, finite-frequency optical conductivity,
@@ -300,11 +301,12 @@ Options:
 | `-v` | Print parameters, numerical result, and outer integration error estimate |
 | `-q` | Suppress non-fatal warnings without suppressing results or errors |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
-| `-k K` | GSL rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points |
+| `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points |
 | `-a A` | Absolute integration tolerance, default `1e-7` |
 | `-r R` | Relative integration tolerance, default `1e-8` |
 | `-c C` | Frequency cutoff in units of temperature, default `15` |
 | `-s S` | Positive clipping floor for \(-\mathrm{Im}\,\Sigma\), default `1e-8` |
+| `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
 | `-e E` | Multiply a tabulated kernel by \(\epsilon^E\), default `0` |
 | `-f` | Use the Fermi function instead of its derivative |
@@ -348,6 +350,70 @@ The following numerical policies are important when interpreting results:
 Interpolation mode `-i 1` is the conservative default for noisy DMFT data.
 Higher-order interpolation can be useful for smooth, well-resolved
 self-energies but may introduce artifacts when the grid is sparse.
+
+## Restricted Epsilon Window
+
+With `-M M`, for `M > 0`, every band-energy integral is restricted by
+
+$$
+-M < \mu-\epsilon-\mathrm{Re}\,\Sigma^R(0) < M.
+$$
+
+Equivalently, the fixed epsilon interval is
+
+$$
+\epsilon_F-M < \epsilon < \epsilon_F+M,
+\qquad
+\epsilon_F=\mu-\mathrm{Re}\,\Sigma^R(0).
+$$
+
+The value of \(\mathrm{Re}\,\Sigma^R(0)\) is obtained with the interpolation
+selected by `-i`. Therefore a positive `M` requires the self-energy input grid
+to contain \(\omega=0\); the program reports an error rather than extrapolating
+the Fermi-level center. `M` uses the same energy units as the bandwidth,
+temperature, chemical potential, and self-energy.
+
+The restriction applies to DC and optical calculations, occupied moments with
+`-f`, tabulated `m=0` kernels, and DOS output with `-d`. The requested interval
+is intersected with the kernel's natural domain: `[-1,1]` for built-in finite
+bands and the tabulated interval for `m=0`. An empty intersection gives zero.
+If the interval completely covers a finite natural domain, the existing
+full-band evaluator is retained. Every positive finite `M` truncates the
+Gaussian kernels because their natural domain is the full real line.
+
+The strict endpoint inequalities do not affect these ordinary integrals, so
+the numerical quadrature includes the endpoints. The value `M=0` is a sentinel
+for an infinite window, not a zero-width interval. Both an omitted `-M` and an
+explicit `-M 0` follow the previous unrestricted code paths exactly.
+If a positive `M` is smaller than floating-point resolution at the resolved
+center, so that the stored bounds do not lie on opposite sides of
+\(\epsilon_F\), the program reports an error instead of using a one-sided
+window. It likewise rejects bounds whose rounding erases a nonzero resolved
+center and would make the stored interval spuriously symmetric.
+
+For example, this restricts the Bethe transport integral to a half-width of
+`0.25` around the interacting Fermi level:
+
+```bash
+./bubble -M 0.25 5 2 0 0.27 0 \
+  Bethe_lattice_test/resigma.dat \
+  Bethe_lattice_test/imsigma.dat
+```
+
+Restricted built-in kernels require nested numerical epsilon integration and
+can therefore be slower than their unrestricted analytic counterparts. The
+implementation removes narrow Lorentzian peaks with a tangent transformation
+or a logarithmic distance transformation for exterior peaks. Finite-band edge
+charts and shifted transformed coordinates avoid cancellation at sub-ULP
+linewidths and intervals. The outer frequency integral is split at
+linewidth-aware crossings and nearby extrema of the window boundaries.
+Smooth tangencies use a curvature-scaled neighborhood, while slope reversals
+at interpolation knots receive explicit one-sided neighborhoods.
+Restricted inner integrals use adaptive 61-point quadrature;
+breakpoint-based `qagp` integrations do not use the `-k` selection. A
+roundoff-limited result is accepted only within the requested error bound or
+after agreement with independent 64- and 128-point rules, and emits a warning
+unless `-q` is active.
 
 ## Custom Kernels and Special Modes
 
@@ -418,6 +484,9 @@ still syntactically required but are not used in this mode. `-d` overwrites
   transition cases have a direct positive-quadrature fallback.
 - Built-in optical kernels use analytic Hilbert transforms and stable divided
   differences rather than generated two-frequency expressions.
+- Restricted kernels use bounded, peak-removing epsilon quadrature; separated
+  optical peaks are integrated with independent local regions and exterior
+  peaks use logarithmic distance coordinates.
 - The remaining frequency integral uses adaptive GSL `qag` quadrature.
 - The default rule is the 15-point Gauss-Kronrod rule with a workspace of
   1,000 intervals.
@@ -426,14 +495,16 @@ still syntactically required but are not used in this mode. `-d` overwrites
 - Self-energy interpolation is selectable, while custom-kernel interpolation
   is always Akima.
 - In verbose mode, the reported error is GSL's estimate for the outer
-  frequency quadrature. The custom-kernel inner error estimate is not reported.
+  frequency quadrature. Nested restricted and custom-kernel inner uncertainty
+  is validated separately but is not included in that printed estimate.
 
 ## Validation
 
-The repository contains complementary DC, clean-kernel, and optical checks.
+The repository contains complementary DC, clean-kernel, restricted-window, and
+optical checks.
 `make check` runs legacy suite 1, the audited clean-limit legacy suites, the
-pointwise clean-kernel suite, and both optical checks without invoking
-Mathematica.
+pointwise kernel suites, restricted-window command tests, and both optical
+checks without invoking Mathematica.
 
 ### Legacy Regression Data
 
@@ -471,6 +542,17 @@ quadrature. To print the regenerated table, install the optional Python package
 ```bash
 python3 regression/generate_clean_kernel_references.py
 ```
+
+The bounded single- and two-peak values are stored in
+`restricted_kernel_references.dat` and `restricted_optical_references.dat`.
+Their corresponding `generate_restricted_*_references.py` scripts use
+180-250-decimal-digit quadrature and controlled clean-limit asymptotics. They
+include exact odd symmetry, sub-ULP
+transformed spans, finite-band edges, adjacent-double optical centers, huge
+Gaussian windows, and exterior linewidths down to `1e-200`.
+`run_window_tests` additionally checks command parsing, exact `M=0` behavior,
+full and empty intersections, tabulated kernels, optical and occupied moments,
+`n=0` and `n=1` DOS output, and narrow outer-window crossings.
 
 ### Optical Regression
 
@@ -513,8 +595,8 @@ the checked-in input/reference data are sufficient for the examples above.
 
 ## Precision
 
-For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, `-s`, and the input
-grid, and confirm that the physical result is stable.
+For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, `-s`, `-M`, and the
+input grid, and confirm that the physical result is stable.
 
 ## Method Notes
 
@@ -526,7 +608,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.5.
+current executable is authoritative for version 1.6.
 
 ## References
 

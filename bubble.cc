@@ -24,6 +24,7 @@
 //            - clipping of Im Sigma
 // 6.8.2026 - merge support for the -d, -e, and -f switches
 // 7.8.2026 - support finite-frequency optical conductivity through -O
+//            - support Fermi-level epsilon windows through -M
 
 #include <iostream>
 #include <iomanip>
@@ -72,13 +73,15 @@ gsl_interp_accel *acc_imSigma;
 gsl_spline *spline_imSigma;
 double omega_min, omega_max;
 double reSigma_asymp_neg, reSigma_asymp_pos; // asymptotic values
+vector<double> sigma_omega_knots;
+bool particle_hole_symmetric_sigma = false;
 
 // Interpolation object for generic Phi(epsilon) function
 gsl_interp_accel *acc_Phi;
 gsl_spline *spline_Phi;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.5";
+const string VERSION = "1.6";
 
 // Mandatory parameters
 int m, n, o;
@@ -95,6 +98,10 @@ double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
 double cutoff = 15.0;
 double sigma_clip = 1.0e-8;
+double epsilon_window_limit = 0.0;
+double epsilon_window_center = 0.0;
+double epsilon_window_lower = 0.0;
+double epsilon_window_upper = 0.0;
 string fnPhi = "Phi.dat";
 bool calcdos = false; // compute the spectral function
 enum ff { f_f, f_derivative };
@@ -123,6 +130,7 @@ void usage()
    cout << "-r : relative error (default = 1e-8)" << endl;
    cout << "-c : frequency interval cutoff in units of T (default = 15)" << endl;
    cout << "-s FLOOR : positive ImSigma clipping floor (default = 1e-8)" << endl;
+   cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
    cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
    cout << "-e : additional power of epsilon when using the m=0 code (default=0)" << endl;
@@ -158,11 +166,25 @@ double parse_sigma_clip(const char *value)
    return result;
 }
 
+double parse_epsilon_window_limit(const char *value)
+{
+   char *end = NULL;
+   errno = 0;
+   const double result = strtod(value, &end);
+
+   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result) || result < 0.0) {
+      cerr << "Invalid epsilon-window limit: " << value << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   return result;
+}
+
 void cmd_line(int argc, char *argv[])
 {
    int c;
     
-   while ((c = getopt(argc, argv, "vqi:k:a:r:c:s:p:dfe:O:")) != -1) {
+   while ((c = getopt(argc, argv, "vqi:k:a:r:c:s:M:p:dfe:O:")) != -1) {
       switch (c) {
       case 'v':
 	 verbose = true;
@@ -187,6 +209,9 @@ void cmd_line(int argc, char *argv[])
 	 break;
       case 's':
 	 sigma_clip = parse_sigma_clip(optarg);
+	 break;
+      case 'M':
+	 epsilon_window_limit = parse_epsilon_window_limit(optarg);
 	 break;
       case 'p':
 	 fnPhi = string(optarg);
@@ -225,6 +250,15 @@ void cmd_line(int argc, char *argv[])
    mu = atof(argv[optind+4]);
    fnReSigma = string(argv[optind+5]);
    fnImSigma = string(argv[optind+6]);
+
+   if (m < 0 || m > 8) {
+      cerr << "Unsupported kernel index m=" << m << "." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (n < 0 || (m != 0 && n > 3)) {
+      cerr << "Unsupported spectral power n=" << n << " for m=" << m << "." << endl;
+      exit(EXIT_FAILURE);
+   }
 
    if (calcdos && m != 0) {
       cerr << "Option -d requires m=0." << endl;
@@ -290,6 +324,8 @@ void cmd_line(int argc, char *argv[])
       cout << "i=" << b << " key=" << key << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
       cout << "ImSigma clipping floor=" << sigma_clip << endl;
+      if (epsilon_window_limit > 0.0)
+	 cout << "epsilon-window half-width M=" << epsilon_window_limit << endl;
       cout << "Phi=" << fnPhi << " e=" << e << endl;
       if (optical_mode)
 	 cout << "external Omega=" << optical_frequency << endl;
@@ -782,9 +818,48 @@ double J_0_optical(complex<double> z1, complex<double> z2)
    return result;
 }
 
+struct epsilon_interval {
+   double lower;
+   double upper;
+   bool truncated;
+   bool empty;
+};
+
+epsilon_interval restricted_epsilon_interval(int kernel);
+double J_restricted_single(int kernel, int power, complex<double> z,
+                           double lower, double upper);
+double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
+                            double lower, double upper);
+
 // Switches between J for different m and n indices.
 double J_mn (complex<double> OMEGA)
 {
+   if (epsilon_window_limit > 0.0) {
+      const epsilon_interval interval = restricted_epsilon_interval(m);
+      if (interval.empty)
+	 return 0.0;
+      if (interval.truncated) {
+	 if (n == 0) {
+	    static bool cached = false;
+	    static double cached_value = 0.0;
+	    static int cached_kernel = -1;
+	    static double cached_lower = 0.0;
+	    static double cached_upper = 0.0;
+	    if (!cached || cached_kernel != m || cached_lower != interval.lower ||
+		cached_upper != interval.upper) {
+	       cached_value = J_restricted_single(m, n, OMEGA,
+		  interval.lower, interval.upper);
+	       cached_kernel = m;
+	       cached_lower = interval.lower;
+	       cached_upper = interval.upper;
+	       cached = true;
+	    }
+	    return cached_value;
+	 }
+	 return J_restricted_single(m, n, OMEGA, interval.lower, interval.upper);
+      }
+   }
+
    // Handle the special case first
    if (m == 0) {
       return J_0n(OMEGA);
@@ -1506,6 +1581,940 @@ double J_builtin(int kernel, int power, complex<double> z)
    return static_cast<double>(value);
 }
 
+epsilon_interval restricted_epsilon_interval(int kernel)
+{
+   if (epsilon_window_limit == 0.0)
+      return epsilon_interval{0.0, 0.0, false, false};
+
+   if (kernel == 7 || kernel == 8)
+      return epsilon_interval{epsilon_window_lower, epsilon_window_upper, true,
+                              !(epsilon_window_lower < epsilon_window_upper)};
+
+   double natural_lower;
+   double natural_upper;
+   if (kernel == 0) {
+      natural_lower = eps_min;
+      natural_upper = eps_max;
+   } else if (1 <= kernel && kernel <= 6) {
+      natural_lower = -1.0;
+      natural_upper = 1.0;
+   } else {
+      cerr << "Epsilon window not implemented for m=" << kernel << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   if (epsilon_window_lower <= natural_lower && natural_upper <= epsilon_window_upper)
+      return epsilon_interval{natural_lower, natural_upper, false, false};
+
+   const double lower = max(natural_lower, epsilon_window_lower);
+   const double upper = min(natural_upper, epsilon_window_upper);
+   return epsilon_interval{lower, upper, true, !(lower < upper)};
+}
+
+namespace {
+
+const size_t RESTRICTED_WORKSPACE_SIZE = 1000;
+
+gsl_integration_workspace *restricted_workspace()
+{
+   gsl_set_error_handler_off();
+   static gsl_integration_workspace *workspace =
+      gsl_integration_workspace_alloc(RESTRICTED_WORKSPACE_SIZE);
+   if (workspace == NULL) {
+      cerr << "Unable to allocate restricted epsilon integration workspace." << endl;
+      exit(EXIT_FAILURE);
+   }
+   return workspace;
+}
+
+double restricted_relative_error()
+{
+   return max(5.0e-13, min(1.0e-12, rel_error));
+}
+
+double restricted_acceptable_relative_error()
+{
+   return max(rel_error, 10.0*restricted_relative_error());
+}
+
+double restricted_acceptable_absolute_error()
+{
+   return max(1.0e-300, min(1.0e-12, 1.0e-4*abs_error));
+}
+
+long double restricted_error_bound(double result, long double result_scale = 1.0L)
+{
+   return max(static_cast<long double>(restricted_acceptable_absolute_error())/
+                 fabsl(result_scale),
+              static_cast<long double>(restricted_acceptable_relative_error())*
+                 abs(result));
+}
+
+long double restricted_integrand_scale(long double full_scale)
+{
+   const long double magnitude = fabsl(full_scale);
+   return min(1.0e200L, max(1.0e-200L, magnitude));
+}
+
+void warn_restricted_roundoff(const char *description)
+{
+   if (quiet_warnings)
+      return;
+   static bool warning_emitted = false;
+   if (!warning_emitted) {
+      cerr << "Warning: " << description
+           << " was limited by roundoff within the accepted error bound." << endl;
+      warning_emitted = true;
+   }
+}
+
+long double restricted_phi_value(int kernel, long double epsilon)
+{
+   if (kernel == 0) {
+      double point = static_cast<double>(epsilon);
+      point = max(eps_min, min(eps_max, point));
+      return gsl_spline_eval(spline_Phi, point, acc_Phi);
+   }
+
+   if (kernel <= 6 && fabsl(epsilon) > 1.0L)
+      return 0.0L;
+
+   const long double one_minus_square = max(0.0L, 1.0L - epsilon*epsilon);
+   switch (kernel) {
+   case 1:
+      return 1.0L;
+   case 2:
+      return epsilon;
+   case 3:
+      return sqrtl(one_minus_square);
+   case 4:
+      return epsilon*sqrtl(one_minus_square);
+   case 5:
+      return one_minus_square*sqrtl(one_minus_square);
+   case 6:
+      return epsilon*one_minus_square*sqrtl(one_minus_square);
+   case 7:
+      return expl(-2.0L*epsilon*epsilon);
+   case 8:
+      return epsilon*expl(-2.0L*epsilon*epsilon);
+   default:
+      cerr << "Restricted kernel not implemented for m=" << kernel << endl;
+      exit(EXIT_FAILURE);
+   }
+}
+
+long double restricted_phi_value_at_offset(int kernel, long double center,
+                                           long double offset)
+{
+   const long double epsilon = center + offset;
+   if (kernel < 3 || kernel > 6)
+      return restricted_phi_value(kernel, epsilon);
+
+   // Keep distances from a finite-band edge before adding a sub-ULP offset
+   // to a center near +/-1.
+   const long double one_minus_square = max(0.0L,
+      (1.0L - center - offset)*(1.0L + center + offset));
+   const long double root = sqrtl(one_minus_square);
+   switch (kernel) {
+   case 3:
+      return root;
+   case 4:
+      return epsilon*root;
+   case 5:
+      return one_minus_square*root;
+   case 6:
+      return epsilon*one_minus_square*root;
+   default:
+      return 0.0L;
+   }
+}
+
+long double restricted_angle_span(long double lower_offset,
+                                  long double upper_offset,
+                                  long double width)
+{
+   const long double scale = max(width, max(fabsl(lower_offset), fabsl(upper_offset)));
+   const long double scaled_width = width/scale;
+   const long double scaled_lower = lower_offset/scale;
+   const long double scaled_upper = upper_offset/scale;
+   return atan2l(scaled_width*(scaled_upper - scaled_lower),
+                 scaled_width*scaled_width + scaled_lower*scaled_upper);
+}
+
+struct restricted_single_params {
+   int kernel;
+   int power;
+   long double center;
+   long double width;
+   long double signed_imaginary;
+   bool transformed;
+   bool logarithmic;
+   bool scaled;
+   long double transformed_origin;
+   long double transformed_near;
+   int transformed_direction;
+   long double integrand_scale;
+};
+
+double restricted_single_integrand(double argument, void *raw_params)
+{
+   const restricted_single_params &params =
+      *static_cast<restricted_single_params *>(raw_params);
+   if (params.scaled) {
+      const long double distance = static_cast<long double>(argument)*argument;
+      const long double offset = params.transformed_direction*
+         params.width*distance;
+      return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+         params.center, offset)*2.0L*argument/
+         powl(1.0L + distance*distance, params.power)*params.integrand_scale);
+   }
+   if (params.logarithmic) {
+      const long double distance = params.transformed_near*
+         expl(static_cast<long double>(argument));
+      const long double inverse = 1.0L/distance;
+      const long double weight = distance <= 1.0L
+         ? distance/powl(1.0L + distance*distance, params.power)
+         : powl(inverse, 2*params.power - 1)/
+           powl(1.0L + inverse*inverse, params.power);
+      const long double offset = params.transformed_direction*
+         params.width*distance;
+      return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+         params.center, offset)*weight*params.integrand_scale);
+   }
+   if (params.transformed) {
+      const long double theta = params.transformed_origin + argument;
+      const long double cosine = cosl(theta);
+      const long double offset = params.width*tanl(theta);
+      return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+         params.center, offset)*
+         powl(cosine, 2*params.power - 2)*params.integrand_scale);
+   }
+
+   const long double epsilon = argument;
+   long double value = restricted_phi_value(params.kernel, epsilon);
+   if (params.power != 0) {
+      const long double difference = params.center - epsilon;
+      const long double spectral = params.signed_imaginary/
+         (PI_L*(difference*difference + params.width*params.width));
+      value *= powl(spectral, params.power);
+   }
+   return static_cast<double>(value);
+}
+
+struct restricted_odd_pair_params {
+   int kernel;
+   int power;
+   long double center;
+   long double width;
+   long double angle_origin;
+   long double integrand_scale;
+   bool transformed;
+};
+
+double restricted_odd_pair_integrand(double argument, void *raw_params)
+{
+   const restricted_odd_pair_params &params =
+      *static_cast<restricted_odd_pair_params *>(raw_params);
+   const long double theta = params.angle_origin + argument;
+   const long double cosine = params.transformed ? cosl(theta) : 1.0L;
+   const long double epsilon = params.transformed
+      ? params.center + params.width*tanl(theta)
+      : static_cast<long double>(argument);
+   const long double scaled_center = params.center/params.width;
+   const long double scaled_epsilon = epsilon/params.width;
+   const long double minus_denominator =
+      1.0L + (scaled_center - scaled_epsilon)*(scaled_center - scaled_epsilon);
+   const long double plus_denominator =
+      1.0L + (scaled_center + scaled_epsilon)*(scaled_center + scaled_epsilon);
+   const long double minus_value = 1.0L/minus_denominator;
+   const long double plus_value = 1.0L/plus_denominator;
+   const long double difference = 4.0L*scaled_center*scaled_epsilon/
+      (minus_denominator*plus_denominator);
+   long double power_sum = 1.0L;
+   if (params.power == 2)
+      power_sum = minus_value + plus_value;
+   else if (params.power == 3)
+      power_sum = minus_value*minus_value + minus_value*plus_value +
+                  plus_value*plus_value;
+   const long double paired_spectral = difference*power_sum;
+   return static_cast<double>(restricted_phi_value(params.kernel, epsilon)*
+      paired_spectral/(cosine*cosine)*params.integrand_scale);
+}
+
+struct restricted_fixed_result {
+   double value;
+   double difference;
+};
+
+restricted_fixed_result integrate_restricted_fixed_check(gsl_function &function,
+                                                          double lower, double upper)
+{
+   static gsl_integration_glfixed_table *coarse_table =
+      gsl_integration_glfixed_table_alloc(64);
+   static gsl_integration_glfixed_table *fine_table =
+      gsl_integration_glfixed_table_alloc(128);
+   if (coarse_table == NULL || fine_table == NULL) {
+      cerr << "Unable to allocate restricted integration check table." << endl;
+      exit(EXIT_FAILURE);
+   }
+   const double coarse = gsl_integration_glfixed(&function, lower, upper, coarse_table);
+   const double fine = gsl_integration_glfixed(&function, lower, upper, fine_table);
+   return restricted_fixed_result{fine, abs(fine - coarse)};
+}
+
+double integrate_restricted_qag(gsl_function &function, double lower, double upper,
+                                const char *description,
+                                long double result_scale = 1.0L)
+{
+   double result;
+   double error;
+   const int status = gsl_integration_qag(&function, lower, upper, 0.0,
+      restricted_relative_error(), RESTRICTED_WORKSPACE_SIZE, GSL_INTEG_GAUSS61,
+      restricted_workspace(), &result, &error);
+   double verified_error = error;
+   if (status == GSL_EROUND) {
+      // GSL can miss the tighter internal target after already satisfying the
+      // requested tolerance; otherwise require convergence of an independent rule.
+      const restricted_fixed_result check =
+         integrate_restricted_fixed_check(function, lower, upper);
+      verified_error = min(error,
+         max(abs(result - check.value), check.difference));
+   }
+   const bool roundoff_acceptable = status == GSL_EROUND &&
+      verified_error <= restricted_error_bound(result, result_scale);
+   if ((status != GSL_SUCCESS && !roundoff_acceptable) || !isfinite(result)) {
+      cerr << setprecision(17) << description << " failed on [" << lower << ", "
+           << upper << "]: " << gsl_strerror(status) << ", result=" << result
+           << ", error=" << error << ", verified error=" << verified_error << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (status != GSL_SUCCESS)
+      warn_restricted_roundoff(description);
+   return result;
+}
+
+struct restricted_optical_params {
+   int kernel;
+   complex<double> z1;
+   complex<double> z2;
+};
+
+double restricted_optical_direct_integrand(double epsilon, void *raw_params)
+{
+   const restricted_optical_params &params =
+      *static_cast<restricted_optical_params *>(raw_params);
+   const complex<double> g1 = 1.0/(params.z1 - epsilon);
+   const complex<double> g2 = 1.0/(params.z2 - epsilon);
+   return static_cast<double>(restricted_phi_value(params.kernel, epsilon))
+      *(-g1.imag()/M_PI)*(-g2.imag()/M_PI);
+}
+
+void add_restricted_peak_points(vector<double> &points, complex<double> z,
+                                double lower, double upper)
+{
+   const double center = z.real();
+   const double width = abs(z.imag());
+   const double range = upper - lower;
+   if (!isfinite(center) || !isfinite(width) || width == 0.0)
+      return;
+   const double interval_distance = center < lower ? lower - center
+      : (center > upper ? center - upper : 0.0);
+   if (interval_distance > 8192.0*width)
+      return;
+
+   if (lower < center && center < upper)
+      points.push_back(center);
+   double distance = width;
+   for (int scale = 0; scale < 24; ++scale) {
+      if (lower < center - distance && center - distance < upper)
+         points.push_back(center - distance);
+      if (lower < center + distance && center + distance < upper)
+         points.push_back(center + distance);
+      if (distance >= range || distance >= 4096.0*width)
+         break;
+      distance *= 8.0;
+   }
+}
+
+vector<double> filter_integration_points(vector<double> points,
+                                         double lower, double upper)
+{
+   sort(points.begin(), points.end());
+   vector<double> filtered;
+   filtered.push_back(lower);
+   for (vector<double>::const_iterator point = points.begin(); point != points.end(); ++point) {
+      if (lower < *point && *point < upper && filtered.back() < *point)
+         filtered.push_back(*point);
+   }
+   filtered.push_back(upper);
+   return filtered;
+}
+
+double integrate_restricted_qagp(gsl_function &function, vector<double> points,
+                                 const char *description,
+                                 long double result_scale = 1.0L)
+{
+   double result;
+   double error;
+   const int status = gsl_integration_qagp(&function, &points[0], points.size(),
+      0.0, restricted_relative_error(), RESTRICTED_WORKSPACE_SIZE,
+      restricted_workspace(), &result, &error);
+   double verified_error = error;
+   if (status == GSL_EROUND) {
+      double fine = 0.0;
+      double check_difference = 0.0;
+      for (size_t interval = 1; interval < points.size(); ++interval) {
+         const restricted_fixed_result check = integrate_restricted_fixed_check(function,
+            points[interval - 1], points[interval]);
+         fine += check.value;
+         check_difference += check.difference;
+      }
+      verified_error = min(error, max(abs(result - fine), check_difference));
+   }
+   const bool roundoff_acceptable = status == GSL_EROUND &&
+      verified_error <= restricted_error_bound(result, result_scale);
+   if ((status != GSL_SUCCESS && !roundoff_acceptable) || !isfinite(result)) {
+      cerr << setprecision(17) << description << " failed on [" << points.front() << ", "
+           << points.back() << "]: " << gsl_strerror(status)
+           << ", result=" << result << ", error=" << error << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (status != GSL_SUCCESS)
+      warn_restricted_roundoff(description);
+   return result;
+}
+
+double integrate_restricted_piecewise_qag(gsl_function &function,
+                                           const vector<double> &points,
+                                           const char *description,
+                                           long double result_scale = 1.0L)
+{
+   double total = 0.0;
+   double compensation = 0.0;
+   double questionable_error = 0.0;
+   int questionable_status = GSL_SUCCESS;
+   double questionable_lower = 0.0;
+   double questionable_upper = 0.0;
+   for (size_t interval = 1; interval < points.size(); ++interval) {
+      double result;
+      double error;
+      const int status = gsl_integration_qag(&function, points[interval - 1],
+         points[interval], 0.0, restricted_relative_error(),
+         RESTRICTED_WORKSPACE_SIZE, GSL_INTEG_GAUSS61,
+         restricted_workspace(), &result, &error);
+      if (!isfinite(result) || !isfinite(error)) {
+         cerr << setprecision(17) << description << " failed on ["
+              << points[interval - 1] << ", " << points[interval] << "]: "
+              << gsl_strerror(status) << ", result=" << result
+              << ", error=" << error << endl;
+         exit(EXIT_FAILURE);
+      }
+      if (status != GSL_SUCCESS && status != GSL_EROUND) {
+         cerr << setprecision(17) << description << " failed on ["
+              << points[interval - 1] << ", " << points[interval] << "]: "
+              << gsl_strerror(status) << endl;
+         exit(EXIT_FAILURE);
+      }
+      if (status == GSL_EROUND) {
+         const restricted_fixed_result check = integrate_restricted_fixed_check(function,
+             points[interval - 1], points[interval]);
+         if (!isfinite(check.value) || !isfinite(check.difference)) {
+            cerr << setprecision(17) << description << " check failed on ["
+                 << points[interval - 1] << ", " << points[interval] << "]" << endl;
+            exit(EXIT_FAILURE);
+         }
+         questionable_error += min(error,
+            max(abs(result - check.value), check.difference));
+         questionable_status = status;
+         questionable_lower = points[interval - 1];
+         questionable_upper = points[interval];
+      }
+      const double adjusted = result - compensation;
+      const double updated = total + adjusted;
+      compensation = (updated - total) - adjusted;
+      total = updated;
+   }
+   if (questionable_status != GSL_SUCCESS &&
+        questionable_error > restricted_error_bound(total, result_scale)) {
+      cerr << setprecision(17) << description << " failed on ["
+           << questionable_lower << ", " << questionable_upper << "]: "
+           << gsl_strerror(questionable_status) << ", total=" << total
+           << ", uncertain error=" << questionable_error << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (questionable_status != GSL_SUCCESS)
+      warn_restricted_roundoff(description);
+   return total;
+}
+
+double integrate_restricted_single_direct(gsl_function &function, int kernel,
+                                          double lower, double upper,
+                                          const char *description)
+{
+   if (kernel != 7 && kernel != 8)
+      return integrate_restricted_qag(function, lower, upper, description);
+
+   static const double gaussian_landmarks[] = {
+      -10.0, -8.0, -5.0, -3.0, -2.0, -1.0, 0.0,
+      1.0, 2.0, 3.0, 5.0, 8.0, 10.0
+   };
+   vector<double> points;
+   points.push_back(lower);
+   points.push_back(upper);
+   for (size_t i = 0; i < sizeof(gaussian_landmarks)/sizeof(*gaussian_landmarks); ++i)
+      if (lower < gaussian_landmarks[i] && gaussian_landmarks[i] < upper)
+         points.push_back(gaussian_landmarks[i]);
+   return integrate_restricted_qagp(function,
+      filter_integration_points(points, lower, upper), description);
+}
+
+struct restricted_optical_transformed_params {
+   int kernel;
+   long double anchor_center;
+   long double anchor_width;
+   long double angle_origin;
+   complex<double> other;
+   long double integrand_scale;
+};
+
+double restricted_optical_transformed_integrand(double argument, void *raw_params)
+{
+   const restricted_optical_transformed_params &params =
+      *static_cast<restricted_optical_transformed_params *>(raw_params);
+   const long double tangent = tanl(params.angle_origin + argument);
+   const long double offset = params.anchor_width*tangent;
+   const long double other_width = abs(params.other.imag());
+   const long double normalized_difference =
+      (static_cast<long double>(params.other.real()) - params.anchor_center)/other_width
+      - params.anchor_width/other_width*tangent;
+   const long double normalized_other =
+      1.0L/(normalized_difference*normalized_difference + 1.0L);
+   return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+      params.anchor_center, offset)*normalized_other*params.integrand_scale);
+}
+
+struct restricted_optical_log_params {
+   int kernel;
+   long double anchor_center;
+   long double anchor_width;
+   long double near_distance;
+   int direction;
+   complex<double> other;
+   long double integrand_scale;
+};
+
+double restricted_optical_log_integrand(double argument, void *raw_params)
+{
+   const restricted_optical_log_params &params =
+      *static_cast<restricted_optical_log_params *>(raw_params);
+   const long double distance = params.near_distance*
+      expl(static_cast<long double>(argument));
+   const long double offset = params.direction*params.anchor_width*distance;
+   const long double other_width = abs(params.other.imag());
+   const long double normalized_difference =
+      (static_cast<long double>(params.other.real()) - params.anchor_center)/other_width
+      - params.direction*params.anchor_width/other_width*distance;
+   const long double normalized_other =
+      1.0L/(normalized_difference*normalized_difference + 1.0L);
+   const long double weight = distance <= 1.0L
+      ? distance/(1.0L + distance*distance)
+      : 1.0L/(distance + 1.0L/distance);
+   return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+      params.anchor_center, offset)*normalized_other*weight*params.integrand_scale);
+}
+
+double integrate_restricted_optical_direct(int kernel, complex<double> z1,
+                                           complex<double> z2,
+                                           double lower, double upper)
+{
+   restricted_optical_params params = {kernel, z1, z2};
+   gsl_function function;
+   function.function = &restricted_optical_direct_integrand;
+   function.params = &params;
+   vector<double> points;
+   points.push_back(lower);
+   points.push_back(upper);
+   add_restricted_peak_points(points, z1, lower, upper);
+   add_restricted_peak_points(points, z2, lower, upper);
+   return integrate_restricted_qagp(function,
+      filter_integration_points(points, lower, upper),
+      "Restricted optical epsilon integration");
+}
+
+double integrate_restricted_optical_exterior_log(int kernel,
+                                                  complex<double> anchor,
+                                                  complex<double> other,
+                                                  long double lower,
+                                                  long double upper)
+{
+   const long double center = anchor.real();
+   const long double width = abs(anchor.imag());
+   const int direction = center < lower ? 1 : -1;
+   const long double near_distance = direction > 0
+      ? (lower - center)/width : (center - upper)/width;
+   const long double far_distance = direction > 0
+      ? (upper - center)/width : (center - lower)/width;
+   const double log_lower = 0.0;
+   const double log_upper = static_cast<double>(logl(far_distance/near_distance));
+   if (!(log_lower < log_upper)) {
+      const double direct_lower = static_cast<double>(lower);
+      const double direct_upper = static_cast<double>(upper);
+      if (direct_lower < direct_upper)
+         return integrate_restricted_optical_direct(kernel, anchor, other,
+                                                     direct_lower, direct_upper);
+      return 0.0;
+   }
+
+   const long double full_scale =
+      (anchor.imag() < 0.0 ? -1.0L : 1.0L)*
+      (other.imag() < 0.0 ? -1.0L : 1.0L)/
+      (PI_L*PI_L*static_cast<long double>(abs(other.imag())));
+   const long double integrand_scale = restricted_integrand_scale(full_scale);
+   const long double result_scale = full_scale/integrand_scale;
+   restricted_optical_log_params params = {
+      kernel, center, width, near_distance, direction, other, integrand_scale
+   };
+   gsl_function function;
+   function.function = &restricted_optical_log_integrand;
+   function.params = &params;
+
+   vector<double> energy_points;
+   const double energy_lower = static_cast<double>(lower);
+   const double energy_upper = static_cast<double>(upper);
+   if (energy_lower < energy_upper) {
+      energy_points.push_back(energy_lower);
+      energy_points.push_back(energy_upper);
+      add_restricted_peak_points(energy_points, other, energy_lower, energy_upper);
+   }
+   vector<double> log_points;
+   log_points.push_back(log_lower);
+   log_points.push_back(log_upper);
+   for (vector<double>::const_iterator point = energy_points.begin();
+        point != energy_points.end(); ++point) {
+      if (lower < *point && *point < upper) {
+         const long double distance = direction > 0
+             ? (*point - center)/width : (center - *point)/width;
+         log_points.push_back(static_cast<double>(logl(distance/near_distance)));
+      }
+   }
+   log_points = filter_integration_points(log_points, log_lower, log_upper);
+   const long double normalized = integrate_restricted_piecewise_qag(function,
+      log_points, "Log-transformed restricted optical epsilon integration", result_scale);
+   return static_cast<double>(result_scale*normalized);
+}
+
+double integrate_restricted_optical_transformed(int kernel,
+                                                 complex<double> anchor,
+                                                 complex<double> other,
+                                                 long double lower,
+                                                 long double upper)
+{
+   const long double width = abs(anchor.imag());
+   const long double center = anchor.real();
+   if (center < lower || center > upper)
+      return integrate_restricted_optical_exterior_log(kernel, anchor, other,
+                                                         lower, upper);
+   const long double lower_offset = lower - center;
+   const long double upper_offset = upper - center;
+   const long double theta_lower = atan2l(lower_offset, width);
+   const double transformed_lower = 0.0;
+   const double transformed_upper = static_cast<double>(
+      restricted_angle_span(lower_offset, upper_offset, width));
+   if (!(transformed_lower < transformed_upper)) {
+      const double direct_lower = static_cast<double>(lower);
+      const double direct_upper = static_cast<double>(upper);
+      if (direct_lower < direct_upper)
+         return integrate_restricted_optical_direct(kernel, anchor, other,
+                                                     direct_lower, direct_upper);
+      return 0.0;
+   }
+
+   const long double full_scale =
+      (anchor.imag() < 0.0 ? -1.0L : 1.0L)*
+      (other.imag() < 0.0 ? -1.0L : 1.0L)/
+      (PI_L*PI_L*static_cast<long double>(abs(other.imag())));
+   const long double integrand_scale = restricted_integrand_scale(full_scale);
+   const long double result_scale = full_scale/integrand_scale;
+   restricted_optical_transformed_params params = {
+      kernel, center, width, theta_lower, other, integrand_scale
+   };
+   gsl_function function;
+   function.function = &restricted_optical_transformed_integrand;
+   function.params = &params;
+
+   vector<double> energy_points;
+   const double energy_lower = static_cast<double>(lower);
+   const double energy_upper = static_cast<double>(upper);
+   if (energy_lower < energy_upper) {
+      energy_points.push_back(energy_lower);
+      energy_points.push_back(energy_upper);
+   }
+   const double other_distance = other.real() < lower ? lower - other.real()
+      : (other.real() > upper ? other.real() - upper : 0.0);
+   if (energy_lower < energy_upper && other_distance <= 16.0*abs(other.imag()))
+      add_restricted_peak_points(energy_points, other, energy_lower, energy_upper);
+   vector<double> theta_points;
+   theta_points.push_back(transformed_lower);
+   theta_points.push_back(transformed_upper);
+   for (vector<double>::const_iterator point = energy_points.begin();
+         point != energy_points.end(); ++point) {
+      if (lower < *point && *point < upper)
+         theta_points.push_back(static_cast<double>(restricted_angle_span(
+            lower_offset, *point - center, width)));
+   }
+   theta_points = filter_integration_points(theta_points,
+      transformed_lower, transformed_upper);
+   const long double normalized = integrate_restricted_piecewise_qag(function,
+      theta_points, "Transformed restricted optical epsilon integration", result_scale);
+   return static_cast<double>(result_scale*normalized);
+}
+
+bool peak_relevant_to_interval(complex<double> z, double lower, double upper)
+{
+   if (lower <= z.real() && z.real() <= upper)
+      return true;
+   const double distance = z.real() < lower ? lower - z.real() : z.real() - upper;
+   return distance <= 8192.0*abs(z.imag());
+}
+
+double peak_distance_to_interval(complex<double> z, double lower, double upper)
+{
+   if (z.real() < lower)
+      return lower - z.real();
+   if (z.real() > upper)
+      return z.real() - upper;
+   return 0.0;
+}
+
+long double restricted_single_scale(long double width, int power,
+                                     long double sign)
+{
+   const long double spectral_scale = 1.0L/(PI_L*width);
+   return sign*width*powl(spectral_scale, power);
+}
+
+long double configure_restricted_single_scale(restricted_single_params &params)
+{
+   const long double sign = params.signed_imaginary < 0.0L && params.power % 2 == 1
+      ? -1.0L : 1.0L;
+   const long double full_scale =
+      restricted_single_scale(params.width, params.power, sign);
+   params.integrand_scale = restricted_integrand_scale(full_scale);
+   return full_scale/params.integrand_scale;
+}
+
+double integrate_restricted_odd_pair(int kernel, int power,
+                                     complex<double> z, double upper)
+{
+   const long double center = abs(z.real());
+   const long double width = abs(z.imag());
+   const bool direct = center >= upper && center - upper == center;
+   const long double lower_offset = -center;
+   const long double upper_offset = upper - center;
+   const long double angle_origin = atan2l(lower_offset, width);
+   const double angle_span = direct ? upper : static_cast<double>(
+      restricted_angle_span(lower_offset, upper_offset, width));
+   if (!(angle_span > 0.0))
+      return 0.0;
+   const long double imaginary_sign = z.imag() < 0.0 && power % 2 == 1
+      ? -1.0L : 1.0L;
+   const long double center_sign = z.real() < 0.0 ? -1.0L : 1.0L;
+   const long double full_scale = direct
+      ? center_sign*imaginary_sign*powl(1.0L/(PI_L*width), power)
+      : center_sign*restricted_single_scale(width, power, imaginary_sign);
+   const long double integrand_scale = restricted_integrand_scale(full_scale);
+   const long double result_scale = full_scale/integrand_scale;
+   restricted_odd_pair_params params = {
+      kernel, power, center, width, angle_origin, integrand_scale, !direct
+   };
+   gsl_function function;
+   function.function = &restricted_odd_pair_integrand;
+   function.params = &params;
+   const long double normalized = integrate_restricted_qag(function, 0.0, angle_span,
+      "Symmetry-paired restricted epsilon integration", result_scale);
+   return static_cast<double>(result_scale*normalized);
+}
+
+double integrate_restricted_single_exterior_log(gsl_function &function,
+                                                 restricted_single_params &params,
+                                                 double lower, double upper)
+{
+   const int direction = params.center < lower ? 1 : -1;
+   const long double near_distance = direction > 0
+      ? (lower - params.center)/params.width
+      : (params.center - upper)/params.width;
+   const long double far_distance = direction > 0
+      ? (upper - params.center)/params.width
+      : (params.center - lower)/params.width;
+   const double span = static_cast<double>(logl(far_distance/near_distance));
+   if (!(span > 0.0))
+      return integrate_restricted_qag(function, lower, upper,
+         "Restricted exterior epsilon integration");
+
+   params.logarithmic = true;
+   params.transformed_near = near_distance;
+   params.transformed_direction = direction;
+   const long double result_scale = configure_restricted_single_scale(params);
+   vector<double> points;
+   points.push_back(0.0);
+   points.push_back(span);
+   const double logarithmic_step = log(8.0);
+   for (double point = logarithmic_step; point < span; point += logarithmic_step)
+      points.push_back(point);
+   points = filter_integration_points(points, 0.0, span);
+   const long double normalized = integrate_restricted_piecewise_qag(function, points,
+      "Log-transformed restricted epsilon integration", result_scale);
+   return static_cast<double>(result_scale*normalized);
+}
+
+double integrate_restricted_single_band_edge(gsl_function &function,
+                                             restricted_single_params &params,
+                                             double lower, double upper)
+{
+   const int direction = params.center < 0.0L ? 1 : -1;
+   const long double far_distance = (upper - lower)/params.width;
+   params.transformed_direction = direction;
+   params.scaled = true;
+   const long double result_scale = configure_restricted_single_scale(params);
+   const double scaled_upper = static_cast<double>(sqrtl(min(1.0L, far_distance)));
+   long double normalized = integrate_restricted_qag(function, 0.0, scaled_upper,
+      "Band-edge transformed restricted epsilon integration", result_scale);
+
+   if (far_distance > 1.0L) {
+      params.scaled = false;
+      params.logarithmic = true;
+      params.transformed_near = 1.0L;
+      const double span = static_cast<double>(logl(far_distance));
+      vector<double> points;
+      points.push_back(0.0);
+      points.push_back(span);
+      const double logarithmic_step = log(8.0);
+      for (double point = logarithmic_step; point < span; point += logarithmic_step)
+         points.push_back(point);
+      points = filter_integration_points(points, 0.0, span);
+      normalized += integrate_restricted_piecewise_qag(function, points,
+         "Log-transformed band-edge restricted epsilon integration", result_scale);
+   }
+
+   return static_cast<double>(result_scale*normalized);
+}
+
+} // namespace
+
+double J_restricted_single(int kernel, int power, complex<double> z,
+                           double lower, double upper)
+{
+   if (!(lower < upper))
+      return 0.0;
+   if (power < 0 || !isfinite(z.real()) || !isfinite(z.imag())) {
+      cerr << "Invalid restricted kernel request: m=" << kernel
+           << ", n=" << power << ", z=" << z << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (kernel != 0 && kernel % 2 == 0 && lower == -upper &&
+       (power == 0 || z.real() == 0.0))
+      return 0.0;
+
+   const long double width = abs(z.imag());
+   restricted_single_params params = {kernel, power, z.real(), width,
+                                       z.imag(), false, false, false,
+                                       0.0L, 0.0L, 0, 1.0L};
+   gsl_function function;
+   function.function = &restricted_single_integrand;
+   function.params = &params;
+   if (power == 0)
+      return integrate_restricted_single_direct(function, kernel, lower, upper,
+					 "Restricted epsilon integration");
+   if (width == 0.0L) {
+      cerr << "Restricted spectral kernel requires a nonzero linewidth." << endl;
+      exit(EXIT_FAILURE);
+   }
+   const long double absolute_center = abs(z.real());
+   const bool unresolved_exterior = absolute_center >= upper &&
+      absolute_center - upper == absolute_center;
+   if (kernel != 0 && kernel % 2 == 0 && lower == -upper &&
+       (absolute_center <= 16.0L*width || unresolved_exterior))
+      return integrate_restricted_odd_pair(kernel, power, z, upper);
+
+   const long double distance = z.real() < lower ? lower - z.real()
+      : (z.real() > upper ? z.real() - upper : 0.0L);
+   if (distance > 0.0L)
+      return integrate_restricted_single_exterior_log(function, params, lower, upper);
+   if (3 <= kernel && kernel <= 6 &&
+       ((params.center == -1.0L && lower == -1.0) ||
+        (params.center == 1.0L && upper == 1.0)))
+      return integrate_restricted_single_band_edge(function, params, lower, upper);
+
+   const long double lower_offset = lower - params.center;
+   const long double upper_offset = upper - params.center;
+   const long double theta_lower = atan2l(lower_offset, width);
+   const double transformed_lower = 0.0;
+   const double transformed_upper = static_cast<double>(
+      restricted_angle_span(lower_offset, upper_offset, width));
+   if (!(transformed_lower < transformed_upper))
+      return integrate_restricted_single_direct(function, kernel, lower, upper,
+					 "Restricted exterior epsilon integration");
+
+   params.transformed = true;
+   params.transformed_origin = theta_lower;
+   const long double result_scale = configure_restricted_single_scale(params);
+   const long double normalized = integrate_restricted_qag(function,
+      transformed_lower, transformed_upper, "Transformed restricted epsilon integration",
+      result_scale);
+   return static_cast<double>(result_scale*normalized);
+}
+
+double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
+                            double lower, double upper)
+{
+   if (!(lower < upper))
+      return 0.0;
+   if (kernel != 0 && kernel % 2 == 0 && lower == -upper &&
+       z1.real() == -z2.real() && abs(z1.imag()) == abs(z2.imag()))
+      return 0.0;
+   if (z1 == z2)
+      return J_restricted_single(kernel, 2, z1, lower, upper);
+   if (z1.imag() == 0.0 || z2.imag() == 0.0) {
+      cerr << "Restricted optical kernel requires nonzero linewidths." << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   const bool first_relevant = peak_relevant_to_interval(z1, lower, upper);
+   const bool second_relevant = peak_relevant_to_interval(z2, lower, upper);
+   const bool first_much_narrower = abs(z1.imag()) < abs(z2.imag())/16.0;
+   const bool second_much_narrower = abs(z2.imag()) < abs(z1.imag())/16.0;
+
+   if (first_relevant && second_relevant &&
+       abs(z1.real() - z2.real()) > 8.0*max(abs(z1.imag()), abs(z2.imag()))) {
+      const bool first_is_left = z1.real() <= z2.real();
+      const complex<double> left = first_is_left ? z1 : z2;
+      const complex<double> right = first_is_left ? z2 : z1;
+      const long double split = 0.5L*(static_cast<long double>(left.real()) +
+                                     static_cast<long double>(right.real()));
+      if (lower < split && split < upper && left.real() < split && split < right.real()) {
+	 return integrate_restricted_optical_transformed(kernel, left, right,
+	                                                 static_cast<long double>(lower), split)
+	    + integrate_restricted_optical_transformed(kernel, right, left, split,
+	                                                static_cast<long double>(upper));
+      }
+   }
+
+   complex<double> anchor;
+   complex<double> other;
+   const double first_distance = peak_distance_to_interval(z1, lower, upper);
+   const double second_distance = peak_distance_to_interval(z2, lower, upper);
+   if (first_much_narrower || (!second_much_narrower &&
+       (first_distance < second_distance ||
+	(first_distance == second_distance && abs(z1.imag()) <= abs(z2.imag()))))) {
+      anchor = z1;
+      other = z2;
+   } else {
+      anchor = z2;
+      other = z1;
+   }
+   return integrate_restricted_optical_transformed(kernel, anchor, other, lower, upper);
+}
+
 bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
 {
    if ((a.imag() > 0.0 && b.imag() > 0.0) ||
@@ -1571,6 +2580,14 @@ complex<double> hilbert_divided_difference(int kernel,
 
 double J_m2_optical(complex<double> z1, complex<double> z2)
 {
+   if (epsilon_window_limit > 0.0) {
+      const epsilon_interval interval = restricted_epsilon_interval(m);
+      if (interval.empty)
+	 return 0.0;
+      if (interval.truncated)
+	 return J_restricted_optical(m, z1, z2, interval.lower, interval.upper);
+   }
+
    if (m == 0)
       return J_0_optical(z1, z2);
    if (z1 == z2)
@@ -1598,6 +2615,292 @@ complex<double> effective_frequency(double omega)
 
    return omega + mu - sigma_re - sigma_im*I;
 }
+
+namespace {
+
+double real_effective_frequency(double omega)
+{
+   double sigma_re;
+   if (omega_min <= omega && omega <= omega_max)
+      sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
+   else
+      sigma_re = omega < omega_min ? reSigma_asymp_neg : reSigma_asymp_pos;
+   return omega + mu - sigma_re;
+}
+
+double restricted_crossing_function(double omega, double shift, double edge)
+{
+   return real_effective_frequency(omega + shift) - edge;
+}
+
+double real_effective_derivative(double omega)
+{
+   if (omega_min <= omega && omega <= omega_max)
+      return 1.0 - gsl_spline_eval_deriv(spline_reSigma, omega, acc_reSigma);
+   return 1.0;
+}
+
+double real_effective_second_derivative(double omega)
+{
+   if (omega_min <= omega && omega <= omega_max)
+      return -gsl_spline_eval_deriv2(spline_reSigma, omega, acc_reSigma);
+   return 0.0;
+}
+
+double bisect_effective_derivative(double lower, double upper)
+{
+   double lower_value = real_effective_derivative(lower);
+   for (int iteration = 0; iteration < 80; ++iteration) {
+      const double middle = 0.5*(lower + upper);
+      if (middle == lower || middle == upper)
+         break;
+      const double middle_value = real_effective_derivative(middle);
+      if (middle_value == 0.0)
+         return middle;
+      if (signbit(lower_value) != signbit(middle_value)) {
+         upper = middle;
+      } else {
+         lower = middle;
+         lower_value = middle_value;
+      }
+   }
+   return 0.5*(lower + upper);
+}
+
+double bisect_effective_second_derivative(double lower, double upper)
+{
+   double lower_value = real_effective_second_derivative(lower);
+   for (int iteration = 0; iteration < 80; ++iteration) {
+      const double middle = 0.5*(lower + upper);
+      if (middle == lower || middle == upper)
+         break;
+      const double middle_value = real_effective_second_derivative(middle);
+      if (middle_value == 0.0)
+         return middle;
+      if (signbit(lower_value) != signbit(middle_value)) {
+         upper = middle;
+      } else {
+         lower = middle;
+         lower_value = middle_value;
+      }
+   }
+   return 0.5*(lower + upper);
+}
+
+vector<double> add_effective_frequency_extrema(vector<double> &partitions, double shift)
+{
+   vector<double> extrema;
+   for (size_t interval = 1; interval < partitions.size(); ++interval) {
+      const double outer_lower = partitions[interval - 1];
+      const double outer_upper = partitions[interval];
+      const double actual_middle = 0.5*(outer_lower + outer_upper) + shift;
+      if (!(omega_min < actual_middle && actual_middle < omega_max))
+         continue;
+
+      const double actual_lower = nextafter(outer_lower + shift, outer_upper + shift);
+      const double actual_upper = nextafter(outer_upper + shift, outer_lower + shift);
+      vector<double> derivative_partitions;
+      derivative_partitions.push_back(actual_lower);
+      const double second_lower = real_effective_second_derivative(actual_lower);
+      const double second_upper = real_effective_second_derivative(actual_upper);
+      if (second_lower == 0.0) {
+         derivative_partitions.push_back(actual_lower);
+      } else if (second_upper == 0.0) {
+         derivative_partitions.push_back(actual_upper);
+      } else if (signbit(second_lower) != signbit(second_upper)) {
+         derivative_partitions.push_back(
+            bisect_effective_second_derivative(actual_lower, actual_upper));
+      }
+      derivative_partitions.push_back(actual_upper);
+      sort(derivative_partitions.begin(), derivative_partitions.end());
+      derivative_partitions.erase(
+         unique(derivative_partitions.begin(), derivative_partitions.end()),
+         derivative_partitions.end());
+
+      for (size_t part = 1; part < derivative_partitions.size(); ++part) {
+         const double lower = derivative_partitions[part - 1];
+         const double upper = derivative_partitions[part];
+         const double lower_value = real_effective_derivative(lower);
+         const double upper_value = real_effective_derivative(upper);
+         if (lower_value == 0.0)
+            extrema.push_back(lower - shift);
+         if (upper_value == 0.0)
+            extrema.push_back(upper - shift);
+         if (lower_value != 0.0 && upper_value != 0.0 &&
+             signbit(lower_value) != signbit(upper_value))
+            extrema.push_back(bisect_effective_derivative(lower, upper) - shift);
+      }
+   }
+   partitions.insert(partitions.end(), extrema.begin(), extrema.end());
+   sort(partitions.begin(), partitions.end());
+   partitions.erase(unique(partitions.begin(), partitions.end()), partitions.end());
+   return extrema;
+}
+
+double bisect_restricted_crossing(double lower, double upper,
+                                  double shift, double edge)
+{
+   double lower_value = restricted_crossing_function(lower, shift, edge);
+   for (int iteration = 0; iteration < 80; ++iteration) {
+      const double middle = 0.5*(lower + upper);
+      if (middle == lower || middle == upper)
+         break;
+      const double middle_value = restricted_crossing_function(middle, shift, edge);
+      if (middle_value == 0.0)
+         return middle;
+      if (signbit(lower_value) != signbit(middle_value)) {
+         upper = middle;
+      } else {
+         lower = middle;
+         lower_value = middle_value;
+      }
+   }
+   return 0.5*(lower + upper);
+}
+
+void add_restricted_crossing_neighborhood(vector<double> &points,
+                                          double crossing,
+                                          double lower, double upper,
+                                          double shift)
+{
+   points.push_back(crossing);
+   const double frequency = crossing + shift;
+   const double linewidth = abs(effective_frequency(frequency).imag());
+   const double derivative_step = max(linewidth,
+      1.0e-6*max(1.0, abs(frequency)));
+   const double slope = (real_effective_frequency(frequency + derivative_step)
+      - real_effective_frequency(frequency - derivative_step))/(2.0*derivative_step);
+   double crossing_width = linewidth/max(1.0e-3, abs(slope));
+   const double curvature = abs(real_effective_second_derivative(frequency));
+   if (curvature > 0.0 &&
+       abs(slope) < sqrt(2.0*linewidth*curvature))
+      crossing_width = max(crossing_width, sqrt(2.0*linewidth/curvature));
+   double distance = crossing_width;
+   for (int scale = 0; scale < 7; ++scale) {
+      if (lower < crossing - distance && crossing - distance < upper)
+         points.push_back(crossing - distance);
+      if (lower < crossing + distance && crossing + distance < upper)
+         points.push_back(crossing + distance);
+      distance *= 4.0;
+   }
+}
+
+void add_restricted_crossings(vector<double> &points,
+                              double lower, double upper,
+                              double shift, double edge)
+{
+   vector<double> partitions;
+   partitions.push_back(lower);
+   partitions.push_back(upper);
+   for (vector<double>::const_iterator knot = sigma_omega_knots.begin();
+        knot != sigma_omega_knots.end(); ++knot) {
+      const double shifted_knot = *knot - shift;
+      if (lower < shifted_knot && shifted_knot < upper) {
+         partitions.push_back(shifted_knot);
+         if (omega_min < *knot && *knot < omega_max) {
+            const double left_slope = real_effective_derivative(
+               nextafter(*knot, -numeric_limits<double>::infinity()));
+            const double right_slope = real_effective_derivative(
+               nextafter(*knot, numeric_limits<double>::infinity()));
+            if (left_slope == 0.0 || right_slope == 0.0 ||
+                signbit(left_slope) != signbit(right_slope))
+               add_restricted_crossing_neighborhood(points, shifted_knot,
+                                                     lower, upper, shift);
+         }
+      }
+   }
+   sort(partitions.begin(), partitions.end());
+   partitions.erase(unique(partitions.begin(), partitions.end()), partitions.end());
+   const vector<double> extrema = add_effective_frequency_extrema(partitions, shift);
+   for (vector<double>::const_iterator extremum = extrema.begin();
+        extremum != extrema.end(); ++extremum)
+      add_restricted_crossing_neighborhood(points, *extremum,
+                                           lower, upper, shift);
+
+   for (size_t interval = 1; interval < partitions.size(); ++interval) {
+      const double interval_lower = partitions[interval - 1];
+      const double interval_upper = partitions[interval];
+      const double lower_value = restricted_crossing_function(interval_lower, shift, edge);
+      const double upper_value = restricted_crossing_function(interval_upper, shift, edge);
+      if (lower_value == 0.0)
+         add_restricted_crossing_neighborhood(points, interval_lower,
+                                              lower, upper, shift);
+      if (upper_value == 0.0)
+         add_restricted_crossing_neighborhood(points, interval_upper,
+                                              lower, upper, shift);
+      if (lower_value != 0.0 && upper_value != 0.0 &&
+          signbit(lower_value) != signbit(upper_value))
+         add_restricted_crossing_neighborhood(points,
+            bisect_restricted_crossing(interval_lower, interval_upper, shift, edge),
+            lower, upper, shift);
+   }
+}
+
+vector<double> restricted_outer_points(double lower, double upper,
+                                        const epsilon_interval &interval,
+                                        bool include_shifted)
+{
+   vector<double> points;
+   points.push_back(lower);
+   points.push_back(upper);
+   add_restricted_crossings(points, lower, upper, 0.0, interval.lower);
+   add_restricted_crossings(points, lower, upper, 0.0, interval.upper);
+   if (include_shifted) {
+      add_restricted_crossings(points, lower, upper, optical_frequency, interval.lower);
+      add_restricted_crossings(points, lower, upper, optical_frequency, interval.upper);
+   }
+   return filter_integration_points(points, lower, upper);
+}
+
+bool restricted_outer_failure_acceptable(int status, gsl_function &function,
+                                         const vector<double> &points,
+                                         double result, double error)
+{
+   if (status != GSL_EROUND && status != GSL_ESING)
+      return false;
+   double fine = 0.0;
+   double check_difference = 0.0;
+   for (size_t interval = 1; interval < points.size(); ++interval) {
+      const restricted_fixed_result check = integrate_restricted_fixed_check(function,
+         points[interval - 1], points[interval]);
+      if (!isfinite(check.value) || !isfinite(check.difference))
+         return false;
+      fine += check.value;
+      check_difference += check.difference;
+   }
+   const double independent_error = max(abs(result - fine), check_difference);
+   const double verified_error = status == GSL_EROUND
+      ? min(error, independent_error) : independent_error;
+   return verified_error <= abs_error + rel_error*abs(result);
+}
+
+struct symmetric_outer_params {
+   double (*function)(double, void *);
+   void *params;
+};
+
+double symmetric_outer_integrand(double omega, void *raw_params)
+{
+   const symmetric_outer_params &params =
+      *static_cast<symmetric_outer_params *>(raw_params);
+   return params.function(omega, params.params) +
+          params.function(-omega, params.params);
+}
+
+vector<double> symmetric_outer_points(const vector<double> &points, double upper)
+{
+   vector<double> symmetric_points;
+   symmetric_points.push_back(0.0);
+   symmetric_points.push_back(upper);
+   for (vector<double>::const_iterator point = points.begin(); point != points.end(); ++point) {
+      const double magnitude = abs(*point);
+      if (0.0 < magnitude && magnitude < upper)
+         symmetric_points.push_back(magnitude);
+   }
+   return filter_integration_points(symmetric_points, 0.0, upper);
+}
+
+} // namespace
 
 double optical_fermi_factor(double omega)
 {
@@ -1660,6 +2963,7 @@ double optical_integrand(double omega, void *)
 void calc_DOS()
 {
    assert(m == 0);
+   gsl_set_error_handler_off();
    if (n != 1 && !quiet_warnings) {
       cout << "Warning: maybe you want n=1 here?" << endl;
    }
@@ -1737,6 +3041,7 @@ void load_Sigma()
     
    omega_min = data1[0][0];
    omega_max = data1[N-1][0];
+   sigma_omega_knots = omega;
    assert(omega_min < omega_max);
 
    reSigma_asymp_neg = data1[0][1]; // use this for omega<omega_min
@@ -1749,6 +3054,17 @@ void load_Sigma()
       if (val > -sigma_clip)
 	 val = -sigma_clip;
       imSigma.push_back(val);
+   }
+
+   particle_hole_symmetric_sigma = true;
+   for (int i = 0; i < N; ++i) {
+      const int mirrored = N - 1 - i;
+      if (omega[i] != -omega[mirrored] ||
+          reSigma[i] != -reSigma[mirrored] ||
+          imSigma[i] != imSigma[mirrored]) {
+         particle_hole_symmetric_sigma = false;
+         break;
+      }
    }
    
    assert(omega_min == data2[0][0]);
@@ -1786,11 +3102,53 @@ void load_Sigma()
    gsl_spline_init(spline_imSigma, &omega[0], &imSigma[0], N);
 }
 
+void initialize_epsilon_window()
+{
+   if (epsilon_window_limit == 0.0)
+      return;
+
+   if (!(omega_min <= 0.0 && 0.0 <= omega_max)) {
+      cerr << "Option -M requires the self-energy frequency grid to contain omega=0."
+           << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   const double re_sigma_zero = gsl_spline_eval(spline_reSigma, 0.0, acc_reSigma);
+   epsilon_window_center = mu - re_sigma_zero;
+   const long double lower = static_cast<long double>(epsilon_window_center)
+      - epsilon_window_limit;
+   const long double upper = static_cast<long double>(epsilon_window_center)
+      + epsilon_window_limit;
+   const long double maximum = numeric_limits<double>::max();
+   if (!isfinite(epsilon_window_center) || lower < -maximum || upper > maximum) {
+      cerr << "The epsilon-window bounds are not representable." << endl;
+      exit(EXIT_FAILURE);
+   }
+   epsilon_window_lower = static_cast<double>(lower);
+   epsilon_window_upper = static_cast<double>(upper);
+   if (!(epsilon_window_lower < epsilon_window_center &&
+         epsilon_window_center < epsilon_window_upper)) {
+      cerr << "The positive epsilon-window limit is too small at the resolved center."
+           << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (epsilon_window_center != 0.0 &&
+       epsilon_window_lower == -epsilon_window_upper) {
+      cerr << "The epsilon-window bounds do not preserve the resolved center." << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   if (verbose) {
+      cout << "ReSigma(0)=" << re_sigma_zero << endl;
+      cout << "epsilon window=[" << epsilon_window_lower << ","
+           << epsilon_window_upper << "]" << endl;
+   }
+}
+
 void calc()
 {
    // GSL integration
    const size_t ws_size = 1000;
-   gsl_integration_workspace *work_ptr = gsl_integration_workspace_alloc (ws_size);
 
    double lower_limit;
    switch (f_type) {
@@ -1804,10 +3162,14 @@ void calc()
       cerr << "Not implemented." << endl;
       exit(EXIT_FAILURE);
    }
-
    double upper_limit = cutoff*T;
    if (!(lower_limit < upper_limit)) {
       cerr << "Invalid integration interval [" << lower_limit << ", " << upper_limit << "]." << endl;
+      exit(EXIT_FAILURE);
+   }
+   gsl_integration_workspace *work_ptr = gsl_integration_workspace_alloc(ws_size);
+   if (work_ptr == NULL) {
+      cerr << "Unable to allocate frequency integration workspace." << endl;
       exit(EXIT_FAILURE);
    }
    double result;
@@ -1819,16 +3181,75 @@ void calc()
    My_function.params = params_ptr;
     
    gsl_set_error_handler_off();
-   gsl_integration_qag (&My_function,       // integrand function
-			lower_limit,        // lower integration boundary
-			upper_limit,        // upper integration boundary
-			abs_error,          // preferred absolute error
-			rel_error,          // preferred relative error
-			ws_size,               // size of workspace
-			key,                // Gauss-Kronrod rule
-			work_ptr,           // integration workspace
-			&result,            // final approximation
-			&error);            // estimate of absolute error
+   const epsilon_interval interval = epsilon_window_limit > 0.0
+      ? restricted_epsilon_interval(m)
+      : epsilon_interval{0.0, 0.0, false, false};
+   const bool parity_zero = epsilon_window_limit > 0.0 && interval.truncated &&
+      f_type == f_derivative && particle_hole_symmetric_sigma &&
+      epsilon_window_center == 0.0 && m != 0 && m % 2 == 0 && o % 2 == 0 &&
+      interval.lower == -interval.upper;
+   if (parity_zero || (epsilon_window_limit > 0.0 && interval.empty)) {
+      result = 0.0;
+      error = 0.0;
+   } else if (epsilon_window_limit > 0.0 && interval.truncated) {
+      vector<double> points;
+      points.push_back(lower_limit);
+      points.push_back(upper_limit);
+      if (n != 0)
+         points = restricted_outer_points(lower_limit, upper_limit, interval, false);
+      gsl_function *integration_function = &My_function;
+      symmetric_outer_params paired_params;
+      gsl_function paired_function;
+      if (f_type == f_derivative && particle_hole_symmetric_sigma &&
+          m != 0 && m % 2 == 0 && o % 2 == 0 &&
+          lower_limit == -upper_limit && interval.lower == -interval.upper) {
+         paired_params.function = My_function.function;
+         paired_params.params = My_function.params;
+         paired_function.function = &symmetric_outer_integrand;
+         paired_function.params = &paired_params;
+         integration_function = &paired_function;
+         points = symmetric_outer_points(points, upper_limit);
+      }
+      const size_t restricted_size = max(ws_size, 32*points.size());
+      gsl_integration_workspace *restricted_work = restricted_size == ws_size
+         ? work_ptr : gsl_integration_workspace_alloc(restricted_size);
+      if (restricted_work == NULL) {
+	 gsl_integration_workspace_free(work_ptr);
+	 cerr << "Unable to allocate restricted frequency integration workspace." << endl;
+	 exit(EXIT_FAILURE);
+      }
+      const int status = gsl_integration_qagp(integration_function,
+                                             &points[0], points.size(),
+					     abs_error, rel_error, restricted_size,
+					     restricted_work, &result, &error);
+      if (restricted_work != work_ptr)
+	 gsl_integration_workspace_free(restricted_work);
+      const bool acceptable_failure = restricted_outer_failure_acceptable(
+         status, *integration_function, points, result, error);
+      if ((status != GSL_SUCCESS && !acceptable_failure) || !isfinite(result)) {
+	 gsl_integration_workspace_free(work_ptr);
+	 cerr << setprecision(17) << "Restricted frequency integration failed: "
+	      << gsl_strerror(status) << ", result=" << result
+	      << ", error=" << error << endl;
+	 exit(EXIT_FAILURE);
+      }
+      if (status != GSL_SUCCESS && !quiet_warnings)
+	 cerr << "Warning: restricted frequency integration returned "
+	      << gsl_strerror(status) << "; independent quadrature agreed within tolerance."
+	      << endl;
+   } else {
+      gsl_integration_qag (&My_function,       // integrand function
+			  lower_limit,        // lower integration boundary
+			  upper_limit,        // upper integration boundary
+			  abs_error,          // preferred absolute error
+			  rel_error,          // preferred relative error
+			  ws_size,            // size of workspace
+			  key,                // Gauss-Kronrod rule
+			  work_ptr,           // integration workspace
+			  &result,            // final approximation
+			  &error);            // estimate of absolute error
+   }
+   gsl_integration_workspace_free(work_ptr);
     
    const int width = 20;
    const int precision_result = 16;
@@ -1871,36 +3292,81 @@ void calc_optical()
    double result = 0.0;
    double error = 0.0;
    bool roundoff_limited = false;
-   for (int segment = 0; segment < 3; ++segment) {
-      double segment_result;
-      double segment_error;
-      const int status = gsl_integration_qag(&F,
-					     boundaries[segment],
-					     boundaries[segment + 1],
-					     abs_error/3.0,
-					     rel_error,
-					     ws_size,
-					     key,
-					     work,
-					     &segment_result,
-					     &segment_error);
-      if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(segment_result)) {
+   bool independent_verification = false;
+   const epsilon_interval interval = epsilon_window_limit > 0.0
+      ? restricted_epsilon_interval(m)
+      : epsilon_interval{0.0, 0.0, false, false};
+   if (epsilon_window_limit > 0.0 && interval.empty) {
+      result = 0.0;
+      error = 0.0;
+   } else if (epsilon_window_limit > 0.0 && interval.truncated) {
+      vector<double> points = restricted_outer_points(lower_limit, upper_limit,
+                                                      interval, true);
+      points.push_back(-optical_frequency);
+      points.push_back(0.0);
+      points = filter_integration_points(points, lower_limit, upper_limit);
+      const size_t restricted_size = max(ws_size, 32*points.size());
+      gsl_integration_workspace *restricted_work = restricted_size == ws_size
+         ? work : gsl_integration_workspace_alloc(restricted_size);
+      if (restricted_work == NULL) {
 	 gsl_integration_workspace_free(work);
-	 cerr << "Optical frequency integration failed on ["
-	      << boundaries[segment] << ", " << boundaries[segment + 1]
-	      << "]: " << gsl_strerror(status) << endl;
+	 cerr << "Unable to allocate restricted optical frequency integration workspace."
+	      << endl;
 	 exit(EXIT_FAILURE);
       }
-      if (status == GSL_EROUND)
-	 roundoff_limited = true;
-      result += segment_result;
-      error += segment_error;
+      const int status = gsl_integration_qagp(&F, &points[0], points.size(),
+					     abs_error, rel_error, restricted_size,
+					     restricted_work, &result, &error);
+      if (restricted_work != work)
+	 gsl_integration_workspace_free(restricted_work);
+      const bool acceptable_failure = restricted_outer_failure_acceptable(
+         status, F, points, result, error);
+      if ((status != GSL_SUCCESS && !acceptable_failure) || !isfinite(result)) {
+	 gsl_integration_workspace_free(work);
+	 cerr << setprecision(17) << "Restricted optical frequency integration failed: "
+	      << gsl_strerror(status) << ", result=" << result
+	      << ", error=" << error << endl;
+	 exit(EXIT_FAILURE);
+      }
+      roundoff_limited = status != GSL_SUCCESS;
+      independent_verification = status != GSL_SUCCESS;
+   } else {
+      for (int segment = 0; segment < 3; ++segment) {
+	 double segment_result;
+	 double segment_error;
+	 const int status = gsl_integration_qag(&F,
+						boundaries[segment],
+						boundaries[segment + 1],
+						abs_error/3.0,
+						rel_error,
+						ws_size,
+						key,
+						work,
+						&segment_result,
+						&segment_error);
+	 if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(segment_result)) {
+	    gsl_integration_workspace_free(work);
+	    cerr << "Optical frequency integration failed on ["
+		 << boundaries[segment] << ", " << boundaries[segment + 1]
+		 << "]: " << gsl_strerror(status) << endl;
+	    exit(EXIT_FAILURE);
+	 }
+	 if (status == GSL_EROUND)
+	    roundoff_limited = true;
+	 result += segment_result;
+	 error += segment_error;
+      }
    }
    gsl_integration_workspace_free(work);
 
-   if (roundoff_limited && !quiet_warnings)
-      cerr << "Warning: optical frequency integration was limited by roundoff; estimated error="
-	   << error << "." << endl;
+   if (roundoff_limited && !quiet_warnings) {
+      if (independent_verification)
+         cerr << "Warning: restricted optical frequency integration required independent "
+              << "verification; estimated GSL error=" << error << "." << endl;
+      else
+         cerr << "Warning: optical frequency integration was limited by roundoff; estimated error="
+              << error << "." << endl;
+   }
 
    const int width = 20;
    const int precision_result = 16;
@@ -1921,6 +3387,7 @@ int main (int argc, char *argv[])
    load_Sigma();
    if (m == 0)
       load_Phi();
+   initialize_epsilon_window();
    
    if (calcdos)
       calc_DOS();

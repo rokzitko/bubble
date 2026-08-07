@@ -21,3 +21,10 @@ remain exact.
 
 Pointwise clean-limit tests are in `clean_kernel_references.dat`. Their optional
 100-decimal-digit mpmath generator is `generate_clean_kernel_references.py`.
+
+Restricted epsilon-window references are in `restricted_kernel_references.dat`
+and `restricted_optical_references.dat`, with matching high-precision Python
+generators. `run_window_tests` covers the `-M` command-line behavior and all
+epsilon-integrating modes. The pointwise data also covers exact odd symmetry,
+sub-ULP intervals, finite-band edges, adjacent-double optical centers, huge
+Gaussian windows, and narrow exterior peaks.

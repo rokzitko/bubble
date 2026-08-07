@@ -1,0 +1,368 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use Cwd qw(getcwd);
+use File::Temp qw(tempdir tempfile);
+use FindBin qw($Bin);
+use IPC::Open3;
+use Symbol qw(gensym);
+
+my $bubble = "$Bin/../bubble";
+my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+my $passed = 0;
+my $failed = 0;
+my $directory = tempdir(CLEANUP => 1);
+
+sub write_table {
+    my ($name, @rows) = @_;
+    my $filename = "$directory/$name";
+    open my $file, '>', $filename or die "Cannot create $filename: $!\n";
+    print {$file} "$_\n" for @rows;
+    close $file or die "Cannot close $filename: $!\n";
+    return $filename;
+}
+
+my $resigma = write_table('resigma.dat', '-10 0', '10 0');
+my $imsigma = write_table('imsigma.dat', '-10 -0.1', '10 -0.1');
+my $clean_imsigma = write_table('clean-imsigma.dat', '-10 -1e-8', '10 -1e-8');
+my $ultraclean_imsigma = write_table('ultraclean-imsigma.dat',
+    '-10 -1e-16', '10 -1e-16');
+my $shifted_resigma = write_table('shifted-resigma.dat', '-10 0.3', '10 0.3');
+my $outside_resigma = write_table('outside-resigma.dat', '1 0', '2 0');
+my $outside_imsigma = write_table('outside-imsigma.dat', '1 -0.1', '2 -0.1');
+my $close_resigma = write_table('close-resigma.dat',
+    '-0.5 1.17974256', '-0.25 -1.05276764', '0 0',
+    '0.25 -1.64715152', '0.5 -0.03751573');
+my $close_imsigma = write_table('close-imsigma.dat',
+    '-0.5 -1e-10', '-0.25 -1e-10', '0 -1e-10',
+    '0.25 -1e-10', '0.5 -1e-10');
+my $tangent_resigma = write_table('tangent-resigma.dat',
+    '-1 0', '-1e-10 0.2999999999', '0 0', '1e-10 -0.2999999999',
+    '0.1 -0.19999999999999998', '0.2 0.09999999990000001',
+    '0.3 0', '1 0');
+my $tangent_imsigma = write_table('tangent-imsigma.dat',
+    map { "$_ -1e-10" } (-1, -1e-10, 0, 1e-10, 0.1, 0.2, 0.3, 1));
+my $phi = write_table('phi.dat', map { ($_/4) . ' 1' } -4 .. 4);
+my @oscillating_re;
+my @oscillating_im;
+for my $index (-50 .. 50) {
+    my $omega = $index/100;
+    my $effective = $index % 2 == 0 ? 0.1 : -0.1;
+    push @oscillating_re, "$omega " . ($omega - $effective);
+    push @oscillating_im, "$omega -0.01";
+}
+my $oscillating_resigma = write_table('oscillating-resigma.dat', @oscillating_re);
+my $oscillating_imsigma = write_table('oscillating-imsigma.dat', @oscillating_im);
+my @curvature_re;
+my @curvature_im;
+for my $index (-8 .. 8) {
+    my $omega = $index/4;
+    push @curvature_re, "$omega " . ($omega*$omega + $omega/2 - 1/16);
+    push @curvature_im, "$omega -3e-15";
+}
+my $curvature_resigma = write_table('curvature-resigma.dat', @curvature_re);
+my $curvature_imsigma = write_table('curvature-imsigma.dat', @curvature_im);
+
+sub run_bubble {
+    my (@arguments) = @_;
+    my $stdout = gensym;
+    my $stderr = gensym;
+    my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
+    my $stdout_text = do { local $/; <$stdout> } // '';
+    my $stderr_text = do { local $/; <$stderr> } // '';
+    $stderr_text =~ s/\s+$//;
+    waitpid $pid, 0;
+    my $wait_status = $?;
+    my $status = ($wait_status & 127) ? 128 + ($wait_status & 127) : $wait_status >> 8;
+    return ($status, $stdout_text, $stderr_text);
+}
+
+sub run_value {
+    my (@arguments) = @_;
+    my ($status, $stdout, $stderr) = run_bubble(@arguments);
+    return (undef, "exit=$status stderr=$stderr") if $status != 0;
+    return (undef, "unexpected output=$stdout") unless $stdout =~ /^\s*($number)\s*$/;
+    return ($1 + 0.0, '');
+}
+
+sub check_result {
+    my ($name, $ok, $details) = @_;
+    if ($ok) {
+        ++$passed;
+        print "OK: $name";
+    } else {
+        ++$failed;
+        print "FAILED: $name";
+    }
+    print " ($details)" if defined $details && length $details;
+    print "\n";
+}
+
+sub close_enough {
+    my ($value, $expected, $relative, $absolute) = @_;
+    return 0 unless defined $value;
+    return abs($value - $expected) <= $absolute + $relative*abs($expected);
+}
+
+my @zero_limit_cases = (
+    [1, 2, 0, 0.1, 0, $resigma, $imsigma],
+    [7, 3, 0, 0.1, 0, $resigma, $imsigma],
+    ['-O', '0.3', 1, 2, 0, 0.1, 0, $resigma, $imsigma],
+    ['-f', 1, 1, 0, 0.1, 0, $resigma, $imsigma],
+    ['-p', $phi, 0, 2, 0, 0.1, 0, $resigma, $imsigma],
+    ['-p', $phi, 0, 4, 0, 0.1, 0, $resigma, $imsigma],
+);
+for my $case (@zero_limit_cases) {
+    my ($base_status, $base_stdout, $base_stderr) = run_bubble(@$case);
+    my ($zero_status, $zero_stdout, $zero_stderr) = run_bubble('-M', '0', @$case);
+    check_result('M=0 exact pass-through',
+        $base_status == $zero_status && $base_stdout eq $zero_stdout &&
+        $base_stderr eq $zero_stderr,
+        "base_exit=$base_status zero_exit=$zero_status");
+}
+
+my @base = (1, 2, 0, 0.1, 0, $resigma, $imsigma);
+my ($full_status, $full_stdout, $full_stderr) = run_bubble('-M', '2', @base);
+my ($base_status, $base_stdout, $base_stderr) = run_bubble(@base);
+check_result('covered finite band uses full path',
+    $full_status == 0 && $full_stdout eq $base_stdout && $full_stderr eq $base_stderr,
+    "full=$full_stdout base=$base_stdout");
+
+my ($empty, $empty_error) = run_value('-M', '0.25', 1, 2, 0, 0.1, 2,
+    $resigma, $imsigma);
+check_result('empty finite-band intersection', defined $empty && $empty == 0.0,
+    defined $empty ? "value=$empty" : $empty_error);
+
+my ($mass, $mass_error) = run_value('-M', '0.5', 1, 0, 0, 0.1, 0,
+    $resigma, $imsigma);
+my $mass_expected = 0.9999993881955461;
+check_result('restricted n=0 mass', close_enough($mass, $mass_expected, 1e-12, 1e-12),
+    defined $mass ? "value=$mass" : $mass_error);
+
+my ($odd_dc, $odd_dc_error) = run_value('-q', '-M', '0.5', 2, 2, 0, 0.1, 0,
+    $resigma, $imsigma);
+check_result('symmetric odd restricted DC',
+    defined $odd_dc && abs($odd_dc) <= 1e-15,
+    defined $odd_dc ? "value=$odd_dc" : $odd_dc_error);
+
+my ($odd_optical, $odd_optical_error) = run_value(
+    '-q', '-M', '0.5', '-O', '0.3', 2, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('symmetric odd restricted optical',
+    defined $odd_optical && abs($odd_optical) <= 1e-15,
+    defined $odd_optical ? "value=$odd_optical" : $odd_optical_error);
+
+my ($clean_odd, $clean_odd_error) = run_value(
+    '-q', '-M', '0.5', '-s', '1e-16', 2, 2, 0, 0.1, 0,
+    $resigma, $ultraclean_imsigma);
+check_result('clean symmetric odd restricted DC',
+    defined $clean_odd && $clean_odd == 0.0,
+    defined $clean_odd ? "value=$clean_odd" : $clean_odd_error);
+
+my ($clean_step, $clean_step_error) = run_value(
+    '-q', '-M', '0.5', '-s', '1e-12', 1, 1, 0, 0.1, 0,
+    $resigma, $ultraclean_imsigma);
+check_result('clean restricted boundary transition',
+    close_enough($clean_step, 0.9866142981514303, 3e-8, 3e-10),
+    defined $clean_step ? "value=$clean_step" : $clean_step_error);
+
+for my $power (0 .. 3) {
+    my ($builtin, $builtin_error) = run_value('-M', '0.5', 1, $power, 0,
+        0.1, 0, $resigma, $imsigma);
+    my ($tabulated, $tabulated_error) = run_value('-M', '0.5', '-p', $phi,
+        0, $power, 0, 0.1, 0, $resigma, $imsigma);
+    check_result("tabulated restricted n=$power", defined $builtin && defined $tabulated &&
+        close_enough($tabulated, $builtin, 2e-10, 2e-11),
+        defined $builtin && defined $tabulated
+            ? "builtin=$builtin tabulated=$tabulated"
+            : "$builtin_error $tabulated_error");
+}
+
+my ($tabulated_fourth, $tabulated_fourth_error) = run_value(
+    '-M', '0.5', '-p', $phi, 0, 4, 0, 0.1, 0, $resigma, $imsigma);
+check_result('tabulated restricted n=4',
+    defined $tabulated_fourth && $tabulated_fourth > 0.0,
+    defined $tabulated_fourth ? "value=$tabulated_fourth" : $tabulated_fourth_error);
+
+my ($optical_builtin, $optical_builtin_error) = run_value(
+    '-M', '0.5', '-O', '0.3', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
+my ($optical_tabulated, $optical_tabulated_error) = run_value(
+    '-M', '0.5', '-O', '0.3', '-p', $phi,
+    0, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('tabulated restricted optical',
+    defined $optical_builtin && defined $optical_tabulated &&
+    close_enough($optical_tabulated, $optical_builtin, 2e-9, 2e-11),
+    defined $optical_builtin && defined $optical_tabulated
+        ? "builtin=$optical_builtin tabulated=$optical_tabulated"
+        : "$optical_builtin_error $optical_tabulated_error");
+
+my ($restricted_dc_status, $restricted_dc_stdout, $restricted_dc_stderr) = run_bubble(
+    '-M', '0.5', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
+my ($restricted_zero_status, $restricted_zero_stdout, $restricted_zero_stderr) = run_bubble(
+    '-M', '0.5', '-O', '0', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('restricted exact optical zero limit',
+    $restricted_dc_status == 0 && $restricted_zero_status == 0 &&
+    $restricted_dc_stdout eq $restricted_zero_stdout &&
+    $restricted_dc_stderr eq $restricted_zero_stderr,
+    "dc_exit=$restricted_dc_status optical_exit=$restricted_zero_status");
+
+my ($occupied_builtin, $occupied_builtin_error) = run_value(
+    '-M', '0.5', '-f', 1, 1, 0, 0.1, 0, $resigma, $imsigma);
+my ($occupied_tabulated, $occupied_tabulated_error) = run_value(
+    '-M', '0.5', '-f', '-p', $phi,
+    0, 1, 0, 0.1, 0, $resigma, $imsigma);
+check_result('tabulated restricted occupied moment',
+    defined $occupied_builtin && defined $occupied_tabulated &&
+    close_enough($occupied_tabulated, $occupied_builtin, 2e-9, 2e-11),
+    defined $occupied_builtin && defined $occupied_tabulated
+        ? "builtin=$occupied_builtin tabulated=$occupied_tabulated"
+        : "$occupied_builtin_error $occupied_tabulated_error");
+
+my ($powered_builtin, $powered_builtin_error) = run_value(
+    '-M', '0.5', 2, 2, 0, 0.1, 0.1, $resigma, $imsigma);
+my ($powered_tabulated, $powered_tabulated_error) = run_value(
+    '-M', '0.5', '-e', '1', '-p', $phi,
+    0, 2, 0, 0.1, 0.1, $resigma, $imsigma);
+check_result('restricted tabulated -e',
+    defined $powered_builtin && defined $powered_tabulated &&
+    close_enough($powered_tabulated, $powered_builtin, 2e-9, 2e-11),
+    defined $powered_builtin && defined $powered_tabulated
+        ? "builtin=$powered_builtin tabulated=$powered_tabulated"
+        : "$powered_builtin_error $powered_tabulated_error");
+
+my ($shifted_mass, $shifted_mass_error) = run_value('-M', '0.3', 1, 0, 0,
+    0.1, 0.1, $shifted_resigma, $imsigma);
+my $shifted_expected = 0.6*$mass_expected;
+check_result('window centered by ReSigma(0)',
+    close_enough($shifted_mass, $shifted_expected, 1e-12, 1e-12),
+    defined $shifted_mass ? "value=$shifted_mass" : $shifted_mass_error);
+
+my ($narrow, $narrow_error) = run_value('-M', '1e-4', '-a', '1e-8', '-r', '1e-10',
+    1, 2, 0, 0.1, 0, $resigma, $clean_imsigma);
+my $narrow_expected = 7957.746491449217;
+check_result('narrow window outer breakpoints',
+    close_enough($narrow, $narrow_expected, 2e-9, 2e-7),
+    defined $narrow ? "value=$narrow" : $narrow_error);
+
+my ($many_crossings, $many_crossings_error) = run_value(
+    '-M', '0.05', '-a', '1e-6', '-r', '1e-8',
+    1, 2, 0, 0.1, 0, $oscillating_resigma, $oscillating_imsigma);
+check_result('many window crossings', defined $many_crossings && $many_crossings > 0.0,
+    defined $many_crossings ? "value=$many_crossings" : $many_crossings_error);
+
+my @close_crossing_cases = (
+    ['cubic', '2', '0.8064365985', 1202415422.5462554],
+    ['Akima', '3', '0.8310362391561746', 1194943486.1112465],
+);
+for my $case (@close_crossing_cases) {
+    my ($name, $interpolation, $limit, $expected) = @$case;
+    my ($value, $value_error) = run_value(
+        '-q', '-i', $interpolation, '-M', $limit, '-s', '1e-10',
+        '-a', '1e-7', '-r', '1e-8', '-c', '15',
+        1, 2, 0, 0.1, 0, $close_resigma, $close_imsigma);
+    check_result("close $name window crossings",
+        close_enough($value, $expected, 1e-11, 1e-3),
+        defined $value ? "value=$value" : $value_error);
+}
+
+my ($tangent, $tangent_error) = run_value(
+    '-q', '-i', '1', '-M', '0.1', '-s', '1e-10',
+    '-a', '1e-10', '-r', '1e-10', '-c', '15',
+    1, 2, 0, 0.1, 0, $tangent_resigma, $tangent_imsigma);
+check_result('near-tangent knot neighborhood',
+    close_enough($tangent, 0.2766729908077813, 2e-10, 2e-11),
+    defined $tangent ? "value=$tangent" : $tangent_error);
+
+my ($curvature, $curvature_error) = run_value(
+    '-q', '-i', '3', '-M', '0.0625', '-s', '3e-15',
+    '-a', '0', '-r', '1e-10', '-c', '15',
+    1, 2, 0, 0.1, 0, $curvature_resigma, $curvature_imsigma);
+check_result('smooth tangent curvature neighborhood',
+    close_enough($curvature, 39024835250078.13, 2e-11, 1e3),
+    defined $curvature ? "value=$curvature" : $curvature_error);
+
+my $original_directory = getcwd();
+chdir $directory or die "Cannot enter $directory: $!\n";
+my ($dos_status, $dos_stdout, $dos_stderr) = run_bubble(
+    '-q', '-M', '0.5', '-d', '-p', $phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+my $dos_ok = $dos_status == 0 && $dos_stdout eq '' && $dos_stderr eq '';
+if ($dos_ok) {
+    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    my $rows = 0;
+    while (<$dos>) {
+        my ($omega, $value) = split;
+        $dos_ok = 0 unless defined $value && abs($value - 1.0) <= 1e-12;
+        ++$rows;
+    }
+    close $dos;
+    $dos_ok = 0 unless $rows == 10001;
+}
+chdir $original_directory or die "Cannot return to $original_directory: $!\n";
+check_result('restricted DOS output', $dos_ok,
+    "exit=$dos_status stderr=$dos_stderr");
+
+chdir $directory or die "Cannot enter $directory: $!\n";
+my ($spectral_dos_status, $spectral_dos_stdout, $spectral_dos_stderr) = run_bubble(
+    '-q', '-M', '0.5', '-d', '-p', $phi,
+    0, 1, 0, 0.1, 0, $resigma, $imsigma);
+my $spectral_dos_ok = $spectral_dos_status == 0 &&
+    $spectral_dos_stdout eq '' && $spectral_dos_stderr eq '';
+if ($spectral_dos_ok) {
+    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    my $rows = 0;
+    my $pi = 4*atan2(1, 1);
+    while (<$dos>) {
+        my ($omega, $value) = split;
+        my $expected = (atan2(0.5 - $omega, 0.1) -
+            atan2(-0.5 - $omega, 0.1))/$pi;
+        $spectral_dos_ok = 0 unless defined $value &&
+            abs($value - $expected) <= 2e-6;
+        ++$rows;
+    }
+    close $dos;
+    $spectral_dos_ok = 0 unless $rows == 10001;
+}
+chdir $original_directory or die "Cannot return to $original_directory: $!\n";
+check_result('restricted n=1 DOS output', $spectral_dos_ok,
+    "exit=$spectral_dos_status stderr=$spectral_dos_stderr");
+
+my @invalid_cases = (
+    ['negative M', qr/Invalid epsilon-window limit/, '-M', '-1', @base],
+    ['non-finite M', qr/Invalid epsilon-window limit/, '-M', 'nan', @base],
+    ['infinite M', qr/Invalid epsilon-window limit/, '-M', 'inf', @base],
+    ['malformed M', qr/Invalid epsilon-window limit/, '-M', 'bad', @base],
+    ['unrepresentable centered M', qr/positive epsilon-window limit is too small/,
+        '-M', '1.1102230246251565e-16', 1, 2, 0, 0.1, 1, $resigma, $imsigma],
+    ['unpreserved sub-ULP center', qr/bounds do not preserve the resolved center/,
+        '-M', '0.5', '-s', '1e-16',
+        2, 2, 0, 0.1, '2e-17', $resigma, $ultraclean_imsigma],
+    ['zero outside Sigma grid', qr/requires the self-energy frequency grid to contain omega=0/,
+        '-M', '0.5', 1, 2, 0, 0.1, 0, $outside_resigma, $outside_imsigma],
+    ['unsupported n with empty window', qr/Unsupported spectral power/,
+        '-M', '0.25', 1, 99, 0, 0.1, 2, $resigma, $imsigma],
+    ['unattainable outer tolerance', qr/frequency integration failed/i,
+        '-M', '0.5', '-a', '0', '-r', '1e-20',
+        1, 0, 0, 0.1, 0, $resigma, $imsigma],
+);
+for my $case (@invalid_cases) {
+    my ($name, $diagnostic, @arguments) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(@arguments);
+    check_result($name, $status == 1 && $stderr =~ $diagnostic,
+        "exit=$status stderr=$stderr");
+}
+
+my ($outside_status) = run_bubble('-M', '0', 1, 2, 0, 0.1, 0,
+    $outside_resigma, $outside_imsigma);
+check_result('M=0 permits grid without zero', $outside_status == 0,
+    "exit=$outside_status");
+
+my ($verbose_status, $verbose_stdout, $verbose_stderr) = run_bubble(
+    '-v', '-M', '0.5', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('verbose resolved window', $verbose_status == 0 &&
+    $verbose_stdout =~ /ReSigma\(0\)=/ &&
+    $verbose_stdout =~ /epsilon window=\[-0\.5,0\.5\]/,
+    "exit=$verbose_status stderr=$verbose_stderr");
+
+print "WINDOW OK=$passed FAILED=$failed\n";
+exit($failed == 0 ? 0 : 1);
