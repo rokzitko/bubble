@@ -93,6 +93,7 @@ int key = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
 double cutoff = 15.0;
+double sigma_clip = 1.0e-8;
 string fnPhi = "Phi.dat";
 bool calcdos = false; // compute the spectral function
 enum ff { f_f, f_derivative };
@@ -102,8 +103,6 @@ bool optical_mode = false;
 double optical_frequency = 0.0;
 
 const double EPSILON = 1e-10; // some very small value...
-// For clipping Im Sigma. 
-const double EPSILON2 = 1e-8; // some small value...
 
 void about()
 {
@@ -121,6 +120,7 @@ void usage()
    cout << "-a : absolute error (default = 1e-7)" << endl;
    cout << "-r : relative error (default = 1e-8)" << endl;
    cout << "-c : frequency interval cutoff in units of T (default = 15)" << endl;
+   cout << "-s : positive ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
    cout << "-e : additional power of epsilon when using the m=0 code (default=0)" << endl;
@@ -142,11 +142,25 @@ double parse_optical_frequency(const char *value)
    return result;
 }
 
+double parse_sigma_clip(const char *value)
+{
+   char *end = NULL;
+   errno = 0;
+   const double result = strtod(value, &end);
+
+   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result) || result <= 0.0) {
+      cerr << "Invalid ImSigma clipping floor: " << value << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   return result;
+}
+
 void cmd_line(int argc, char *argv[])
 {
    int c;
     
-   while ((c = getopt(argc, argv, "vi:k:a:r:c:p:dfe:O:")) != -1) {
+   while ((c = getopt(argc, argv, "vi:k:a:r:c:s:p:dfe:O:")) != -1) {
       switch (c) {
       case 'v':
 	 verbose = true;
@@ -165,6 +179,9 @@ void cmd_line(int argc, char *argv[])
 	 break;
       case 'c':
 	 cutoff = atof(optarg);
+	 break;
+      case 's':
+	 sigma_clip = parse_sigma_clip(optarg);
 	 break;
       case 'p':
 	 fnPhi = string(optarg);
@@ -267,6 +284,7 @@ void cmd_line(int argc, char *argv[])
       cout << " Sigma: re=" << fnReSigma << ",im=" << fnImSigma << endl;
       cout << "i=" << b << " key=" << key << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
+      cout << "ImSigma clipping floor=" << sigma_clip << endl;
       cout << "Phi=" << fnPhi << " e=" << e << endl;
       if (optical_mode)
 	 cout << "external Omega=" << optical_frequency << endl;
@@ -1170,8 +1188,8 @@ void load_Sigma()
    for(int i=0; i<N; ++i) {
       double val = data2[i][1];
       // IMPORTANT: Perform clipping of Im Sigma !!
-      if (val > -EPSILON2)
-	 val = -EPSILON2;
+      if (val > -sigma_clip)
+	 val = -sigma_clip;
       imSigma.push_back(val);
    }
    
