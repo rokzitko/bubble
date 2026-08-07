@@ -25,6 +25,8 @@ check: $(TARGET)
 	@output="$$(cd regression && ./run_tests 1)"; \
 	printf '%s\n' "$$output"; \
 	printf '%s\n' "$$output" | grep -Fq 'OK=24 FAILED=0'
+	@cd regression && ./run_optical_tests
+	@cd Bethe_lattice_test && ./cond.opt.geo --check
 
 clean:
 	$(RM) $(TARGET) $(OBJECTS)

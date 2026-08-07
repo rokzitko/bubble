@@ -11,6 +11,19 @@ my $reference = "$Bin/cond.opt.geo-mma.dat";
 my $resigma = "$Bin/resigma.dat";
 my $imsigma = "$Bin/imsigma.dat";
 my $output = "$Bin/cond.opt.geo.dat";
+my $absolute_tolerance = 1e-12;
+my $relative_tolerance = 3e-5;
+my $quiet = 0;
+my $write_output = 1;
+
+if (@ARGV == 1 && $ARGV[0] eq '--quiet') {
+    $quiet = 1;
+} elsif (@ARGV == 1 && $ARGV[0] eq '--check') {
+    $quiet = 1;
+    $write_output = 0;
+} elsif (@ARGV != 0) {
+    die "Usage: $0 [--quiet|--check]\n";
+}
 
 -x $bubble or die "Executable not found: $bubble\n";
 
@@ -35,14 +48,17 @@ while (my $line = <$reference_file>) {
     my ($omega, $expected) = split ' ', $line;
     defined $omega && defined $expected && $omega =~ /^$number$/ && $expected =~ /^$number$/
         or die "Malformed reference row: $line";
-    push @mesh, $omega;
+    push @mesh, [$omega, $expected + 0.0];
 }
 close $reference_file or die "Cannot close $reference: $!\n";
 @mesh == 50 or die "Expected 50 optical frequencies in $reference, found " . scalar(@mesh) . "\n";
 
 my @results;
+my $passed = 0;
+my $failed = 0;
+my ($max_absolute_error, $max_relative_error) = (0.0, 0.0);
 for my $index (0 .. $#mesh) {
-    my $omega = $mesh[$index];
+    my ($omega, $expected) = @{$mesh[$index]};
     my @command = (
         $bubble,
         '-i', '2',
@@ -62,14 +78,30 @@ for my $index (0 .. $#mesh) {
         or die "Unexpected bubble output for Omega=$omega: " . (defined $raw ? $raw : '<empty>') . "\n";
 
     my $conductivity = 2*pi*($1 + 0.0);
+    my $absolute_error = abs($conductivity - $expected);
+    my $relative_error = $expected == 0.0 ? 0.0 : $absolute_error/abs($expected);
+    my $allowed_error = $absolute_tolerance + $relative_tolerance*abs($expected);
+    my $ok = $absolute_error <= $allowed_error;
+    $ok ? ++$passed : ++$failed;
+    $max_absolute_error = $absolute_error if $absolute_error > $max_absolute_error;
+    $max_relative_error = $relative_error if $relative_error > $max_relative_error;
+
     push @results, [$omega, $conductivity];
-    printf "%2d/%d\t%s\t%.16g\n", $index + 1, scalar(@mesh), $omega, $conductivity;
+    unless ($quiet) {
+        printf "%2d/%d\t%s\t%.16g\t%s\trel=%.6g\n",
+            $index + 1, scalar(@mesh), $omega, $conductivity, $ok ? 'OK' : 'FAILED', $relative_error;
+    }
 }
 
-open my $output_file, '>', $output or die "Cannot open $output: $!\n";
-for my $row (@results) {
-    printf {$output_file} "%s\t%.16g\n", $row->[0], $row->[1];
+if ($write_output) {
+    open my $output_file, '>', $output or die "Cannot open $output: $!\n";
+    for my $row (@results) {
+        printf {$output_file} "%s\t%.16g\n", $row->[0], $row->[1];
+    }
+    close $output_file or die "Cannot close $output: $!\n";
 }
-close $output_file or die "Cannot close $output: $!\n";
 
-print "Wrote $output\n";
+print "Wrote $output\n" if $write_output && !$quiet;
+printf "BETHE OPTICAL OK=%d FAILED=%d max_abs=%.6g max_rel=%.6g\n",
+    $passed, $failed, $max_absolute_error, $max_relative_error;
+exit($failed == 0 ? 0 : 1);

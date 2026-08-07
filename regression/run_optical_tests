@@ -1,0 +1,132 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use File::Temp qw(tempfile);
+use FindBin qw($Bin);
+use IPC::Open3;
+use Symbol qw(gensym);
+
+my $bubble = "$Bin/../bubble";
+my $resigma = "$Bin/resigma_1.dat";
+my $imsigma = "$Bin/imsigma_1.dat";
+my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+my $passed = 0;
+my $failed = 0;
+my @tight_tolerances = ('-a', '1e-12', '-r', '1e-12');
+
+sub run_bubble {
+    my (@arguments) = @_;
+    my $stdout = gensym;
+    my $stderr = gensym;
+    my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
+
+    my $stdout_text = do { local $/; <$stdout> } // '';
+    my $stderr_text = do { local $/; <$stderr> } // '';
+    $stderr_text =~ s/\s+$//;
+    waitpid $pid, 0;
+    my $wait_status = $?;
+    my $status = ($wait_status & 127) ? 128 + ($wait_status & 127) : $wait_status >> 8;
+    return ($status, $stdout_text, $stderr_text);
+}
+
+sub run_value {
+    my (@arguments) = @_;
+    my ($status, $stdout, $stderr) = run_bubble(@arguments);
+    return (undef, "exit=$status stderr=$stderr") if $status != 0;
+    return (undef, "unexpected output=$stdout") unless $stdout =~ /^\s*($number)\s*$/;
+    return ($1 + 0.0, '');
+}
+
+sub check_result {
+    my ($name, $ok, $details) = @_;
+    if ($ok) {
+        ++$passed;
+        print "OK: $name";
+    } else {
+        ++$failed;
+        print "FAILED: $name";
+    }
+    print " ($details)" if defined $details && length $details;
+    print "\n";
+}
+
+sub relative_error {
+    my ($value, $expected) = @_;
+    return abs($value - $expected)/abs($expected);
+}
+
+-x $bubble or die "Executable not found: $bubble\n";
+
+my @even_kernels = (1, 3, 5, 7);
+for my $kernel (@even_kernels) {
+    my @arguments = ($kernel, 2, 0, 0.1, 0, $resigma, $imsigma);
+    my ($dc, $dc_error) = run_value(@arguments);
+    my ($zero, $zero_error) = run_value('-O', '0', @arguments);
+    my $ok = defined $dc && defined $zero && $dc == $zero;
+    check_result("m=$kernel exact Omega=0 limit", $ok, $ok ? "value=$dc" : "$dc_error $zero_error");
+
+    my ($small, $small_error) = run_value('-O', '1e-8', @arguments);
+    $ok = defined $dc && defined $small && relative_error($small, $dc) < 1e-9;
+    check_result("m=$kernel small Omega limit", $ok,
+        $ok ? "relative_error=" . relative_error($small, $dc) : "$small_error dc=$dc small=$small");
+}
+
+# Independent direct epsilon/omega quadrature for constant Sigma=-0.1i.
+my %finite_reference = (
+    1 => 0.4885903945334426,
+    3 => 0.4708182948628991,
+    5 => 0.4420559614703037,
+    7 => 0.4343363161009058,
+);
+for my $kernel (@even_kernels) {
+    my ($value, $error) = run_value(
+        @tight_tolerances, '-O', '0.3', $kernel, 2, 0, 0.1, 0, $resigma, $imsigma,
+    );
+    my $expected = $finite_reference{$kernel};
+    my $tolerance = 5e-12 + 1e-10*abs($expected);
+    my $ok = defined $value && abs($value - $expected) <= $tolerance;
+    check_result("m=$kernel finite Omega reference", $ok,
+        $ok ? "absolute_error=" . abs($value - $expected) : "$error expected=$expected value=$value");
+}
+
+my ($large, $large_error) = run_value(
+    @tight_tolerances, '-O', '2', 1, 2, 0, 0.1, 0, $resigma, $imsigma,
+);
+my $large_expected = 0.008339741084697084;
+my $large_ok = defined $large && abs($large - $large_expected) <= 1e-11;
+check_result('large Omega shifted integration range', $large_ok,
+    $large_ok ? "absolute_error=" . abs($large - $large_expected) : "$large_error value=$large");
+
+my ($phi_file, $phi_filename) = tempfile('bubble-phi-XXXX', TMPDIR => 1, UNLINK => 1);
+for my $point (-10 .. 10) {
+    print {$phi_file} $point/10, " 1\n";
+}
+close $phi_file or die "Cannot close $phi_filename: $!\n";
+my ($tabulated, $tabulated_error) = run_value(
+    @tight_tolerances, '-O', '0.3', '-p', $phi_filename,
+    0, 2, 0, 0.1, 0, $resigma, $imsigma,
+);
+my $tabulated_expected = $finite_reference{1};
+my $tabulated_ok = defined $tabulated && abs($tabulated - $tabulated_expected) <= 1e-10;
+check_result('tabulated m=0 optical kernel', $tabulated_ok,
+    $tabulated_ok ? "absolute_error=" . abs($tabulated - $tabulated_expected)
+                  : "$tabulated_error expected=$tabulated_expected value=$tabulated");
+
+my @invalid_cases = (
+    ['negative Omega', qr/Invalid optical frequency/, '-O', '-0.1', 5, 2, 0, 0.1, 0, $resigma, $imsigma],
+    ['non-finite Omega', qr/Invalid optical frequency/, '-O', 'nan', 5, 2, 0, 0.1, 0, $resigma, $imsigma],
+    ['optical n!=2', qr/Option -O requires n=2/, '-O', '0.1', 5, 1, 0, 0.1, 0, $resigma, $imsigma],
+    ['optical with -f', qr/Options -O and -f cannot be used together/, '-O', '0.1', '-f', 5, 2, 0, 0.1, 0, $resigma, $imsigma],
+    ['optical with -d', qr/Options -O and -d cannot be used together/, '-O', '0.1', '-d', 0, 2, 0, 0.1, 0, $resigma, $imsigma],
+    ['zero ImSigma floor', qr/Invalid ImSigma clipping floor/, '-s', '0', 5, 2, 0, 0.1, 0, $resigma, $imsigma],
+);
+for my $case (@invalid_cases) {
+    my ($name, $diagnostic, @arguments) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(@arguments);
+    check_result($name, $status == 1 && $stderr =~ $diagnostic,
+        "exit=$status stderr=$stderr");
+}
+
+print "OPTICAL OK=$passed FAILED=$failed\n";
+exit($failed == 0 ? 0 : 1);

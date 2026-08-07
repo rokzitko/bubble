@@ -23,9 +23,9 @@ supplied separately.
 - Spectral-function powers \(n=0,1,2,3\) and frequency moments \(\omega^o\).
 - Linear, cubic-spline, or Akima interpolation of a tabulated self-energy.
 - Adaptive Gauss-Kronrod integration through GSL.
-- Fermi-derivative transport moments, occupied spectral moments, and
-  frequency-resolved DOS output.
-- Regression tests
+- Fermi-derivative transport moments, finite-frequency optical conductivity,
+  occupied spectral moments, and frequency-resolved DOS output.
+- DC, optical-limit, and independent Bethe-lattice regression tests.
 
 ## Quick Start
 
@@ -48,8 +48,8 @@ make
 ```
 
 The compiler and flags can be overridden in the usual way, for example with
-`make CXX=clang++`. Run `make clean` before switching compilers. Run the stable
-24-case regression suite with:
+`make CXX=clang++`. Run `make clean` before switching compilers. Run the default
+DC regression and optical validation suite with:
 
 ```bash
 make check
@@ -119,12 +119,12 @@ $$
 The code first evaluates
 
 $$
-J_{mn}(\Omega)=\frac{1}{D}\int d\epsilon\,\Phi_m(\epsilon)
+J_{mn}(z)=\frac{1}{D}\int d\epsilon\,\Phi_m(\epsilon)
 \left[-\frac{1}{\pi}\mathrm{Im}\,
-\frac{D}{\Omega-\epsilon}\right]^n,
+\frac{D}{z-\epsilon}\right]^n,
 $$
 
-with \(\Omega=\omega+\mu-\Sigma^R(\omega)\), and then performs the remaining
+with \(z=\omega+\mu-\Sigma^R(\omega)\), and then performs the remaining
 frequency integral numerically.
 
 The current analytic kernels use \(D=1\) and \(\sigma=1\). Consequently,
@@ -150,8 +150,55 @@ moments rather than the `o=1` result alone. The exact conversion depends on the
 normalization of \(\Phi_m\), units, degeneracies, and the conventions used for
 charge and current operators.
 
-This program evaluates DC moments. Here \(\omega\) is the internal fermionic
-frequency, not an external optical probe frequency.
+Without `-O`, the program evaluates these DC moments. Here \(\omega\) is the
+internal fermionic frequency.
+
+## Finite-Frequency Optical Conductivity
+
+With `-O OMEGA`, `bubble` evaluates the two-spectral-function moment
+
+$$
+I_{mo}(\Omega)=
+\int_{-CT-\Omega}^{CT}d\omega\,
+\frac{f(\omega)-f(\omega+\Omega)}{\Omega}\,\omega^o
+K_m[z(\omega),z(\omega+\Omega)],
+$$
+
+where
+
+$$
+K_m(z_1,z_2)=\int d\epsilon\,\Phi_m(\epsilon)
+\left[-\frac{1}{\pi}\mathrm{Im}\frac{1}{z_1-\epsilon}\right]
+\left[-\frac{1}{\pi}\mathrm{Im}\frac{1}{z_2-\epsilon}\right],
+\qquad
+z(\omega)=\omega+\mu-\Sigma^R(\omega).
+$$
+
+The optical frequency \(\Omega\) is external and distinct from the integration
+frequency \(\omega\). The self-energy is evaluated independently at
+\(\omega\) and \(\omega+\Omega\). The frequency quadrature is split at
+\(-\Omega\) and zero. It therefore requires self-energy data over approximately
+\([-CT-\Omega,CT+\Omega]\); the program warns before using its normal
+out-of-table extrapolation policy.
+
+Optical mode requires `n=2` and a finite `OMEGA >= 0`. It cannot be combined
+with `-f` or `-d`. At `OMEGA=0`, the existing Fermi derivative and DC kernel are
+used exactly. For small positive `OMEGA`, the finite-frequency result therefore
+approaches the DC value without a subtractive Fermi-function cancellation.
+The physical longitudinal optical conductivity uses `o=0`; other powers remain
+available as generalized moments.
+
+For example:
+
+```bash
+./bubble -O 0.1 5 2 0 0.27 0 \
+  Bethe_lattice_test/resigma.dat \
+  Bethe_lattice_test/imsigma.dat
+```
+
+This is the regular absorptive bubble contribution. It does not add a separate
+Drude delta function or diamagnetic term, vertex corrections, or model-specific
+normalization factors.
 
 ## Built-in Kernels
 
@@ -213,10 +260,12 @@ Options:
 | `-a A` | Absolute integration tolerance, default `1e-7` |
 | `-r R` | Relative integration tolerance, default `1e-8` |
 | `-c C` | Frequency cutoff in units of temperature, default `15` |
+| `-s S` | Positive clipping floor for \(-\mathrm{Im}\,\Sigma\), default `1e-8` |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
 | `-e E` | Multiply a tabulated kernel by \(\epsilon^E\), default `0` |
 | `-f` | Use the Fermi function instead of its derivative |
 | `-d` | Skip the frequency integral and write `dos.dat`; requires `m=0` |
+| `-O OMEGA` | External optical frequency; requires `OMEGA >= 0` and `n=2` |
 
 Without `-v`, normal integration mode prints one number to standard output.
 This makes the executable convenient to call from shell, Python, Julia, or
@@ -239,12 +288,15 @@ increasing frequency grids. The retarded convention
 
 The following numerical policies are important when interpreting results:
 
-- Input values with \(\mathrm{Im}\,\Sigma>-10^{-8}\) are replaced by
-  \(-10^{-8}\), including positive noncausal values.
+- Input values with \(\mathrm{Im}\,\Sigma>-S\) are replaced by \(-S\),
+  including positive noncausal values. The `-s S` option selects this floor and
+  defaults to \(S=10^{-8}\).
 - Outside the input interval, `ReSigma` is held at its nearest endpoint and
   `ImSigma` is set to \(-10^{-10}\).
 - The default Fermi-derivative integration interval is
   \([-15T,15T]\). Increase `-c` if broader thermal tails matter.
+- Optical mode extends the lower endpoint by `OMEGA` and evaluates the shifted
+  propagator up to `cutoff*T+OMEGA`.
 
 Interpolation mode `-i 1` is the conservative default for noisy DMFT data.
 Higher-order interpolation can be useful for smooth, well-resolved
@@ -314,10 +366,13 @@ still syntactically required but are not used in this mode. `-d` overwrites
 
 - The analytic \(J_{mn}\) expressions were generated from Mathematica
   calculations documented under `notes/`.
+- Built-in optical kernels use analytic Hilbert transforms and stable divided
+  differences rather than generated two-frequency expressions.
 - The remaining frequency integral uses adaptive GSL `qag` quadrature.
 - The default rule is the 15-point Gauss-Kronrod rule with a workspace of
   1,000 intervals.
-- A custom `m=0` kernel introduces a nested adaptive energy integral.
+- A custom `m=0` kernel introduces a nested adaptive energy integral with
+  linewidth-aware breakpoints around both spectral peaks.
 - Self-energy interpolation is selectable, while custom-kernel interpolation
   is always Akima.
 - In verbose mode, the reported error is GSL's estimate for the outer
@@ -325,7 +380,8 @@ still syntactically required but are not used in this mode. `-d` overwrites
 
 ## Validation
 
-The repository contains two complementary sets of checks.
+The repository contains three complementary sets of checks. `make check` runs
+legacy suite 1 and both optical checks without invoking Mathematica.
 
 ### Legacy Regression Data
 
@@ -342,6 +398,17 @@ The current implementation passes 372 of the 384 historical comparisons. The
 12 remaining cases are confined to the clean-limit `n=3` and suite `22` cases
 marked as problematic in `regression/README`.
 
+### Optical Regression
+
+`regression/run_optical_tests` checks the exact `-O 0` DC path, small-frequency
+convergence, independent finite-frequency values for the built-in kernel
+families, a large-frequency shifted-range case, a tabulated `m=0` kernel, and
+invalid option combinations. It can be run directly with:
+
+```bash
+./regression/run_optical_tests
+```
+
 ### Bethe-Lattice DMFT Benchmark
 
 `Bethe_lattice_test/` contains a real-frequency DMFT self-energy and independent
@@ -351,14 +418,29 @@ normalization, the current executable agrees with these references to about
 \(10^{-5}\) relative accuracy. The independent occupied-energy check agrees to
 better than \(10^{-7}\) relative accuracy.
 
+The finite-frequency reference contains 50 optical frequencies. Generate
+`cond.opt.geo.dat` on that exact mesh and compare it with the frozen Mathematica
+output using:
+
+```bash
+./Bethe_lattice_test/cond.opt.geo
+```
+
+The script applies the benchmark's \(2\pi\) normalization, `20T` cutoff, and
+\(10^{-16}\) self-energy clipping floor. It accepts
+\(|\Delta|\le10^{-12}+3\times10^{-5}|\mathrm{reference}|\), reports the largest
+errors, and exits unsuccessfully on any mismatch. `cond.opt.geo.mma` is retained
+only as provenance; validation reads `cond.opt.geo-mma.dat` and never launches
+Mathematica.
+
 Some scripts in this directory belong to the original larger DMFT/NRG workflow
 and require tools that are not distributed here. The `bubble` invocations and
 the checked-in input/reference data are sufficient for the examples above.
 
 ## Precision
 
-For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, and the input grid,
-and confirm that the physical result is stable.
+For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, `-s`, and the input
+grid, and confirm that the physical result is stable.
 
 ## Method Notes
 
@@ -370,7 +452,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.4.
+current executable is authoritative for version 1.5.
 
 ## References
 

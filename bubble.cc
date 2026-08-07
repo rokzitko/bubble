@@ -120,7 +120,7 @@ void usage()
    cout << "-a : absolute error (default = 1e-7)" << endl;
    cout << "-r : relative error (default = 1e-8)" << endl;
    cout << "-c : frequency interval cutoff in units of T (default = 15)" << endl;
-   cout << "-s : positive ImSigma clipping floor (default = 1e-8)" << endl;
+   cout << "-s FLOOR : positive ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
    cout << "-e : additional power of epsilon when using the m=0 code (default=0)" << endl;
@@ -674,17 +674,20 @@ void add_optical_peak_breakpoints(vector<double> &points, complex<double> z)
    const double width = abs(z.imag());
    const double range = eps_max - eps_min;
    if (!isfinite(center) || !isfinite(width) || width == 0.0 ||
-       center < eps_min - range || center > eps_max + range)
+       (center < eps_min && eps_min - center > width) ||
+       (center > eps_max && center - eps_max > width))
       return;
 
    if (eps_min < center && center < eps_max)
       points.push_back(center);
    double distance = width;
    for (int scale = 0; scale < 24; ++scale) {
-      if (eps_min < center - distance)
-	 points.push_back(center - distance);
-      if (center + distance < eps_max)
-	 points.push_back(center + distance);
+      const double lower_point = center - distance;
+      const double upper_point = center + distance;
+      if (eps_min < lower_point && lower_point < eps_max)
+	 points.push_back(lower_point);
+      if (eps_min < upper_point && upper_point < eps_max)
+	 points.push_back(upper_point);
       if (distance >= range)
 	 break;
       distance *= 8.0;
@@ -713,7 +716,18 @@ double J_0_optical(complex<double> z1, complex<double> z2)
    add_optical_peak_breakpoints(points, z1);
    add_optical_peak_breakpoints(points, z2);
    sort(points.begin(), points.end());
-   points.erase(unique(points.begin(), points.end()), points.end());
+   const double spacing = min(0.25*(eps_max - eps_min),
+      64.0*numeric_limits<double>::epsilon()*
+      max(1.0, max(abs(eps_min), abs(eps_max))));
+   vector<double> filtered_points;
+   filtered_points.push_back(eps_min);
+   for (vector<double>::const_iterator point = points.begin(); point != points.end(); ++point) {
+      if (eps_min < *point && *point < eps_max &&
+	  *point - filtered_points.back() > spacing && eps_max - *point > spacing)
+	 filtered_points.push_back(*point);
+   }
+   filtered_points.push_back(eps_max);
+   points.swap(filtered_points);
 
    const int status = gsl_integration_qagp(&F,
 					   &points[0],
@@ -727,7 +741,8 @@ double J_0_optical(complex<double> z1, complex<double> z2)
    gsl_integration_workspace_free(work);
 
    if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(result)) {
-      cerr << "Optical epsilon integration failed: " << gsl_strerror(status) << endl;
+      cerr << "Optical epsilon integration failed for z1=" << z1 << ", z2=" << z2
+	   << ": " << gsl_strerror(status) << endl;
       exit(EXIT_FAILURE);
    }
    if (status == GSL_EROUND) {
