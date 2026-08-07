@@ -178,8 +178,8 @@ The optical frequency \(\Omega\) is external and distinct from the integration
 frequency \(\omega\). The self-energy is evaluated independently at
 \(\omega\) and \(\omega+\Omega\). The frequency quadrature is split at
 \(-\Omega\) and zero. It therefore requires self-energy data over approximately
-\([-CT-\Omega,CT+\Omega]\); the program warns before using its normal
-out-of-table extrapolation policy.
+\([-CT-\Omega,CT+\Omega]\); unless `-q` is used, the program warns before
+using its normal out-of-table extrapolation policy.
 
 Optical mode requires `n=2` and a finite `OMEGA >= 0`. It cannot be combined
 with `-f` or `-d`. At `OMEGA=0`, the existing Fermi derivative and DC kernel are
@@ -255,6 +255,7 @@ Options:
 | Option | Meaning |
 |---|---|
 | `-v` | Print parameters, numerical result, and outer integration error estimate |
+| `-q` | Suppress non-fatal warnings without suppressing results or errors |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
 | `-k K` | GSL rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points |
 | `-a A` | Absolute integration tolerance, default `1e-7` |
@@ -270,6 +271,9 @@ Options:
 Without `-v`, normal integration mode prints one number to standard output.
 This makes the executable convenient to call from shell, Python, Julia, or
 other DMFT post-processing workflows.
+
+`-q` suppresses only non-fatal warning messages. It does not hide the numerical
+result, fatal diagnostics, or the additional output requested by `-v`.
 
 ## Self-Energy Input
 

@@ -89,6 +89,7 @@ string fnReSigma, fnImSigma;
 // Optional parameters (with defaults)
 int b = 1;
 bool verbose = false;
+bool quiet_warnings = false;
 int key = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
@@ -115,6 +116,7 @@ void usage()
    cout << "Usage: bubble <m> <n> <o> <T> <mu> <resigma> <imsigma>" << endl;
    cout << "Options:" << endl;
    cout << "-v : increase verbosity" << endl;
+   cout << "-q : suppress non-fatal warnings" << endl;
    cout << "-i : interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
    cout << "-k : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
    cout << "-a : absolute error (default = 1e-7)" << endl;
@@ -160,10 +162,13 @@ void cmd_line(int argc, char *argv[])
 {
    int c;
     
-   while ((c = getopt(argc, argv, "vi:k:a:r:c:s:p:dfe:O:")) != -1) {
+   while ((c = getopt(argc, argv, "vqi:k:a:r:c:s:p:dfe:O:")) != -1) {
       switch (c) {
       case 'v':
 	 verbose = true;
+	 break;
+      case 'q':
+	 quiet_warnings = true;
 	 break;
       case 'i':
 	 b = atoi(optarg);
@@ -745,7 +750,7 @@ double J_0_optical(complex<double> z1, complex<double> z2)
 	   << ": " << gsl_strerror(status) << endl;
       exit(EXIT_FAILURE);
    }
-   if (status == GSL_EROUND) {
+   if (status == GSL_EROUND && !quiet_warnings) {
       static bool warning_emitted = false;
       if (!warning_emitted) {
 	 cerr << "Warning: optical epsilon integration was limited by roundoff." << endl;
@@ -1117,7 +1122,7 @@ double optical_integrand(double omega, void *)
 void calc_DOS()
 {
    assert(m == 0);
-   if (n != 1) {
+   if (n != 1 && !quiet_warnings) {
       cout << "Warning: maybe you want n=1 here?" << endl;
    }
    
@@ -1314,7 +1319,8 @@ void calc_optical()
    const double upper_limit = cutoff*T;
    const double boundaries[] = {lower_limit, -optical_frequency, 0.0, upper_limit};
 
-   if (lower_limit < omega_min || upper_limit + optical_frequency > omega_max) {
+   if (!quiet_warnings &&
+       (lower_limit < omega_min || upper_limit + optical_frequency > omega_max)) {
       cerr << "Warning: optical calculation evaluates Sigma outside ["
 	   << omega_min << ", " << omega_max << "]." << endl;
    }
@@ -1354,7 +1360,7 @@ void calc_optical()
    }
    gsl_integration_workspace_free(work);
 
-   if (roundoff_limited)
+   if (roundoff_limited && !quiet_warnings)
       cerr << "Warning: optical frequency integration was limited by roundoff; estimated error="
 	   << error << "." << endl;
 
