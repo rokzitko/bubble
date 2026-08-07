@@ -23,6 +23,7 @@
 // 23.12.2017 - compute the spectral function (debugging aid) (rz)
 //            - clipping of Im Sigma
 // 6.8.2026 - merge support for the -d, -e, and -f switches
+// 7.8.2026 - support finite-frequency optical conductivity through -O
 
 #include <iostream>
 #include <iomanip>
@@ -35,8 +36,10 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
+#include <cerrno>
 #include <cmath>
 #include <complex>
+#include <limits>
 
 #include <gsl/gsl_math.h>
 #include <gsl/gsl_errno.h>
@@ -75,7 +78,7 @@ gsl_interp_accel *acc_Phi;
 gsl_spline *spline_Phi;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.4";
+const string VERSION = "1.5";
 
 // Mandatory parameters
 int m, n, o;
@@ -95,6 +98,8 @@ bool calcdos = false; // compute the spectral function
 enum ff { f_f, f_derivative };
 ff f_type = f_derivative;
 int e = 0; // power of epsilon
+bool optical_mode = false;
+double optical_frequency = 0.0;
 
 const double EPSILON = 1e-10; // some very small value...
 // For clipping Im Sigma. 
@@ -120,13 +125,28 @@ void usage()
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
    cout << "-e : additional power of epsilon when using the m=0 code (default=0)" << endl;
    cout << "-f : switch (-df/dw) to f in the w integration (incompatible with -d)" << endl;
+   cout << "-O OMEGA : external optical frequency (requires OMEGA>=0 and n=2)" << endl;
+}
+
+double parse_optical_frequency(const char *value)
+{
+   char *end = NULL;
+   errno = 0;
+   const double result = strtod(value, &end);
+
+   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result) || result < 0.0) {
+      cerr << "Invalid optical frequency: " << value << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   return result;
 }
 
 void cmd_line(int argc, char *argv[])
 {
-   char c;
+   int c;
     
-   while ((c = getopt(argc, argv, "vi:k:a:r:c:p:dfe:")) != -1) {
+   while ((c = getopt(argc, argv, "vi:k:a:r:c:p:dfe:O:")) != -1) {
       switch (c) {
       case 'v':
 	 verbose = true;
@@ -158,6 +178,10 @@ void cmd_line(int argc, char *argv[])
       case 'e':
 	 e = atoi(optarg);
 	 break;
+      case 'O':
+	 optical_mode = true;
+	 optical_frequency = parse_optical_frequency(optarg);
+	 break;
       default:
 	 cerr << "Option not implemented." << endl;
 	 usage();
@@ -186,6 +210,22 @@ void cmd_line(int argc, char *argv[])
    }
    if (calcdos && f_type == f_f) {
       cerr << "Options -d and -f cannot be used together." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (optical_mode && n != 2) {
+      cerr << "Option -O requires n=2." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (optical_mode && calcdos) {
+      cerr << "Options -O and -d cannot be used together." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (optical_mode && f_type == f_f) {
+      cerr << "Options -O and -f cannot be used together." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (optical_mode && (!isfinite(T) || T <= 0.0 || !isfinite(cutoff) || cutoff <= 0.0)) {
+      cerr << "Optical conductivity requires positive finite T and cutoff." << endl;
       exit(EXIT_FAILURE);
    }
     
@@ -228,8 +268,12 @@ void cmd_line(int argc, char *argv[])
       cout << "i=" << b << " key=" << key << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
       cout << "Phi=" << fnPhi << " e=" << e << endl;
+      if (optical_mode)
+	 cout << "external Omega=" << optical_frequency << endl;
       if (calcdos) {
 	 cout << "epsilon integrals only (dos.dat)" << endl;
+      } else if (optical_mode && optical_frequency > 0.0) {
+	 cout << "[f(omega)-f(omega+Omega)]/Omega" << endl;
       } else {
 	 switch (f_type) {
 	 case f_f:
@@ -589,6 +633,96 @@ double J_0n (complex<double> OMEGA)
    return result_Phi;
 }
 
+struct optical_kernel_params {
+   complex<double> z1;
+   complex<double> z2;
+};
+
+double f_gsl_optical(double epsilon, void *params)
+{
+   const optical_kernel_params &p = *(optical_kernel_params *)params;
+   const double phi_interp = gsl_spline_eval(spline_Phi, epsilon, acc_Phi);
+   const complex<double> G1 = 1.0/(p.z1 - epsilon);
+   const complex<double> G2 = 1.0/(p.z2 - epsilon);
+   const double A1 = -G1.imag()/M_PI;
+   const double A2 = -G2.imag()/M_PI;
+
+   return phi_interp*A1*A2;
+}
+
+void add_optical_peak_breakpoints(vector<double> &points, complex<double> z)
+{
+   const double center = z.real();
+   const double width = abs(z.imag());
+   const double range = eps_max - eps_min;
+   if (!isfinite(center) || !isfinite(width) || width == 0.0 ||
+       center < eps_min - range || center > eps_max + range)
+      return;
+
+   if (eps_min < center && center < eps_max)
+      points.push_back(center);
+   double distance = width;
+   for (int scale = 0; scale < 24; ++scale) {
+      if (eps_min < center - distance)
+	 points.push_back(center - distance);
+      if (center + distance < eps_max)
+	 points.push_back(center + distance);
+      if (distance >= range)
+	 break;
+      distance *= 8.0;
+   }
+}
+
+double J_0_optical(complex<double> z1, complex<double> z2)
+{
+   optical_kernel_params params = {z1, z2};
+   gsl_function F;
+   F.function = &f_gsl_optical;
+   F.params = &params;
+
+   const size_t ws_size = 1000;
+   gsl_integration_workspace *work = gsl_integration_workspace_alloc(ws_size);
+   if (work == NULL) {
+      cerr << "Unable to allocate optical kernel integration workspace." << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   double result;
+   double error;
+   vector<double> points;
+   points.push_back(eps_min);
+   points.push_back(eps_max);
+   add_optical_peak_breakpoints(points, z1);
+   add_optical_peak_breakpoints(points, z2);
+   sort(points.begin(), points.end());
+   points.erase(unique(points.begin(), points.end()), points.end());
+
+   const int status = gsl_integration_qagp(&F,
+					   &points[0],
+					   points.size(),
+					   abs_error,
+					   rel_error,
+					   ws_size,
+					   work,
+					   &result,
+					   &error);
+   gsl_integration_workspace_free(work);
+
+   if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(result)) {
+      cerr << "Optical epsilon integration failed: " << gsl_strerror(status) << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (status == GSL_EROUND) {
+      static bool warning_emitted = false;
+      if (!warning_emitted) {
+	 cerr << "Warning: optical epsilon integration was limited by roundoff." << endl;
+	 warning_emitted = true;
+      }
+   }
+
+   return result;
+}
+
 // Switches between J for different m and n indices.
 double J_mn (complex<double> OMEGA)
 {
@@ -684,11 +818,197 @@ double J_mn (complex<double> OMEGA)
    }
 }
 
-// Integrand of Imno integral
-double integrand (double omega, void * params) 
+struct hilbert_pair {
+   complex<double> value;
+   complex<double> derivative;
+};
+
+// H_m(z) = integral Phi_m(epsilon)/(z-epsilon) d epsilon.
+
+hilbert_pair flat_hilbert(int kernel, complex<double> z)
 {
-   double T = *(double *) params;
-   double sigma_re, sigma_im;
+   if (abs(z) > 2.0) {
+      const complex<double> u = 1.0/z;
+      const complex<double> u2 = u*u;
+
+      if (kernel == 1) {
+	 complex<double> value = 0.0;
+	 complex<double> term = u;
+	 for (int k = 0; k < 64; ++k, term *= u2)
+	    value += 2.0*term/(2*k + 1.0);
+
+	 return hilbert_pair{value, -2.0*u2/(1.0 - u2)};
+      }
+
+      complex<double> value = 0.0;
+      complex<double> derivative = 0.0;
+      complex<double> term = u2;
+      for (int k = 1; k < 64; ++k, term *= u2) {
+	 value += 2.0*term/(2*k + 1.0);
+	 derivative -= 4.0*k*term*u/(2*k + 1.0);
+      }
+      return hilbert_pair{value, derivative};
+   }
+
+   const complex<double> value1 = log(z + 1.0) - log(z - 1.0);
+   const complex<double> derivative1 = 2.0/(1.0 - z*z);
+   if (kernel == 1)
+      return hilbert_pair{value1, derivative1};
+
+   return hilbert_pair{z*value1 - 2.0, value1 + z*derivative1};
+}
+
+hilbert_pair gaussian_hilbert_asymptotic(int kernel, complex<double> z)
+{
+   const double mass = sqrt(M_PI/2.0);
+   const complex<double> u = 1.0/z;
+   const complex<double> u2 = u*u;
+   complex<double> power = 1.0;
+   complex<double> value7 = 0.0;
+   complex<double> derivative7 = 0.0;
+   complex<double> value8 = 0.0;
+   complex<double> derivative8 = 0.0;
+   double moment = mass;
+
+   for (int k = 0; k < 32; ++k) {
+      const complex<double> term = moment*power;
+      value7 += term*u;
+      derivative7 -= (2*k + 1.0)*term*u*u;
+
+      if (k != 0) {
+	 value8 += term;
+	 derivative8 -= 2.0*k*term*u;
+      }
+
+      power *= u2;
+      moment *= (2*k + 1.0)/4.0;
+   }
+
+   if (kernel == 7)
+      return hilbert_pair{value7, derivative7};
+   return hilbert_pair{value8, derivative8};
+}
+
+bool lower_half_plane(complex<double> z)
+{
+   return z.imag() < 0.0 || (z.imag() == 0.0 && signbit(z.imag()));
+}
+
+hilbert_pair kernel_hilbert(int kernel, complex<double> z)
+{
+   if (kernel == 1 || kernel == 2)
+      return flat_hilbert(kernel, z);
+
+   if (3 <= kernel && kernel <= 6) {
+      const complex<double> root = sqrt(z - 1.0)*sqrt(z + 1.0);
+      const complex<double> t = 1.0/(z + root);
+
+      if (kernel == 3)
+	 return hilbert_pair{M_PI*t, -M_PI*t/root};
+      if (kernel == 4)
+	 return hilbert_pair{0.5*M_PI*t*t, -M_PI*t*t/root};
+      if (kernel == 5)
+	 return hilbert_pair{0.25*M_PI*t*(3.0 - t*t), -1.5*M_PI*t*t};
+      return hilbert_pair{0.125*M_PI*t*t*(2.0 - t*t), -M_PI*t*t*t};
+   }
+
+   if (kernel == 7 || kernel == 8) {
+      if (abs(z) > 8.0)
+	 return gaussian_hilbert_asymptotic(kernel, z);
+
+      const double sqrt2 = sqrt(2.0);
+      const double mass = sqrt(M_PI/2.0);
+      const complex<double> value7 = lower_half_plane(z)
+	 ? I*M_PI*Faddeeva::w(-sqrt2*z)
+	 : -I*M_PI*Faddeeva::w(sqrt2*z);
+      const complex<double> derivative7 = 4.0*mass - 4.0*z*value7;
+
+      if (kernel == 7)
+	 return hilbert_pair{value7, derivative7};
+      return hilbert_pair{z*value7 - mass, value7 + z*derivative7};
+   }
+
+   cerr << "Optical kernel not implemented for m=" << kernel << endl;
+   exit(EXIT_FAILURE);
+}
+
+bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
+{
+   if ((a.imag() > 0.0 && b.imag() > 0.0) ||
+       (a.imag() < 0.0 && b.imag() < 0.0))
+      return true;
+
+   if (kernel <= 6 && ((a.real() > 1.0 && b.real() > 1.0) ||
+		       (a.real() < -1.0 && b.real() < -1.0)))
+      return true;
+
+   return false;
+}
+
+complex<double> hilbert_divided_difference(int kernel,
+					   complex<double> a,
+					   complex<double> b)
+{
+   if (a == b)
+      return -kernel_hilbert(kernel, a).derivative;
+
+   if (3 <= kernel && kernel <= 6) {
+      // Factor H(a)-H(b) in t=1/(z+sqrt(z-1)*sqrt(z+1)).
+      const complex<double> root_a = sqrt(a - 1.0)*sqrt(a + 1.0);
+      const complex<double> root_b = sqrt(b - 1.0)*sqrt(b + 1.0);
+      const complex<double> ua = a + root_a;
+      const complex<double> ub = b + root_b;
+      const complex<double> ta = 1.0/ua;
+      const complex<double> tb = 1.0/ub;
+      const complex<double> root_sum = root_a + root_b;
+      const complex<double> factor_a = a - b + root_sum;
+      const complex<double> factor_b = b - a + root_sum;
+      const complex<double> denominator = abs(factor_a) >= abs(factor_b)
+	 ? ub*factor_a
+	 : ua*factor_b;
+      const complex<double> ratio = 2.0/denominator;
+
+      if (kernel == 3)
+	 return M_PI*ratio;
+      if (kernel == 4)
+	 return 0.5*M_PI*ratio*(ta + tb);
+      if (kernel == 5)
+	 return 0.25*M_PI*ratio*(3.0 - ta*ta - ta*tb - tb*tb);
+      return 0.125*M_PI*ratio*(ta + tb)*(2.0 - ta*ta - tb*tb);
+   }
+
+   const complex<double> difference = b - a;
+   const complex<double> center = 0.5*(a + b);
+   const double local_scale = kernel <= 6
+      ? min(abs(center - 1.0), abs(center + 1.0))
+      : max(1.0, abs(center));
+   static const double threshold = pow(numeric_limits<double>::epsilon(), 1.0/7.0);
+
+   if (same_analytic_region(kernel, a, b) &&
+       abs(difference) <= threshold*local_scale) {
+      const complex<double> offset = 0.5*sqrt(3.0/5.0)*difference;
+      return -(5.0/18.0)*(kernel_hilbert(kernel, center - offset).derivative +
+			  kernel_hilbert(kernel, center + offset).derivative)
+	     -(4.0/9.0)*kernel_hilbert(kernel, center).derivative;
+   }
+
+   return (kernel_hilbert(kernel, a).value - kernel_hilbert(kernel, b).value)/difference;
+}
+
+double J_m2_optical(complex<double> z1, complex<double> z2)
+{
+   if (m == 0)
+      return J_0_optical(z1, z2);
+
+   const complex<double> cross = hilbert_divided_difference(m, conj(z1), z2);
+   const complex<double> same = hilbert_divided_difference(m, z1, z2);
+   return (cross.real() - same.real())/(2.0*M_PI*M_PI);
+}
+
+complex<double> effective_frequency(double omega)
+{
+   double sigma_re;
+   double sigma_im;
    if (omega_min <= omega && omega <= omega_max) {
       sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
       sigma_im = gsl_spline_eval(spline_imSigma, omega, acc_imSigma);
@@ -699,8 +1019,41 @@ double integrand (double omega, void * params)
       if (omega > omega_max)
 	 sigma_re = reSigma_asymp_pos;
    }
-	 
-   complex<double> OMEGA = omega + mu - sigma_re - sigma_im * I;
+
+   return omega + mu - sigma_re - sigma_im*I;
+}
+
+double optical_fermi_factor(double omega)
+{
+   // Algebraic branches avoid both exponential overflow and close subtraction.
+   const double x = omega/T;
+   const double shifted_x = (omega + optical_frequency)/T;
+   const double shift = optical_frequency/T;
+   const double fermi_difference_scale = -expm1(-shift);
+
+   if (x >= 0.0) {
+      const double exp_minus_x = exp(-x);
+      const double exp_minus_shifted_x = exp(-shifted_x);
+      return exp_minus_x*fermi_difference_scale/
+	 (optical_frequency*(1.0 + exp_minus_x)*(1.0 + exp_minus_shifted_x));
+   }
+
+   if (shifted_x <= 0.0) {
+      const double exp_x = exp(x);
+      const double exp_shifted_x = exp(shifted_x);
+      return exp_shifted_x*fermi_difference_scale/
+	 (optical_frequency*(1.0 + exp_x)*(1.0 + exp_shifted_x));
+   }
+
+   return fermi_difference_scale/
+      (optical_frequency*(1.0 + exp(x))*(1.0 + exp(-shifted_x)));
+}
+
+// Integrand of Imno integral
+double integrand (double omega, void * params)
+{
+   double T = *(double *) params;
+   const complex<double> OMEGA = effective_frequency(omega);
 
    double f_factor;
    switch (f_type) {
@@ -716,6 +1069,13 @@ double integrand (double omega, void * params)
    }
 
    return f_factor * J_mn(OMEGA) * pow(omega,o);
+}
+
+double optical_integrand(double omega, void *)
+{
+   const complex<double> z1 = effective_frequency(omega);
+   const complex<double> z2 = effective_frequency(omega + optical_frequency);
+   return optical_fermi_factor(omega)*J_m2_optical(z1, z2)*pow(omega, o);
 }
 
 // Calculate the epsilon integral only. For m=0 case only.
@@ -741,19 +1101,7 @@ void calc_DOS()
    
    for (int i = 0; i <= nr_points; ++i) {
       const double omega = (i == nr_points ? omega_max : omega_min + i*step);
-      double sigma_re, sigma_im;
-      if (omega_min <= omega && omega <= omega_max) {
-	 sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
-	 sigma_im = gsl_spline_eval(spline_imSigma, omega, acc_imSigma);
-      } else {
-	 sigma_im = -EPSILON;
-	 if (omega < omega_min)
-	    sigma_re = reSigma_asymp_neg;
-	 if (omega > omega_max)
-	    sigma_re = reSigma_asymp_pos;
-      }
-      
-      complex<double> OMEGA = omega + mu - sigma_re - sigma_im * I;
+      const complex<double> OMEGA = effective_frequency(omega);
       
       double result = J_mn(OMEGA); // -1/Pi Im[] already included in f_gsl() integrand
       
@@ -918,6 +1266,76 @@ void calc()
    }
 }
 
+void calc_optical()
+{
+   assert(optical_mode && optical_frequency > 0.0);
+
+   const size_t ws_size = 1000;
+   gsl_integration_workspace *work = gsl_integration_workspace_alloc(ws_size);
+   if (work == NULL) {
+      cerr << "Unable to allocate optical frequency integration workspace." << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   const double lower_limit = -cutoff*T - optical_frequency;
+   const double upper_limit = cutoff*T;
+   const double boundaries[] = {lower_limit, -optical_frequency, 0.0, upper_limit};
+
+   if (lower_limit < omega_min || upper_limit + optical_frequency > omega_max) {
+      cerr << "Warning: optical calculation evaluates Sigma outside ["
+	   << omega_min << ", " << omega_max << "]." << endl;
+   }
+
+   gsl_function F;
+   F.function = &optical_integrand;
+   F.params = NULL;
+
+   gsl_set_error_handler_off();
+   double result = 0.0;
+   double error = 0.0;
+   bool roundoff_limited = false;
+   for (int segment = 0; segment < 3; ++segment) {
+      double segment_result;
+      double segment_error;
+      const int status = gsl_integration_qag(&F,
+					     boundaries[segment],
+					     boundaries[segment + 1],
+					     abs_error/3.0,
+					     rel_error,
+					     ws_size,
+					     key,
+					     work,
+					     &segment_result,
+					     &segment_error);
+      if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(segment_result)) {
+	 gsl_integration_workspace_free(work);
+	 cerr << "Optical frequency integration failed on ["
+	      << boundaries[segment] << ", " << boundaries[segment + 1]
+	      << "]: " << gsl_strerror(status) << endl;
+	 exit(EXIT_FAILURE);
+      }
+      if (status == GSL_EROUND)
+	 roundoff_limited = true;
+      result += segment_result;
+      error += segment_error;
+   }
+   gsl_integration_workspace_free(work);
+
+   if (roundoff_limited)
+      cerr << "Warning: optical frequency integration was limited by roundoff; estimated error="
+	   << error << "." << endl;
+
+   const int width = 20;
+   const int precision_result = 16;
+   const int precision_error = 4;
+   if (verbose) {
+      cout << "Result = " << setprecision(precision_result) << setw(width) << result << endl;
+      cout << "Error  = " << setprecision(precision_error) << setw(width) << error << endl;
+   } else {
+      cout << setprecision(precision_result) << result << endl;
+   }
+}
+
 int main (int argc, char *argv[]) 
 {
    cmd_line(argc, argv);
@@ -928,6 +1346,8 @@ int main (int argc, char *argv[])
    
    if (calcdos)
       calc_DOS();
+   else if (optical_mode && optical_frequency > 0.0)
+      calc_optical();
    else
       calc();
     
