@@ -96,15 +96,15 @@ G^R_\epsilon(\omega) =
 \frac{1}{\omega+\mu-\epsilon-\Sigma^R(\omega)},
 \qquad
 \rho_\epsilon(\omega) =
--\frac{1}{\pi}\mathrm{Im}\,G^R_\epsilon(\omega).
+-\frac{1}{\pi}\mathrm{Im}\ G^R_\epsilon(\omega).
 $$
 
 The general dimensionless moments (described in the accompanying notes) are
 
 $$
-I_{mno} = \frac{1}{D}\int d\epsilon\,\Phi_m(\epsilon)
-\int d\omega\,
-\left(-\frac{\partial f}{\partial\omega}\right)
+I_{mno} = \frac{1}{D}\int d\epsilon\ \Phi_m(\epsilon)
+\int d\omega
+\ \left(-\frac{\partial f}{\partial\omega}\right)
 [D\rho_\epsilon(\omega)]^n
 \left(\frac{\omega}{D}\right)^o,
 $$
@@ -121,9 +121,9 @@ $$
 The code first evaluates
 
 $$
-J_{mn}(z)=\frac{1}{D}\int d\epsilon\,\Phi_m(\epsilon)
-\left[-\frac{1}{\pi}\mathrm{Im}\,
-\frac{D}{z-\epsilon}\right]^n,
+J_{mn}(z)=\frac{1}{D}\int d\epsilon\ \Phi_m(\epsilon)
+\left[-\frac{1}{\pi}\mathrm{Im}
+\ \frac{D}{z-\epsilon}\right]^n,
 $$
 
 with \(z=\omega+\mu-\Sigma^R(\omega)\), and then performs the remaining
@@ -143,9 +143,9 @@ an additional transport function \(\Phi_m\). Writing
 $$
 z=x+iy,
 \qquad
-x=\omega+\mu-\mathrm{Re}\,\Sigma^R(\omega),
+x=\omega+\mu-\mathrm{Re}\ \Sigma^R(\omega),
 \qquad
-y=-\mathrm{Im}\,\Sigma^R(\omega)>0,
+y=-\mathrm{Im}\ \Sigma^R(\omega)>0,
 $$
 
 the spectral factor for \(D=1\) is the Lorentzian
@@ -203,15 +203,15 @@ With `-O OMEGA`, `bubble` evaluates the two-spectral-function moment
 
 $$
 I_{mo}(\Omega)=
-\int_{-CT-\Omega}^{CT}d\omega\,
-\frac{f(\omega)-f(\omega+\Omega)}{\Omega}\,\omega^o
+\int_{-CT-\Omega}^{CT}d\omega
+\ \frac{f(\omega)-f(\omega+\Omega)}{\Omega}\ \omega^o
 K_m[z(\omega),z(\omega+\Omega)],
 $$
 
 where
 
 $$
-K_m(z_1,z_2)=\int d\epsilon\,\Phi_m(\epsilon)
+K_m(z_1,z_2)=\int d\epsilon\ \Phi_m(\epsilon)
 \left[-\frac{1}{\pi}\mathrm{Im}\frac{1}{z_1-\epsilon}\right]
 \left[-\frac{1}{\pi}\mathrm{Im}\frac{1}{z_2-\epsilon}\right],
 \qquad
@@ -291,8 +291,8 @@ The positional arguments are:
 | `o` | Power of frequency in the outer integral |
 | `T` | Temperature in the chosen energy unit |
 | `mu` | Chemical potential |
-| `resigma.dat` | Table of \(\omega,\mathrm{Re}\,\Sigma(\omega)\) |
-| `imsigma.dat` | Table of \(\omega,\mathrm{Im}\,\Sigma(\omega)\) |
+| `resigma.dat` | Table of \(\omega,\mathrm{Re}\ \Sigma(\omega)\) |
+| `imsigma.dat` | Table of \(\omega,\mathrm{Im}\ \Sigma(\omega)\) |
 
 Options:
 
@@ -305,7 +305,7 @@ Options:
 | `-a A` | Absolute integration tolerance, default `1e-7` |
 | `-r R` | Relative integration tolerance, default `1e-8` |
 | `-c C` | Frequency cutoff in units of temperature, default `15` |
-| `-s S` | Positive clipping floor for \(-\mathrm{Im}\,\Sigma\), default `1e-8` |
+| `-s S` | Positive clipping floor for \(-\mathrm{Im}\ \Sigma\), default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
 | `-e E` | Multiply a tabulated kernel by \(\epsilon^E\), default `0` |
@@ -333,11 +333,11 @@ omega_1  ReSigma_1         omega_1  ImSigma_1
 
 Both files should have the same number of rows and identical, strictly
 increasing frequency grids. The retarded convention
-\(\mathrm{Im}\,\Sigma^R\le 0\) is required.
+\(\mathrm{Im}\ \Sigma^R\le 0\) is required.
 
 The following numerical policies are important when interpreting results:
 
-- Input values with \(\mathrm{Im}\,\Sigma>-S\) are replaced by \(-S\),
+- Input values with \(\mathrm{Im}\ \Sigma>-S\) are replaced by \(-S\),
   including positive noncausal values. The `-s S` option selects this floor and
   defaults to \(S=10^{-8}\).
 - Outside the input interval, `ReSigma` is held at its nearest endpoint and
@@ -356,7 +356,7 @@ self-energies but may introduce artifacts when the grid is sparse.
 With `-M M`, for `M > 0`, every band-energy integral is restricted by
 
 $$
--M < \mu-\epsilon-\mathrm{Re}\,\Sigma^R(0) < M.
+-M < \mu-\epsilon-\mathrm{Re}\ \Sigma^R(0) < M.
 $$
 
 Equivalently, the fixed epsilon interval is
@@ -364,10 +364,10 @@ Equivalently, the fixed epsilon interval is
 $$
 \epsilon_F-M < \epsilon < \epsilon_F+M,
 \qquad
-\epsilon_F=\mu-\mathrm{Re}\,\Sigma^R(0).
+\epsilon_F=\mu-\mathrm{Re}\ \Sigma^R(0).
 $$
 
-The value of \(\mathrm{Re}\,\Sigma^R(0)\) is obtained with the interpolation
+The value of \(\mathrm{Re}\ \Sigma^R(0)\) is obtained with the interpolation
 selected by `-i`. Therefore a positive `M` requires the self-energy input grid
 to contain \(\omega=0\); the program reports an error rather than extrapolating
 the Fermi-level center. `M` uses the same energy units as the bandwidth,
@@ -439,8 +439,8 @@ For example:
 `-f` replaces \(-\partial f/\partial\omega\) by the Fermi function itself:
 
 $$
-\int_{\omega_{\min}}^{CT}d\omega\,
-f(\omega)\,\omega^oJ_{mn}(\omega).
+\int_{\omega_{\min}}^{CT}d\omega
+\ f(\omega)\ \omega^oJ_{mn}(\omega).
 $$
 
 This is useful for quantities such as occupied spectral moments and
