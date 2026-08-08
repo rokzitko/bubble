@@ -31,6 +31,22 @@ my $ultraclean_imsigma = write_table('ultraclean-imsigma.dat',
 my $shifted_resigma = write_table('shifted-resigma.dat', '-10 0.3', '10 0.3');
 my $outside_resigma = write_table('outside-resigma.dat', '1 0', '2 0');
 my $outside_imsigma = write_table('outside-imsigma.dat', '1 -0.1', '2 -0.1');
+my $narrow_sigma_resigma = write_table('narrow-sigma-resigma.dat',
+    '-0.5 0', '0.5 0');
+my $narrow_sigma_imsigma = write_table('narrow-sigma-imsigma.dat',
+    '-0.5 -0.1', '0.5 -0.1');
+my $exact_coverage_resigma = write_table('exact-coverage-resigma.dat',
+    '-3 0', '3 0');
+my $exact_coverage_imsigma = write_table('exact-coverage-imsigma.dat',
+    '-3 -0.1', '3 -0.1');
+my $short_lower_resigma = write_table('short-lower-resigma.dat',
+    '-2.9999999999999996 0', '3 0');
+my $short_lower_imsigma = write_table('short-lower-imsigma.dat',
+    '-2.9999999999999996 -0.1', '3 -0.1');
+my $short_upper_resigma = write_table('short-upper-resigma.dat',
+    '-3 0', '2.9999999999999996 0');
+my $short_upper_imsigma = write_table('short-upper-imsigma.dat',
+    '-3 -0.1', '2.9999999999999996 -0.1');
 my $close_resigma = write_table('close-resigma.dat',
     '-0.5 1.17974256', '-0.25 -1.05276764', '0 0',
     '0.25 -1.64715152', '0.5 -0.03751573');
@@ -55,6 +71,10 @@ my $precision_resigma = write_table('precision-resigma.dat',
     '1 0', '1.000001 0');
 my $precision_imsigma = write_table('precision-imsigma.dat',
     '1 -0.1', '1.000001 -0.1');
+my $unresolved_grid_resigma = write_table('unresolved-grid-resigma.dat',
+    '10000000000000000 0', '10000000000000002 0');
+my $unresolved_grid_imsigma = write_table('unresolved-grid-imsigma.dat',
+    '10000000000000000 -0.1', '10000000000000002 -0.1');
 my @oscillating_re;
 my @oscillating_im;
 for my $index (-50 .. 50) {
@@ -63,6 +83,10 @@ for my $index (-50 .. 50) {
     push @oscillating_re, "$omega " . ($omega - $effective);
     push @oscillating_im, "$omega -0.01";
 }
+unshift @oscillating_re, '-3 -0.6';
+unshift @oscillating_im, '-3 -0.01';
+push @oscillating_re, '3 0.4';
+push @oscillating_im, '3 -0.01';
 my $oscillating_resigma = write_table('oscillating-resigma.dat', @oscillating_re);
 my $oscillating_imsigma = write_table('oscillating-imsigma.dat', @oscillating_im);
 my @curvature_re;
@@ -349,14 +373,14 @@ check_result('many window crossings', defined $many_crossings && $many_crossings
     defined $many_crossings ? "value=$many_crossings" : $many_crossings_error);
 
 my @close_crossing_cases = (
-    ['cubic', '2', '0.8064365985', 1202415422.5462554],
-    ['Akima', '3', '0.8310362391561746', 1194943486.1112465],
+    ['cubic', '2', '0.8064365985', 1192491602.37458],
+    ['Akima', '3', '0.8310362391561746', 1184860924.29398],
 );
 for my $case (@close_crossing_cases) {
     my ($name, $interpolation, $limit, $expected) = @$case;
     my ($value, $value_error) = run_value(
         '-q', '-i', $interpolation, '-M', $limit, '-s', '1e-10',
-        '-a', '1e-7', '-r', '1e-8', '-c', '15',
+        '-a', '1e-7', '-r', '1e-8', '-c', '5',
         1, 2, 0, 0.1, 0, $close_resigma, $close_imsigma);
     check_result("close $name window crossings",
         close_enough($value, $expected, 1e-11, 1e-3),
@@ -417,7 +441,7 @@ check_result('optical kernel uses causal ImSigma floor',
 
 my ($tangent, $tangent_error) = run_value(
     '-q', '-i', '1', '-M', '0.1', '-s', '1e-10',
-    '-a', '1e-10', '-r', '1e-10', '-c', '15',
+    '-a', '1e-10', '-r', '1e-10', '-c', '10',
     1, 2, 0, 0.1, 0, $tangent_resigma, $tangent_imsigma);
 check_result('near-tangent knot neighborhood',
     close_enough($tangent, 0.2766729908077813, 2e-10, 2e-11),
@@ -525,6 +549,14 @@ check_result('signed effective Phi retains Akima interpolation',
     $signed_interp_stdout =~ /Phi interpolation=akima/ &&
     $signed_interp_stderr eq '',
     "exit=$signed_interp_status stderr=$signed_interp_stderr");
+
+my ($unresolved_grid_status, $unresolved_grid_stdout, $unresolved_grid_stderr) =
+    run_bubble('-q', '-d', '-p', $nonnegative_phi,
+        0, 1, 0, 0.1, 0, $unresolved_grid_resigma, $unresolved_grid_imsigma);
+check_result('unrepresentable DOS mesh is fatal without assertions',
+    $unresolved_grid_status == 1 && $unresolved_grid_stdout eq '' &&
+    $unresolved_grid_stderr =~ /DOS frequency grid cannot represent 10001 ordered points/,
+    "exit=$unresolved_grid_status stderr=$unresolved_grid_stderr");
 
 chmod 0664, "$directory/dos.dat"
     or die "Cannot set dos.dat test permissions: $!\n";
@@ -666,6 +698,8 @@ my @invalid_cases = (
         '-r', '-1', @base],
     ['unrepresentable frequency bounds', qr/frequency integration bounds are not representable/,
         1, 0, 0, '1e308', 0, $resigma, $imsigma],
+    ['unrepresentable frequency span', qr/frequency integration bounds are not representable/,
+        1, 0, 0, '3.5e306', 0, $resigma, $imsigma],
     ['underflowed frequency bounds', qr/frequency integration bounds are not representable/,
         '-c', '1e-300', 1, 0, 0, '1e-300', 0, $resigma, $imsigma],
     ['option after positional argument', qr/Options must precede the seven positional arguments/,
@@ -750,7 +784,118 @@ check_result('compatibility mode rejects non-finite results',
     $nonfinite_stderr =~ /Error: Frequency integration:.*result=.*nan/i,
     "exit=$nonfinite_status stderr=$nonfinite_stderr");
 
-my ($outside_status) = run_bubble('-M', '0', 1, 2, 0, 0.1, 0,
+my @incomplete_coverage = (
+    1, 2, 0, 0.1, 0, $narrow_sigma_resigma, $narrow_sigma_imsigma,
+);
+for my $case (
+    ['default', []],
+    ['quiet', ['-q']],
+    ['integration compatibility', ['-E']],
+) {
+    my ($name, $options) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(@$options, @incomplete_coverage);
+    check_result("$name incomplete Sigma coverage is fatal",
+        $status == 1 && $stdout eq '' &&
+        $stderr =~ /Error: DC self-energy table interval .*required closed interval \[-3, 3\]/s,
+        "exit=$status stderr=$stderr");
+}
+
+my ($exact_coverage_status, $exact_coverage_stdout, $exact_coverage_stderr) =
+    run_bubble(1, 2, 0, 0.1, 0, $exact_coverage_resigma,
+        $exact_coverage_imsigma);
+check_result('exact closed Sigma coverage succeeds',
+    $exact_coverage_status == 0 && $exact_coverage_stdout =~ /^\s*$number\s*$/ &&
+    $exact_coverage_stderr eq '',
+    "exit=$exact_coverage_status stderr=$exact_coverage_stderr");
+
+for my $case (
+    ['lower', $short_lower_resigma, $short_lower_imsigma],
+    ['upper', $short_upper_resigma, $short_upper_imsigma],
+) {
+    my ($side, $re_file, $im_file) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(
+        1, 2, 0, 0.1, 0, $re_file, $im_file);
+    check_result("one-ULP-short $side Sigma coverage is fatal",
+        $status == 1 && $stdout eq '' &&
+        $stderr =~ /does not cover the required closed interval \[-3, 3\]/,
+        "exit=$status stderr=$stderr");
+}
+
+my ($mass_without_coverage_status, $mass_without_coverage_stdout,
+    $mass_without_coverage_stderr) = run_bubble(
+        1, 0, 0, 0.1, 0, $narrow_sigma_resigma, $narrow_sigma_imsigma);
+check_result('n=0 does not require full Sigma coverage',
+    $mass_without_coverage_status == 0 &&
+    $mass_without_coverage_stdout =~ /^\s*$number\s*$/ &&
+    $mass_without_coverage_stderr eq '',
+    "exit=$mass_without_coverage_status stderr=$mass_without_coverage_stderr");
+
+my ($empty_without_coverage, $empty_without_coverage_error) = run_value(
+    '-M', '0.25', 1, 2, 0, 0.1, 2,
+    $narrow_sigma_resigma, $narrow_sigma_imsigma);
+check_result('empty epsilon window does not require full Sigma coverage',
+    defined $empty_without_coverage && $empty_without_coverage == 0.0,
+    defined $empty_without_coverage
+        ? "value=$empty_without_coverage" : $empty_without_coverage_error);
+
+my ($parity_coverage_status, $parity_coverage_stdout, $parity_coverage_stderr) =
+    run_bubble('-M', '0.25', 2, 2, 0, 0.1, 0,
+        $narrow_sigma_resigma, $narrow_sigma_imsigma);
+check_result('parity shortcut still requires defined Sigma coverage',
+    $parity_coverage_status == 1 && $parity_coverage_stdout eq '' &&
+    $parity_coverage_stderr =~ /Error: DC self-energy table interval/,
+    "exit=$parity_coverage_status stderr=$parity_coverage_stderr");
+
+my ($occupied_exact_status, $occupied_exact_stdout, $occupied_exact_stderr) =
+    run_bubble('-f', 1, 1, 0, 0.1, 0,
+        $exact_coverage_resigma, $exact_coverage_imsigma);
+check_result('occupied mode accepts exact upper Sigma coverage',
+    $occupied_exact_status == 0 && $occupied_exact_stdout =~ /^\s*$number\s*$/ &&
+    $occupied_exact_stderr eq '',
+    "exit=$occupied_exact_status stderr=$occupied_exact_stderr");
+
+my ($occupied_short_status, $occupied_short_stdout, $occupied_short_stderr) =
+    run_bubble('-f', 1, 1, 0, 0.1, 0,
+        $short_upper_resigma, $short_upper_imsigma);
+check_result('occupied mode rejects short upper Sigma coverage',
+    $occupied_short_status == 1 && $occupied_short_stdout eq '' &&
+    $occupied_short_stderr =~ /Error: occupied self-energy table interval/,
+    "exit=$occupied_short_status stderr=$occupied_short_stderr");
+
+my @legacy_coverage = (
+    '--allow-legacy-self-energy-extrapolation',
+    1, 1, 0, 0.1, 0, $narrow_sigma_resigma, $narrow_sigma_imsigma,
+);
+my ($legacy_status, $legacy_stdout, $legacy_stderr) = run_bubble(@legacy_coverage);
+my $legacy_warning_count = () = $legacy_stderr =~ /uses legacy self-energy extrapolation/g;
+check_result('explicit legacy Sigma extrapolation warns once',
+    $legacy_status == 0 && $legacy_stdout =~ /^\s*$number\s*$/ &&
+    $legacy_warning_count == 1,
+    "exit=$legacy_status stderr=$legacy_stderr");
+
+my ($legacy_quiet_status, $legacy_quiet_stdout, $legacy_quiet_stderr) =
+    run_bubble('-q', @legacy_coverage);
+check_result('quiet mode suppresses only the legacy coverage warning',
+    $legacy_quiet_status == 0 && $legacy_quiet_stderr eq '' &&
+    $legacy_quiet_stdout eq $legacy_stdout,
+    "exit=$legacy_quiet_status stderr=$legacy_quiet_stderr");
+
+my @legacy_peak_arguments = (
+    '--allow-legacy-self-energy-extrapolation', '-q', '-s', '1e-10',
+    1, 2, 0, 0.1, 0, $narrow_sigma_resigma, $narrow_sigma_imsigma,
+);
+my ($legacy_peak_15, $legacy_peak_15_error) = run_value('-k', '1',
+    @legacy_peak_arguments);
+my ($legacy_peak_61, $legacy_peak_61_error) = run_value('-k', '6',
+    @legacy_peak_arguments);
+check_result('legacy Sigma transitions are explicit quadrature boundaries',
+    defined $legacy_peak_15 && defined $legacy_peak_61 &&
+    close_enough($legacy_peak_15, $legacy_peak_61, 2e-10, 1e-3),
+    defined $legacy_peak_15 && defined $legacy_peak_61
+        ? "15-point=$legacy_peak_15 61-point=$legacy_peak_61"
+        : "$legacy_peak_15_error $legacy_peak_61_error");
+
+my ($outside_status) = run_bubble('-M', '0', 1, 0, 0, 0.1, 0,
     $outside_resigma, $outside_imsigma);
 check_result('M=0 permits grid without zero', $outside_status == 0,
     "exit=$outside_status");

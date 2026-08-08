@@ -31,3 +31,5 @@ Gaussian windows, and narrow exterior peaks.
 
 `run_input_tests` covers strict Phi and self-energy table parsing, grid
 validation, interpolation-size checks, and controlled malformed-input failures.
+`run_window_tests` and `run_optical_tests` additionally cover fail-closed
+self-energy domains, exact endpoint coverage, and explicit legacy extrapolation.

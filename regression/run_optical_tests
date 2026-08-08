@@ -58,6 +58,21 @@ sub relative_error {
     return abs($value - $expected)/abs($expected);
 }
 
+sub write_constant_sigma {
+    my ($name, @frequencies) = @_;
+    my ($re_file, $re_filename) = tempfile(
+        "bubble-$name-re-XXXX", TMPDIR => 1, UNLINK => 1);
+    my ($im_file, $im_filename) = tempfile(
+        "bubble-$name-im-XXXX", TMPDIR => 1, UNLINK => 1);
+    for my $frequency (@frequencies) {
+        print {$re_file} "$frequency 0\n";
+        print {$im_file} "$frequency -0.1\n";
+    }
+    close $re_file or die "Cannot close $re_filename: $!\n";
+    close $im_file or die "Cannot close $im_filename: $!\n";
+    return ($re_filename, $im_filename);
+}
+
 -x $bubble or die "Executable not found: $bubble\n";
 
 my @even_kernels = (1, 3, 5, 7);
@@ -105,6 +120,14 @@ for my $point (-10 .. 10) {
     print {$phi_file} $point/10, " 1\n";
 }
 close $phi_file or die "Cannot close $phi_filename: $!\n";
+my ($exact_optical_re, $exact_optical_im) =
+    write_constant_sigma('exact-optical', '-4', '4');
+my ($short_optical_lower_re, $short_optical_lower_im) =
+    write_constant_sigma('short-optical-lower', '-3.9999999999999996', '4');
+my ($short_optical_upper_re, $short_optical_upper_im) =
+    write_constant_sigma('short-optical-upper', '-4', '3.9999999999999996');
+my ($shifted_boundary_re, $shifted_boundary_im) =
+    write_constant_sigma('shifted-boundary', '-1', '1');
 my ($tabulated, $tabulated_error) = run_value(
     @tight_tolerances, '-E', '-q', '-O', '0.3', '-p', $phi_filename,
     0, 2, 0, 0.1, 0, $resigma, $imsigma,
@@ -115,31 +138,106 @@ check_result('tabulated m=0 optical kernel', $tabulated_ok,
     $tabulated_ok ? "absolute_error=" . abs($tabulated - $tabulated_expected)
                   : "$tabulated_error expected=$tabulated_expected value=$tabulated");
 
+my ($exact_optical_status, $exact_optical_stdout, $exact_optical_stderr) =
+    run_bubble('-O', '0.25',
+        1, 2, 0, 0.125, 0, $exact_optical_re, $exact_optical_im);
+check_result('positive optical exact closed Sigma coverage succeeds',
+    $exact_optical_status == 0 && $exact_optical_stdout =~ /^\s*$number\s*$/ &&
+    $exact_optical_stderr eq '',
+    "exit=$exact_optical_status stderr=$exact_optical_stderr");
+
+for my $case (
+    ['lower', $short_optical_lower_re, $short_optical_lower_im],
+    ['upper', $short_optical_upper_re, $short_optical_upper_im],
+) {
+    my ($side, $re_file, $im_file) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble('-O', '0.25',
+        1, 2, 0, 0.125, 0, $re_file, $im_file);
+    check_result("positive optical one-ULP-short $side coverage is fatal",
+        $status == 1 && $stdout eq '' &&
+        $stderr =~ /required closed interval \[-4, 4\]/,
+        "exit=$status stderr=$stderr");
+}
+
 my @warning_arguments = (
     '-O', '10', 1, 2, 0, 0.1, 0, $resigma, $imsigma,
 );
-my ($warning_status, $warning_stdout, $warning_stderr) = run_bubble(@warning_arguments);
+for my $case (
+    ['default', []],
+    ['quiet', ['-q']],
+    ['integration compatibility', ['-E']],
+) {
+    my ($name, $options) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(@$options, @warning_arguments);
+    check_result("$name incomplete optical Sigma coverage is fatal",
+        $status == 1 && $stdout eq '' &&
+        $stderr =~ /Error: optical self-energy table interval .*required closed interval \[-13, 13\]/s,
+        "exit=$status stderr=$stderr");
+}
+
+my ($zero_coverage_status, $zero_coverage_stdout, $zero_coverage_stderr) =
+    run_bubble('-c', '150', '-O', '0',
+        1, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('Omega=0 uses the DC Sigma coverage contract',
+    $zero_coverage_status == 1 && $zero_coverage_stdout eq '' &&
+    $zero_coverage_stderr =~ /Error: DC self-energy table interval .*\[-15, 15\]/s,
+    "exit=$zero_coverage_status stderr=$zero_coverage_stderr");
+
+my @legacy_warning_arguments =
+    ('--allow-legacy-self-energy-extrapolation', @warning_arguments);
+my ($warning_status, $warning_stdout, $warning_stderr) =
+    run_bubble(@legacy_warning_arguments);
+my $warning_count = () = $warning_stderr =~ /uses legacy self-energy extrapolation/g;
 my $warning_ok = $warning_status == 0 &&
-    $warning_stdout =~ /^\s*$number\s*$/ &&
-    $warning_stderr =~ /Warning: optical calculation evaluates Sigma outside/;
-check_result('warnings enabled by default', $warning_ok,
+    $warning_stdout =~ /^\s*$number\s*$/ && $warning_count == 1;
+check_result('explicit legacy optical extrapolation warns once', $warning_ok,
     "exit=$warning_status stderr=$warning_stderr");
 
-my ($quiet_status, $quiet_stdout, $quiet_stderr) = run_bubble('-q', @warning_arguments);
-my $quiet_ok = $quiet_status == 0 && $quiet_stderr eq '' && $quiet_stdout eq $warning_stdout;
-check_result('quiet mode suppresses warnings only', $quiet_ok,
-    "exit=$quiet_status stderr=$quiet_stderr output_unchanged=" . ($quiet_stdout eq $warning_stdout));
+my ($quiet_status, $quiet_stdout, $quiet_stderr) =
+    run_bubble('-q', @legacy_warning_arguments);
+my $quiet_ok = $quiet_status == 0 && $quiet_stderr eq '' &&
+    $quiet_stdout eq $warning_stdout;
+check_result('quiet mode suppresses the legacy optical warning', $quiet_ok,
+    "exit=$quiet_status stderr=$quiet_stderr output_unchanged=" .
+        ($quiet_stdout eq $warning_stdout));
 
 my ($verbose_warning_status, $verbose_warning_stdout, $verbose_warning_stderr) =
-    run_bubble('-v', @warning_arguments);
-my ($verbose_status, $verbose_stdout, $verbose_stderr) = run_bubble('-q', '-v', @warning_arguments);
+    run_bubble('-v', @legacy_warning_arguments);
+my ($verbose_status, $verbose_stdout, $verbose_stderr) =
+    run_bubble('-q', '-v', @legacy_warning_arguments);
 my $verbose_ok = $verbose_warning_status == 0 && $verbose_status == 0 &&
     $verbose_warning_stderr =~ /Warning:/ && $verbose_stderr eq '' &&
     $verbose_stdout eq $verbose_warning_stdout &&
     $verbose_stdout =~ /bubble version/ && $verbose_stdout =~ /Result\s*=/ &&
     $verbose_stdout =~ /Error\s*=/;
-check_result('quiet mode preserves verbose output', $verbose_ok,
+check_result('quiet mode preserves verbose legacy output', $verbose_ok,
     "exit=$verbose_status stderr=$verbose_stderr");
+
+my @shifted_boundary_options = (
+    '--allow-legacy-self-energy-extrapolation', '-q', '-c', '15',
+    '-s', '1e-10', '-O', '0.3',
+);
+my @shifted_boundary_cases = (
+    ['unrestricted', [1, 2, 0, 0.1, 0,
+        $shifted_boundary_re, $shifted_boundary_im]],
+    ['tabulated', ['-p', $phi_filename, 0, 2, 0, 0.1, 0,
+        $shifted_boundary_re, $shifted_boundary_im]],
+    ['restricted', ['-M', '0.5', 1, 2, 0, 0.1, 0,
+        $shifted_boundary_re, $shifted_boundary_im]],
+);
+for my $case (@shifted_boundary_cases) {
+    my ($name, $arguments) = @$case;
+    my ($value_15, $error_15) = run_value(
+        '-k', '1', @shifted_boundary_options, @$arguments);
+    my ($value_61, $error_61) = run_value(
+        '-k', '6', @shifted_boundary_options, @$arguments);
+    check_result("$name shifted Sigma transitions are quadrature boundaries",
+        defined $value_15 && defined $value_61 &&
+        abs($value_15 - $value_61) <= 2e-9 + 2e-9*abs($value_61),
+        defined $value_15 && defined $value_61
+            ? "15-point=$value_15 61-point=$value_61"
+            : "$error_15 $error_61");
+}
 
 my @roundoff_arguments = (
     '-O', '0.1', 5, 2, 0, 0.27, 0, $bethe_resigma, $bethe_imsigma,

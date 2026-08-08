@@ -31,6 +31,7 @@
 //            - peak-removing quadrature for unrestricted tabulated kernels
 //            - increase the default thermal cutoff to 30
 //            - positivity-preserving interpolation for nonnegative Phi tables
+//            - fail closed on incomplete self-energy frequency coverage
 
 #include <iostream>
 #include <iomanip>
@@ -90,7 +91,7 @@ gsl_interp_accel *acc_Phi;
 gsl_spline *spline_Phi;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.9";
+const string VERSION = "1.10";
 
 // Mandatory parameters
 int m, n, o;
@@ -103,6 +104,7 @@ int b = 1;
 bool verbose = false;
 bool quiet_warnings = false;
 bool ignore_integration_errors = false;
+bool allow_legacy_self_energy_extrapolation = false;
 int key = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
@@ -120,7 +122,11 @@ int e = 0; // power of epsilon
 bool optical_mode = false;
 double optical_frequency = 0.0;
 
-const double EPSILON = 1e-10; // some very small value...
+const double LEGACY_EXTERIOR_IM_SIGMA = 1e-10;
+
+enum long_option_code {
+   ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION = 1000
+};
 
 void about()
 {
@@ -136,6 +142,7 @@ void usage()
    cout << "-v : increase verbosity" << endl;
    cout << "-q : suppress non-fatal warnings" << endl;
    cout << "-E, --ignore-integration-errors : continue with finite partial integration results" << endl;
+   cout << "--allow-legacy-self-energy-extrapolation : permit the historical exterior Sigma model" << endl;
    cout << "-i I : interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
    cout << "-k K : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
    cout << "-a A : nonnegative absolute error (default = 1e-7)" << endl;
@@ -400,6 +407,8 @@ void cmd_line(int argc, char *argv[])
    int c;
    static const struct option long_options[] = {
       {"ignore-integration-errors", no_argument, NULL, 'E'},
+      {"allow-legacy-self-energy-extrapolation", no_argument, NULL,
+       ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION},
       {NULL, 0, NULL, 0}
    };
 
@@ -417,6 +426,9 @@ void cmd_line(int argc, char *argv[])
       case 'E':
 	 ignore_integration_errors = true;
 	 break;
+      case ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION:
+         allow_legacy_self_energy_extrapolation = true;
+         break;
       case 'i':
 	 b = parse_integer(optarg, "interpolation selector");
 	 break;
@@ -585,6 +597,8 @@ void cmd_line(int argc, char *argv[])
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
       if (ignore_integration_errors)
 	 cout << "finite partial integration results are accepted" << endl;
+      if (allow_legacy_self_energy_extrapolation)
+         cout << "legacy self-energy extrapolation is permitted" << endl;
       cout << "ImSigma clipping floor=" << sigma_clip << endl;
       if (epsilon_window_limit > 0.0)
 	 cout << "epsilon-window half-width M=" << epsilon_window_limit << endl;
@@ -3015,29 +3029,148 @@ double J_m2_optical(complex<double> z1, complex<double> z2)
    return (cross.real() - same.real())/(2.0*M_PI*M_PI);
 }
 
+struct sigma_coverage_requirement {
+   double lower;
+   double upper;
+   const char *mode;
+};
+
+bool result_avoids_frequency_dependent_sigma()
+{
+   if (n == 0)
+      return true;
+   return epsilon_window_limit > 0.0 && restricted_epsilon_interval(m).empty;
+}
+
+sigma_coverage_requirement required_sigma_coverage()
+{
+   const double thermal_bound = cutoff*T;
+   if (optical_mode && optical_frequency > 0.0) {
+      const double optical_bound = thermal_bound + optical_frequency;
+      if (!(optical_frequency < optical_bound) ||
+          !isfinite(optical_bound - (-optical_bound))) {
+         cerr << "The frequency integration bounds are not representable." << endl;
+         exit(EXIT_FAILURE);
+      }
+      return sigma_coverage_requirement{-optical_bound, optical_bound, "optical"};
+   }
+
+   if (f_type == f_f) {
+      if (!(omega_min < thermal_bound))
+         return sigma_coverage_requirement{omega_min, thermal_bound, "occupied"};
+      if (!isfinite(thermal_bound - omega_min)) {
+         cerr << "The frequency integration bounds are not representable." << endl;
+         exit(EXIT_FAILURE);
+      }
+      return sigma_coverage_requirement{omega_min, thermal_bound, "occupied"};
+   }
+
+   if (!isfinite(thermal_bound - (-thermal_bound))) {
+      cerr << "The frequency integration bounds are not representable." << endl;
+      exit(EXIT_FAILURE);
+   }
+   return sigma_coverage_requirement{-thermal_bound, thermal_bound, "DC"};
+}
+
+void validate_self_energy_coverage()
+{
+   if (calcdos)
+      return;
+
+   const sigma_coverage_requirement required = required_sigma_coverage();
+   if (!(required.lower < required.upper))
+      return; // calc() reports the mode-specific invalid integration interval.
+   if (result_avoids_frequency_dependent_sigma())
+      return;
+   if (omega_min <= required.lower && required.upper <= omega_max)
+      return;
+
+   const string available = "[" + format_table_value(omega_min) + ", "
+      + format_table_value(omega_max) + "]";
+   const string needed = "[" + format_table_value(required.lower) + ", "
+      + format_table_value(required.upper) + "]";
+   if (!allow_legacy_self_energy_extrapolation) {
+      cerr << "Error: " << required.mode << " self-energy table interval "
+           << available << " does not cover the required closed interval "
+           << needed << "." << endl;
+      cerr << "Extend both self-energy tables, reduce -c or -O as applicable, or use "
+           << "--allow-legacy-self-energy-extrapolation explicitly." << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   if (!quiet_warnings) {
+      cerr << "Warning: " << required.mode
+           << " calculation uses legacy self-energy extrapolation outside "
+           << available << " to cover " << needed
+           << "; ReSigma is held at the nearest endpoint and ImSigma is set to -"
+           << format_table_value(LEGACY_EXTERIOR_IM_SIGMA) << "." << endl;
+   }
+}
+
 double clipped_im_sigma(double value)
 {
    return value > -sigma_clip ? -sigma_clip : value;
+}
+
+bool sigma_frequency_is_in_table(double omega)
+{
+   return isfinite(omega) && omega_min <= omega && omega <= omega_max;
+}
+
+void require_legacy_extrapolation(double omega)
+{
+   if (isfinite(omega) && allow_legacy_self_energy_extrapolation)
+      return;
+
+   cerr << "Error: self-energy evaluation frequency "
+        << format_table_value(omega) << " is outside the table interval ["
+        << format_table_value(omega_min) << ", "
+        << format_table_value(omega_max) << "]." << endl;
+   exit(EXIT_FAILURE);
 }
 
 complex<double> effective_frequency(double omega)
 {
    double sigma_re;
    double sigma_im;
-   if (omega_min <= omega && omega <= omega_max) {
+   if (sigma_frequency_is_in_table(omega)) {
       sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
       // Higher-order splines can overshoot causal input knots.
       sigma_im = clipped_im_sigma(
          gsl_spline_eval(spline_imSigma, omega, acc_imSigma));
    } else {
-      sigma_im = -EPSILON;
-      if (omega < omega_min)
-	 sigma_re = reSigma_asymp_neg;
-      if (omega > omega_max)
-	 sigma_re = reSigma_asymp_pos;
+      require_legacy_extrapolation(omega);
+      sigma_im = -LEGACY_EXTERIOR_IM_SIGMA;
+      sigma_re = omega < omega_min ? reSigma_asymp_neg : reSigma_asymp_pos;
    }
 
    return omega + mu - sigma_re - sigma_im*I;
+}
+
+void add_sigma_transition_points(vector<double> &points,
+                                 double lower, double upper,
+                                 bool include_shifted)
+{
+   if (!allow_legacy_self_energy_extrapolation)
+      return;
+
+   if (lower < omega_min && omega_min < upper)
+      points.push_back(omega_min);
+   if (lower < omega_max && omega_max < upper)
+      points.push_back(omega_max);
+   if (!include_shifted)
+      return;
+
+   const long double shifted_min = static_cast<long double>(omega_min)
+      - optical_frequency;
+   const long double shifted_max = static_cast<long double>(omega_max)
+      - optical_frequency;
+   if (static_cast<long double>(lower) < shifted_min &&
+       shifted_min < static_cast<long double>(upper))
+      points.push_back(static_cast<double>(shifted_min));
+   if (static_cast<long double>(lower) < shifted_max &&
+       shifted_max < static_cast<long double>(upper))
+      points.push_back(static_cast<double>(shifted_max));
 }
 
 namespace {
@@ -3045,10 +3178,12 @@ namespace {
 double real_effective_frequency(double omega)
 {
    double sigma_re;
-   if (omega_min <= omega && omega <= omega_max)
+   if (sigma_frequency_is_in_table(omega))
       sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
-   else
+   else {
+      require_legacy_extrapolation(omega);
       sigma_re = omega < omega_min ? reSigma_asymp_neg : reSigma_asymp_pos;
+   }
    return omega + mu - sigma_re;
 }
 
@@ -3059,15 +3194,17 @@ double restricted_crossing_function(double omega, double shift, double edge)
 
 double real_effective_derivative(double omega)
 {
-   if (omega_min <= omega && omega <= omega_max)
+   if (sigma_frequency_is_in_table(omega))
       return 1.0 - gsl_spline_eval_deriv(spline_reSigma, omega, acc_reSigma);
+   require_legacy_extrapolation(omega);
    return 1.0;
 }
 
 double real_effective_second_derivative(double omega)
 {
-   if (omega_min <= omega && omega <= omega_max)
+   if (sigma_frequency_is_in_table(omega))
       return -gsl_spline_eval_deriv2(spline_reSigma, omega, acc_reSigma);
+   require_legacy_extrapolation(omega);
    return 0.0;
 }
 
@@ -3192,8 +3329,20 @@ void add_restricted_crossing_neighborhood(vector<double> &points,
    const double linewidth = abs(effective_frequency(frequency).imag());
    const double derivative_step = max(linewidth,
       1.0e-6*max(1.0, abs(frequency)));
-   const double slope = (real_effective_frequency(frequency + derivative_step)
-      - real_effective_frequency(frequency - derivative_step))/(2.0*derivative_step);
+   double slope = 1.0;
+   if (sigma_frequency_is_in_table(frequency)) {
+      const double derivative_lower = max(omega_min, frequency - derivative_step);
+      const double derivative_upper = min(omega_max, frequency + derivative_step);
+      if (derivative_lower < derivative_upper) {
+         slope = (real_effective_frequency(derivative_upper)
+            - real_effective_frequency(derivative_lower))
+            /(derivative_upper - derivative_lower);
+      } else {
+         slope = real_effective_derivative(frequency);
+      }
+      if (frequency == omega_min || frequency == omega_max)
+         slope = min(abs(slope), 1.0);
+   }
    double crossing_width = linewidth/max(1.0e-3, abs(slope));
    const double curvature = abs(real_effective_second_derivative(frequency));
    if (curvature > 0.0 &&
@@ -3273,6 +3422,7 @@ vector<double> restricted_outer_points(double lower, double upper,
       add_restricted_crossings(points, lower, upper, optical_frequency, interval.lower);
       add_restricted_crossings(points, lower, upper, optical_frequency, interval.upper);
    }
+   add_sigma_transition_points(points, lower, upper, include_shifted);
    return filter_integration_points(points, lower, upper);
 }
 
@@ -3399,7 +3549,6 @@ double optical_fermi_factor(double omega)
 double integrand (double omega, void * params)
 {
    double T = *(double *) params;
-   const complex<double> OMEGA = effective_frequency(omega);
 
    double f_factor;
    switch (f_type) {
@@ -3414,7 +3563,10 @@ double integrand (double omega, void * params)
       exit(EXIT_FAILURE);
    }
 
-   return f_factor * J_mn(OMEGA) * pow(omega,o);
+   const double kernel = n == 0
+      ? J_mn(complex<double>(0.0, 0.0))
+      : J_mn(effective_frequency(omega));
+   return f_factor * kernel * pow(omega,o);
 }
 
 double optical_integrand(double omega, void *)
@@ -3438,14 +3590,27 @@ void calc_DOS()
    const double range = omega_max - omega_min;
    const int nr_points = 10000;
    const double step = range/nr_points;
-   assert(step > 0);
+   if (!(step > 0.0)) {
+      cerr << "The DOS frequency grid is not representable." << endl;
+      exit(EXIT_FAILURE);
+   }
 
    vector<pair<double, double> > rows;
    rows.reserve(nr_points + 1);
+   const bool sigma_independent = result_avoids_frequency_dependent_sigma();
+   double previous_omega = -numeric_limits<double>::infinity();
    for (int i = 0; i <= nr_points; ++i) {
       const double omega = (i == nr_points ? omega_max : omega_min + i*step);
-      const complex<double> OMEGA = effective_frequency(omega);
-      const double result = J_mn(OMEGA); // Spectral normalization is included in J_mn().
+      if (!(omega_min <= omega && omega <= omega_max) ||
+          !(previous_omega < omega)) {
+         cerr << "The DOS frequency grid cannot represent 10001 ordered points."
+              << endl;
+         exit(EXIT_FAILURE);
+      }
+      previous_omega = omega;
+      const complex<double> z = sigma_independent
+         ? complex<double>(0.0, 0.0) : effective_frequency(omega);
+      const double result = J_mn(z); // Spectral normalization is included in J_mn().
       rows.push_back(make_pair(omega, result));
    }
 
@@ -3765,21 +3930,35 @@ void calc()
 	      << gsl_strerror(status) << "; independent quadrature agreed within tolerance."
 	      << endl;
    } else {
-      const int status = gsl_integration_qag(
-	 &My_function,       // integrand function
-	 lower_limit,        // lower integration boundary
-	 upper_limit,        // upper integration boundary
-	 abs_error,          // preferred absolute error
-	 rel_error,          // preferred relative error
-	 ws_size,            // size of workspace
-	 key,                // Gauss-Kronrod rule
-	 work_ptr,           // integration workspace
-	 &result,            // final approximation
-	 &error);            // estimate of absolute error
-      if (!integration_result_acceptable("Frequency integration",
-                                         status, result, error)) {
-	 gsl_integration_workspace_free(work_ptr);
-	 exit(EXIT_FAILURE);
+      vector<double> points;
+      points.push_back(lower_limit);
+      points.push_back(upper_limit);
+      if (n != 0)
+         add_sigma_transition_points(points, lower_limit, upper_limit, false);
+      points = filter_integration_points(points, lower_limit, upper_limit);
+      if (points.size() > 2) {
+         if (!integrate_outer_piecewise_qag(My_function, points, work_ptr, ws_size,
+                                            "Frequency integration", result, error)) {
+            gsl_integration_workspace_free(work_ptr);
+            exit(EXIT_FAILURE);
+         }
+      } else {
+         const int status = gsl_integration_qag(
+	    &My_function,       // integrand function
+	    lower_limit,        // lower integration boundary
+	    upper_limit,        // upper integration boundary
+	    abs_error,          // preferred absolute error
+	    rel_error,          // preferred relative error
+	    ws_size,            // size of workspace
+	    key,                // Gauss-Kronrod rule
+	    work_ptr,           // integration workspace
+	    &result,            // final approximation
+	    &error);            // estimate of absolute error
+         if (!integration_result_acceptable("Frequency integration",
+                                            status, result, error)) {
+	    gsl_integration_workspace_free(work_ptr);
+	    exit(EXIT_FAILURE);
+         }
       }
    }
    gsl_integration_workspace_free(work_ptr);
@@ -3810,12 +3989,6 @@ void calc_optical()
    const double lower_limit = -cutoff*T - optical_frequency;
    const double upper_limit = cutoff*T;
    const double boundaries[] = {lower_limit, -optical_frequency, 0.0, upper_limit};
-
-   if (!quiet_warnings &&
-       (lower_limit < omega_min || upper_limit + optical_frequency > omega_max)) {
-      cerr << "Warning: optical calculation evaluates Sigma outside ["
-	   << omega_min << ", " << omega_max << "]." << endl;
-   }
 
    gsl_function F;
    F.function = &optical_integrand;
@@ -3880,26 +4053,14 @@ void calc_optical()
 	 error = verified_error;
       independently_verified = acceptable_failure;
    } else {
-      for (int segment = 0; segment < 3; ++segment) {
-	 double segment_result = numeric_limits<double>::quiet_NaN();
-	 double segment_error = numeric_limits<double>::quiet_NaN();
-	 const int status = gsl_integration_qag(&F,
-						boundaries[segment],
-						boundaries[segment + 1],
-						abs_error/3.0,
-						rel_error,
-						ws_size,
-						key,
-						work,
-						&segment_result,
-						&segment_error);
-	 if (!integration_result_acceptable("Optical frequency integration",
-	                                    status, segment_result, segment_error)) {
-	    gsl_integration_workspace_free(work);
-	    exit(EXIT_FAILURE);
-	 }
-	 result += segment_result;
-	 error += segment_error;
+      vector<double> points(boundaries, boundaries + 4);
+      add_sigma_transition_points(points, lower_limit, upper_limit, true);
+      points = filter_integration_points(points, lower_limit, upper_limit);
+      if (!integrate_outer_piecewise_qag(F, points, work, ws_size,
+                                         "Optical frequency integration",
+                                         result, error)) {
+         gsl_integration_workspace_free(work);
+         exit(EXIT_FAILURE);
       }
    }
    gsl_integration_workspace_free(work);
@@ -3935,6 +4096,7 @@ int main (int argc, char *argv[])
    if (m == 0)
       load_Phi();
    initialize_epsilon_window();
+   validate_self_energy_coverage();
    
    if (calcdos)
       calc_DOS();

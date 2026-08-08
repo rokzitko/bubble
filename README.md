@@ -229,9 +229,8 @@ $$
 The optical frequency $\Omega$ is external and distinct from the integration
 frequency $\omega$. The self-energy is evaluated independently at
 $\omega$ and $\omega+\Omega$. The frequency quadrature is split at
-$-\Omega$ and zero. It therefore requires self-energy data over approximately
-$[-CT-\Omega,CT+\Omega]$; unless `-q` is used, the program warns before
-using its normal out-of-table extrapolation policy.
+$-\Omega$ and zero. It therefore requires self-energy data over the closed
+interval $[-(CT+\Omega),CT+\Omega]$.
 
 Optical mode requires `n=2` and a finite `OMEGA >= 0`. It cannot be combined
 with `-f` or `-d`. At `OMEGA=0`, the existing Fermi derivative and DC kernel are
@@ -326,6 +325,7 @@ Options:
 | `-v` | Print parameters, numerical result, and outer integration error estimate |
 | `-q` | Suppress non-fatal warnings without suppressing results or errors |
 | `-E`, `--ignore-integration-errors` | Continue after an integration failure when a finite partial result is available |
+| `--allow-legacy-self-energy-extrapolation` | Explicitly permit the historical out-of-table self-energy model |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points; also used by transformed tabulated-kernel quadrature |
 | `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
@@ -377,14 +377,34 @@ requires at least two rows for linear mode, three for cubic-spline mode, and
 five for Akima mode. The retarded convention
 $\mathrm{Im}\ \Sigma^R\le 0$ is required.
 
+For `n>0`, the self-energy tables must cover every frequency used by the
+selected calculation. Coverage is checked as an exact closed interval before
+quadrature starts:
+
+| Mode | Required self-energy interval |
+|---|---|
+| DC and `-O 0` | $[-CT,CT]$ |
+| Optical `OMEGA > 0` | $[-(CT+\mathrm{OMEGA}),CT+\mathrm{OMEGA}]$ |
+| Occupied `-f` | $[\omega_{\min},CT]$ |
+| DOS `-d` | The table interval used for the output mesh |
+
+An incomplete interval is fatal even with `-q` or `-E`. Extend both tables or
+reduce `-c` or `-O` as appropriate. Calculations with `n=0` do not evaluate the
+frequency-dependent self-energy and are exempt. A positive `-M` still requires
+the table to contain zero so that the interacting window center can be found;
+if the resulting epsilon intersection is empty, no additional frequency
+coverage is required.
+
 The following numerical policies are important when interpreting results:
 
 - Input knots and evaluated in-table interpolated values with
   $\mathrm{Im}\ \Sigma>-S$ are replaced by $-S$, including positive noncausal
   values and cubic/Akima overshoot. The `-s S` option selects this floor and
   defaults to $S=10^{-8}$.
-- Outside the input interval, `ReSigma` is held at its nearest endpoint and
-  `ImSigma` is set to $-10^{-10}$.
+- `--allow-legacy-self-energy-extrapolation` explicitly restores the historical
+  exterior model: `ReSigma` is held at its nearest endpoint and `ImSigma` is set
+  to $-10^{-10}$. The program warns once and splits quadrature at every
+  unshifted and optical-shifted table boundary. `-q` suppresses this warning.
 - The default Fermi-derivative integration interval is
   $[-30T,30T]$. Increase `-c` if broader thermal tails matter.
 - Optical mode extends the lower endpoint by `OMEGA` and evaluates the shifted
@@ -499,7 +519,9 @@ $$
 $$
 
 This is useful for quantities such as occupied spectral moments and
-kinetic-energy checks. For example:
+kinetic-energy checks. For `n>0`, the upper endpoint `CT` must lie in the
+self-energy table; the lower endpoint is the table's own `omega_min`. For
+example:
 
 ```bash
 ./bubble -f 4 1 0 0.27 0 \
@@ -533,7 +555,9 @@ have either sign. `-d` overwrites `dos.dat` and cannot be combined with `-f`; it
 can be combined with `-e`. Rows are written with enough significant digits to
 round-trip `double` values. The complete result is first written to a checked
 temporary file in the same directory and then atomically replaces `dos.dat`, so
-an existing output is preserved if calculation or output fails.
+an existing output is preserved if calculation or output fails. For `n=0`, the
+kernel mass is independent of Sigma and the output loop does not evaluate the
+self-energy spline.
 
 ## Numerical Method
 
@@ -556,6 +580,9 @@ an existing output is preserved if calculation or output fails.
 - Self-energy interpolation is selectable, with the in-table imaginary part
   clipped again after evaluation. Nonnegative effective custom kernels use
   monotonic Steffen interpolation; signed kernels use Akima.
+- Frequency-dependent calculations fail before quadrature unless their
+  self-energy tables cover the complete required closed interval. Legacy
+  extrapolation is available only through its explicit long option.
 - Every adaptive integration status and result is checked. Unverified failures
   are fatal by default; `-E` explicitly enables finite best-effort results.
 - In verbose mode, the reported error is GSL's estimate for the outer
@@ -675,7 +702,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.9.
+current executable is authoritative for version 1.10.
 
 ## References
 

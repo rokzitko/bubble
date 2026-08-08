@@ -8,6 +8,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 
 double J_builtin(int kernel, int power, std::complex<double> z);
 double J_restricted_single(int kernel, int power, std::complex<double> z,
@@ -15,6 +16,13 @@ double J_restricted_single(int kernel, int power, std::complex<double> z,
 double J_restricted_optical(int kernel, std::complex<double> z1,
                             std::complex<double> z2,
                             double lower, double upper);
+void add_sigma_transition_points(std::vector<double> &points,
+                                 double lower, double upper,
+                                 bool include_shifted);
+extern bool allow_legacy_self_energy_extrapolation;
+extern double omega_min;
+extern double omega_max;
+extern double optical_frequency;
 
 int main(int argc, char **argv)
 {
@@ -223,6 +231,58 @@ int main(int argc, char **argv)
                 << optical_filename << "\n";
       return EXIT_FAILURE;
    }
+
+   const bool saved_legacy_extrapolation = allow_legacy_self_energy_extrapolation;
+   const double saved_omega_min = omega_min;
+   const double saved_omega_max = omega_max;
+   const double saved_optical_frequency = optical_frequency;
+   allow_legacy_self_energy_extrapolation = true;
+   omega_min = -1.0;
+   omega_max = 1.0;
+   optical_frequency = 0.3;
+
+   std::vector<double> transition_points;
+   add_sigma_transition_points(transition_points, -1.8, 1.5, true);
+   std::sort(transition_points.begin(), transition_points.end());
+   const double shifted_min = static_cast<double>(
+      static_cast<long double>(omega_min) - optical_frequency);
+   const double shifted_max = static_cast<double>(
+      static_cast<long double>(omega_max) - optical_frequency);
+   const std::vector<double> expected_transitions = {
+      shifted_min, omega_min, shifted_max, omega_max
+   };
+   if (transition_points == expected_transitions) {
+      ++passed;
+   } else {
+      ++failed;
+      std::cerr << "FAILED shifted self-energy transition points\n";
+   }
+
+   transition_points.clear();
+   add_sigma_transition_points(transition_points, -1.8, 1.5, false);
+   std::sort(transition_points.begin(), transition_points.end());
+   const std::vector<double> expected_unshifted = {omega_min, omega_max};
+   if (transition_points == expected_unshifted) {
+      ++passed;
+   } else {
+      ++failed;
+      std::cerr << "FAILED unshifted self-energy transition points\n";
+   }
+
+   allow_legacy_self_energy_extrapolation = false;
+   transition_points.clear();
+   add_sigma_transition_points(transition_points, -1.8, 1.5, true);
+   if (transition_points.empty()) {
+      ++passed;
+   } else {
+      ++failed;
+      std::cerr << "FAILED strict self-energy transition points\n";
+   }
+
+   allow_legacy_self_energy_extrapolation = saved_legacy_extrapolation;
+   omega_min = saved_omega_min;
+   omega_max = saved_omega_max;
+   optical_frequency = saved_optical_frequency;
 
    std::cout << "CLEAN KERNEL OK=" << passed << " FAILED=" << failed << "\n";
    return failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
