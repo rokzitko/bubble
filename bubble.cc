@@ -26,6 +26,7 @@
 // 7.8.2026 - support finite-frequency optical conductivity through -O
 //            - support Fermi-level epsilon windows through -M
 // 8.8.2026 - strict integration error handling with -E compatibility mode
+//            - strict numeric parsing and negative positional arguments
 
 #include <iostream>
 #include <iomanip>
@@ -83,7 +84,7 @@ gsl_interp_accel *acc_Phi;
 gsl_spline *spline_Phi;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.7";
+const string VERSION = "1.8";
 
 // Mandatory parameters
 int m, n, o;
@@ -123,76 +124,108 @@ void about()
 void usage()
 {
    about();
-   cout << "Usage: bubble <m> <n> <o> <T> <mu> <resigma> <imsigma>" << endl;
+   cout << "Usage: bubble [options] <m> <n> <o> <T> <mu> <resigma> <imsigma>" << endl;
+   cout << "Options must precede the positional arguments." << endl;
    cout << "Options:" << endl;
    cout << "-v : increase verbosity" << endl;
    cout << "-q : suppress non-fatal warnings" << endl;
    cout << "-E, --ignore-integration-errors : continue with finite partial integration results" << endl;
-   cout << "-i : interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
-   cout << "-k : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
-   cout << "-a : absolute error (default = 1e-7)" << endl;
-   cout << "-r : relative error (default = 1e-8)" << endl;
-   cout << "-c : frequency interval cutoff in units of T (default = 15)" << endl;
+   cout << "-i I : interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
+   cout << "-k K : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
+   cout << "-a A : nonnegative absolute error (default = 1e-7)" << endl;
+   cout << "-r R : nonnegative relative error (default = 1e-8)" << endl;
+   cout << "-c C : positive frequency cutoff in units of T (default = 15)" << endl;
    cout << "-s FLOOR : positive ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
    cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
-   cout << "-e : additional power of epsilon when using the m=0 code (default=0)" << endl;
+   cout << "-e E : nonnegative power of epsilon when using the m=0 code (default=0)" << endl;
    cout << "-f : switch (-df/dw) to f in the w integration (incompatible with -d)" << endl;
    cout << "-O OMEGA : external optical frequency (requires OMEGA>=0 and n=2)" << endl;
 }
 
-double parse_optical_frequency(const char *value)
+void invalid_numeric_value(const char *description, const char *value)
+{
+   cerr << "Invalid " << description << ": " << value << endl;
+   exit(EXIT_FAILURE);
+}
+
+int parse_integer(const char *value, const char *description)
+{
+   char *end = NULL;
+   errno = 0;
+   const long result = strtol(value, &end, 10);
+
+   if (errno == ERANGE || end == value || *end != '\0' ||
+       result < numeric_limits<int>::min() || result > numeric_limits<int>::max())
+      invalid_numeric_value(description, value);
+
+   return static_cast<int>(result);
+}
+
+double parse_finite_double(const char *value, const char *description)
 {
    char *end = NULL;
    errno = 0;
    const double result = strtod(value, &end);
 
-   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result) || result < 0.0) {
-      cerr << "Invalid optical frequency: " << value << endl;
-      exit(EXIT_FAILURE);
-   }
+   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result))
+      invalid_numeric_value(description, value);
+
+   return result;
+}
+
+double parse_optical_frequency(const char *value)
+{
+   const double result = parse_finite_double(value, "optical frequency");
+
+   if (result < 0.0)
+      invalid_numeric_value("optical frequency", value);
 
    return result;
 }
 
 double parse_sigma_clip(const char *value)
 {
-   char *end = NULL;
-   errno = 0;
-   const double result = strtod(value, &end);
+   const double result = parse_finite_double(value, "ImSigma clipping floor");
 
-   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result) || result <= 0.0) {
-      cerr << "Invalid ImSigma clipping floor: " << value << endl;
-      exit(EXIT_FAILURE);
-   }
+   if (result <= 0.0)
+      invalid_numeric_value("ImSigma clipping floor", value);
 
    return result;
 }
 
 double parse_epsilon_window_limit(const char *value)
 {
-   char *end = NULL;
-   errno = 0;
-   const double result = strtod(value, &end);
+   const double result = parse_finite_double(value, "epsilon-window limit");
 
-   if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result) || result < 0.0) {
-      cerr << "Invalid epsilon-window limit: " << value << endl;
-      exit(EXIT_FAILURE);
-   }
+   if (result < 0.0)
+      invalid_numeric_value("epsilon-window limit", value);
 
    return result;
 }
 
 void cmd_line(int argc, char *argv[])
 {
+   const int positional_count = 7;
+   if (argc < positional_count + 1) {
+      usage();
+      exit(EXIT_FAILURE);
+   }
+
+   const int first_positional = argc - positional_count;
+   vector<char *> option_argv(argv, argv + first_positional);
+   option_argv.push_back(NULL);
+
    int c;
    static const struct option long_options[] = {
       {"ignore-integration-errors", no_argument, NULL, 'E'},
       {NULL, 0, NULL, 0}
    };
-    
-   while ((c = getopt_long(argc, argv, "vqEi:k:a:r:c:s:M:p:dfe:O:",
+
+   optind = 1;
+   while ((c = getopt_long(first_positional, &option_argv[0],
+                           "+vqEi:k:a:r:c:s:M:p:dfe:O:",
                            long_options, NULL)) != -1) {
       switch (c) {
       case 'v':
@@ -205,19 +238,19 @@ void cmd_line(int argc, char *argv[])
 	 ignore_integration_errors = true;
 	 break;
       case 'i':
-	 b = atoi(optarg);
+	 b = parse_integer(optarg, "interpolation selector");
 	 break;
       case 'k':
-         key = atoi(optarg);
+         key = parse_integer(optarg, "integration rule");
          break;
       case 'a':
-	 abs_error = atof(optarg);
+	 abs_error = parse_finite_double(optarg, "absolute integration tolerance");
 	 break;
       case 'r':
-	 rel_error = atof(optarg);
+	 rel_error = parse_finite_double(optarg, "relative integration tolerance");
 	 break;
       case 'c':
-	 cutoff = atof(optarg);
+	 cutoff = parse_finite_double(optarg, "frequency cutoff");
 	 break;
       case 's':
 	 sigma_clip = parse_sigma_clip(optarg);
@@ -235,33 +268,32 @@ void cmd_line(int argc, char *argv[])
 	 f_type = f_f;
 	 break;
       case 'e':
-	 e = atoi(optarg);
+	 e = parse_integer(optarg, "epsilon power");
 	 break;
       case 'O':
 	 optical_mode = true;
 	 optical_frequency = parse_optical_frequency(optarg);
 	 break;
       default:
-	 cerr << "Option not implemented." << endl;
+	 cerr << "Invalid or incomplete command-line option." << endl;
 	 usage();
-	 abort();
+	 exit(EXIT_FAILURE);
       }
    }
-    
-   int remaining = argc-optind;
-    
-   if (remaining != 7) {
+
+   if (optind != first_positional) {
+      cerr << "Options must precede the seven positional arguments." << endl;
       usage();
-      abort();
+      exit(EXIT_FAILURE);
    }
-   
-   m = atoi(argv[optind]);
-   n = atoi(argv[optind+1]);
-   o = atoi(argv[optind+2]);
-   T = atof(argv[optind+3]);
-   mu = atof(argv[optind+4]);
-   fnReSigma = string(argv[optind+5]);
-   fnImSigma = string(argv[optind+6]);
+
+   m = parse_integer(argv[first_positional], "kernel index m");
+   n = parse_integer(argv[first_positional + 1], "spectral power n");
+   o = parse_integer(argv[first_positional + 2], "frequency power o");
+   T = parse_finite_double(argv[first_positional + 3], "temperature T");
+   mu = parse_finite_double(argv[first_positional + 4], "chemical potential mu");
+   fnReSigma = string(argv[first_positional + 5]);
+   fnImSigma = string(argv[first_positional + 6]);
 
    if (m < 0 || m > 8) {
       cerr << "Unsupported kernel index m=" << m << "." << endl;
@@ -269,6 +301,26 @@ void cmd_line(int argc, char *argv[])
    }
    if (n < 0 || (m != 0 && n > 3)) {
       cerr << "Unsupported spectral power n=" << n << " for m=" << m << "." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (b < 1 || b > 3) {
+      cerr << "Unsupported interpolation selector i=" << b << "." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (key < GSL_INTEG_GAUSS15 || key > GSL_INTEG_GAUSS61) {
+      cerr << "Unsupported integration rule k=" << key << "." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (abs_error < 0.0) {
+      cerr << "Absolute integration tolerance must be nonnegative." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (rel_error < 0.0) {
+      cerr << "Relative integration tolerance must be nonnegative." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (m == 0 && e < 0) {
+      cerr << "Tabulated epsilon power e must be nonnegative." << endl;
       exit(EXIT_FAILURE);
    }
 
@@ -292,9 +344,25 @@ void cmd_line(int argc, char *argv[])
       cerr << "Options -O and -f cannot be used together." << endl;
       exit(EXIT_FAILURE);
    }
-   if (optical_mode && (!isfinite(T) || T <= 0.0 || !isfinite(cutoff) || cutoff <= 0.0)) {
-      cerr << "Optical conductivity requires positive finite T and cutoff." << endl;
-      exit(EXIT_FAILURE);
+   if (!calcdos) {
+      if (o < 0) {
+         cerr << "Frequency power o must be nonnegative during frequency integration." << endl;
+         exit(EXIT_FAILURE);
+      }
+      if (T <= 0.0) {
+         cerr << "Frequency integration requires positive finite T." << endl;
+         exit(EXIT_FAILURE);
+      }
+      if (cutoff <= 0.0) {
+         cerr << "Frequency integration requires a positive finite cutoff." << endl;
+         exit(EXIT_FAILURE);
+      }
+      const double thermal_bound = cutoff*T;
+      if (!isfinite(thermal_bound) || thermal_bound <= 0.0 ||
+          (optical_mode && !isfinite(thermal_bound + optical_frequency))) {
+         cerr << "The frequency integration bounds are not representable." << endl;
+         exit(EXIT_FAILURE);
+      }
    }
     
    if (verbose) {

@@ -288,15 +288,21 @@ table interval. Use `-p FILE` to select the table.
 bubble [options] m n o T mu resigma.dat imsigma.dat
 ```
 
+Options must precede the seven positional arguments. The final seven tokens are
+always interpreted positionally, so a negative finite chemical potential such
+as `mu=-0.25` does not require a preceding `--`. Numeric arguments must be
+complete finite values; malformed suffixes, overflow, and underflow are
+rejected.
+
 The positional arguments are:
 
 | Argument | Meaning |
 |---|---|
 | `m` | Kernel index, `0` through `8` |
-| `n` | Power of the spectral function |
-| `o` | Power of frequency in the outer integral |
-| `T` | Temperature in the chosen energy unit |
-| `mu` | Chemical potential |
+| `n` | Nonnegative power of the spectral function; built-in kernels support `0` through `3` |
+| `o` | Nonnegative power of frequency in an outer integral; unused by `-d` |
+| `T` | Positive temperature in the chosen energy unit; unused by `-d` |
+| `mu` | Any finite chemical potential, including negative values |
 | `resigma.dat` | Table of $\omega,\mathrm{Re}\ \Sigma(\omega)$ |
 | `imsigma.dat` | Table of $\omega,\mathrm{Im}\ \Sigma(\omega)$ |
 
@@ -309,13 +315,13 @@ Options:
 | `-E`, `--ignore-integration-errors` | Continue after an integration failure when a finite partial result is available |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points |
-| `-a A` | Absolute integration tolerance, default `1e-7` |
-| `-r R` | Relative integration tolerance, default `1e-8` |
-| `-c C` | Frequency cutoff in units of temperature, default `15` |
+| `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
+| `-r R` | Nonnegative relative integration tolerance, default `1e-8` |
+| `-c C` | Positive frequency cutoff in units of temperature, default `15`; unused by `-d` |
 | `-s S` | Positive clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
-| `-e E` | Multiply a tabulated kernel by $\epsilon^E$, default `0` |
+| `-e E` | Multiply a tabulated kernel by $\epsilon^E$ for nonnegative `E`, default `0` |
 | `-f` | Use the Fermi function instead of its derivative |
 | `-d` | Skip the frequency integral and write `dos.dat`; requires `m=0` |
 | `-O OMEGA` | External optical frequency; requires `OMEGA >= 0` and `n=2` |
@@ -490,10 +496,12 @@ over the self-energy input interval to lowercase `dos.dat`:
   Bethe_lattice_test/imsigma.dat
 ```
 
-The output is a physical interacting DOS (lattice spectral function) only for `n=1` when the supplied
-kernel is itself a noninteracting DOS. The positional `T` and `o` arguments are
-still syntactically required but are not used in this mode. `-d` overwrites
-`dos.dat` and cannot be combined with `-f`; it can be combined with `-e`.
+The output is a physical interacting DOS (lattice spectral function) only for
+`n=1` when the supplied kernel is itself a noninteracting DOS. The positional
+`T` and `o` arguments are still syntactically required but are not used in this
+mode, and neither is `-c`. They must be complete finite numeric values but may
+have either sign. `-d` overwrites `dos.dat` and cannot be combined with `-f`; it
+can be combined with `-e`.
 
 ## Numerical Method
 
@@ -632,7 +640,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.7.
+current executable is authoritative for version 1.8.
 
 ## References
 

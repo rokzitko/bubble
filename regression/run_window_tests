@@ -345,7 +345,38 @@ check_result('custom DOS integration failure compatibility mode',
     $custom_ignored_status == 0 && $custom_ignored_stdout eq '' &&
     $custom_ignored_stderr eq '',
     "exit=$custom_ignored_status stderr=$custom_ignored_stderr");
+
+my ($signed_dos_status, $signed_dos_stdout, $signed_dos_stderr) = run_bubble(
+    '-q', '-d', '-c', '-1', '-p', $phi,
+    0, 1, -1, -1, 0, $resigma, $imsigma,
+);
+check_result('DOS accepts finite signed placeholder values',
+    $signed_dos_status == 0 && $signed_dos_stdout eq '' && $signed_dos_stderr eq '',
+    "exit=$signed_dos_status stderr=$signed_dos_stderr");
 chdir $original_directory or die "Cannot return to $original_directory: $!\n";
+
+my ($negative_mu, $negative_mu_error) = run_value(
+    1, 2, 0, 0.1, -0.25, $resigma, $imsigma,
+);
+my ($positive_mu, $positive_mu_error) = run_value(
+    1, 2, 0, 0.1, 0.25, $resigma, $imsigma,
+);
+check_result('negative positional chemical potential',
+    defined $negative_mu && defined $positive_mu &&
+    close_enough($negative_mu, $positive_mu, 1e-13, 1e-13),
+    defined $negative_mu && defined $positive_mu
+        ? "negative=$negative_mu positive=$positive_mu"
+        : "$negative_mu_error $positive_mu_error");
+
+{
+    local $ENV{POSIXLY_CORRECT} = 1;
+    my ($posix_mu, $posix_mu_error) = run_value(
+        '-q', 1, 2, 0, 0.1, -0.25, $resigma, $imsigma,
+    );
+    check_result('POSIX option parsing with negative mu',
+        defined $posix_mu && defined $negative_mu && $posix_mu == $negative_mu,
+        defined $posix_mu ? "value=$posix_mu" : $posix_mu_error);
+}
 
 my @invalid_cases = (
     ['negative M', qr/Invalid epsilon-window limit/, '-M', '-1', @base],
@@ -361,11 +392,70 @@ my @invalid_cases = (
         '-M', '0.5', 1, 2, 0, 0.1, 0, $outside_resigma, $outside_imsigma],
     ['unsupported n with empty window', qr/Unsupported spectral power/,
         '-M', '0.25', 1, 99, 0, 0.1, 2, $resigma, $imsigma],
+    ['negative positional m', qr/Unsupported kernel index m=-1/,
+        -1, 0, 0, 0.1, 0, $resigma, $imsigma],
+    ['negative positional n', qr/Unsupported spectral power n=-1/,
+        1, -1, 0, 0.1, 0, $resigma, $imsigma],
+    ['negative active o', qr/Frequency power o must be nonnegative/,
+        1, 0, -1, 0.1, 0, $resigma, $imsigma],
+    ['negative active T', qr/requires positive finite T/,
+        1, 0, 0, -0.1, 0, $resigma, $imsigma],
+    ['negative active epsilon power', qr/epsilon power e must be nonnegative/,
+        '-e', '-1', '-p', $phi, 0, 1, 0, 0.1, 0, $resigma, $imsigma],
+    ['invalid interpolation selector', qr/Unsupported interpolation selector i=4/,
+        '-i', '4', @base],
+    ['invalid integration rule', qr/Unsupported integration rule k=7/,
+        '-k', '7', @base],
+    ['negative absolute tolerance', qr/Absolute integration tolerance must be nonnegative/,
+        '-a', '-1', @base],
+    ['negative relative tolerance', qr/Relative integration tolerance must be nonnegative/,
+        '-r', '-1', @base],
+    ['unrepresentable frequency bounds', qr/frequency integration bounds are not representable/,
+        1, 0, 0, '1e308', 0, $resigma, $imsigma],
+    ['underflowed frequency bounds', qr/frequency integration bounds are not representable/,
+        '-c', '1e-300', 1, 0, 0, '1e-300', 0, $resigma, $imsigma],
+    ['option after positional argument', qr/Options must precede the seven positional arguments/,
+        1, '-q', 0, 0, 0.1, 0, $resigma, $imsigma],
     ['unattainable outer tolerance', qr/frequency integration failed/i,
         '-M', '0.5', '-a', '0', '-r', '1e-20',
         1, 0, 0, 0.1, 0, $resigma, $imsigma],
 );
 for my $case (@invalid_cases) {
+    my ($name, $diagnostic, @arguments) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(@arguments);
+    check_result($name, $status == 1 && $stderr =~ $diagnostic,
+        "exit=$status stderr=$stderr");
+}
+
+my @invalid_numeric_cases = (
+    ['malformed interpolation', qr/Invalid interpolation selector/, '-i', '1junk', @base],
+    ['malformed integration rule', qr/Invalid integration rule/, '-k', '1junk', @base],
+    ['malformed absolute tolerance', qr/Invalid absolute integration tolerance/,
+        '-a', '1e-7junk', @base],
+    ['malformed relative tolerance', qr/Invalid relative integration tolerance/,
+        '-r', '1e-8junk', @base],
+    ['malformed cutoff', qr/Invalid frequency cutoff/, '-c', '15junk', @base],
+    ['malformed epsilon power', qr/Invalid epsilon power/, '-e', '1junk', @base],
+    ['malformed m', qr/Invalid kernel index m/, '1junk', 0, 0, 0.1, 0,
+        $resigma, $imsigma],
+    ['malformed n', qr/Invalid spectral power n/, 1, '0junk', 0, 0.1, 0,
+        $resigma, $imsigma],
+    ['malformed o', qr/Invalid frequency power o/, 1, 0, '0junk', 0.1, 0,
+        $resigma, $imsigma],
+    ['malformed T', qr/Invalid temperature T/, 1, 0, 0, '0.1junk', 0,
+        $resigma, $imsigma],
+    ['malformed mu', qr/Invalid chemical potential mu/, 1, 0, 0, 0.1, '-0.25junk',
+        $resigma, $imsigma],
+    ['integer overflow', qr/Invalid kernel index m/, '999999999999999999999',
+        0, 0, 0.1, 0, $resigma, $imsigma],
+    ['floating overflow', qr/Invalid chemical potential mu/, 1, 0, 0, 0.1,
+        '1e9999', $resigma, $imsigma],
+    ['non-finite T', qr/Invalid temperature T/, 1, 0, 0, 'nan', 0,
+        $resigma, $imsigma],
+    ['non-finite mu', qr/Invalid chemical potential mu/, 1, 0, 0, 0.1, 'inf',
+        $resigma, $imsigma],
+);
+for my $case (@invalid_numeric_cases) {
     my ($name, $diagnostic, @arguments) = @$case;
     my ($status, $stdout, $stderr) = run_bubble(@arguments);
     check_result($name, $status == 1 && $stderr =~ $diagnostic,

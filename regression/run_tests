@@ -16,7 +16,7 @@ while (<F>) {
     $mu = 0.0;
     
     # -i 1
-    open (R, "../bubble -i 1 -v $m -c 15 -a 1e-7 -r 1e-8 -k 1 $n $o $T $mu resigma_$nr.dat imsigma_$nr.dat |") or die;
+    open (R, "../bubble -i 1 -v -c 15 -a 1e-7 -r 1e-8 -k 1 $m $n $o $T $mu resigma_$nr.dat imsigma_$nr.dat |") or die;
     while (<R>) {
        print if $verbose;
 	if (/Result\s*=\s*(\S*)/) {
