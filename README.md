@@ -19,9 +19,9 @@ supplied separately.
 
 - Analytic band-energy integrals for flat, semicircular, Bethe lattice, and
   Gaussian kernels.
-- Numerical support for arbitrary tabulated kernels \(\Phi(\epsilon)\).
-- Built-in spectral-function powers \(n=0,1,2,3\), arbitrary nonnegative
-  powers for tabulated kernels, and frequency moments \(\omega^o\).
+- Numerical support for arbitrary tabulated kernels $\Phi(\epsilon)$.
+- Built-in spectral-function powers $n=0,1,2,3$, arbitrary nonnegative
+  powers for tabulated kernels, and frequency moments $\omega^o$.
 - Linear, cubic-spline, or Akima interpolation of a tabulated self-energy.
 - Adaptive Gauss-Kronrod integration through GSL.
 - Fermi-derivative transport moments, finite-frequency optical conductivity,
@@ -126,19 +126,19 @@ J_{mn}(z)=\frac{1}{D}\int d\epsilon\ \Phi_m(\epsilon)
 \ \frac{D}{z-\epsilon}\right]^n,
 $$
 
-with \(z=\omega+\mu-\Sigma^R(\omega)\), and then performs the remaining
+with $z=\omega+\mu-\Sigma^R(\omega)$, and then performs the remaining
 frequency integral numerically.
 
-The current analytic kernels use \(D=1\) and \(\sigma=1\). Consequently,
+The current analytic kernels use $D=1$ and $\sigma=1$. Consequently,
 temperature, chemical potential, frequency, band energy, and self-energy must
 all be expressed in the same energy unit, normally the half-bandwidth. The
-conventions \(k_B=\hbar=1\) are used.
+conventions $k_B=\hbar=1$ are used.
 
 ### Clean-Limit Kernels
 
-The phrase *clean-limit kernel* refers to \(J_{mn}(z)\) evaluated when the
+The phrase *clean-limit kernel* refers to $J_{mn}(z)$ evaluated when the
 single-particle scattering rate is very small. It is an evaluation regime, not
-an additional transport function \(\Phi_m\). Writing
+an additional transport function $\Phi_m$. Writing
 
 $$
 z=x+iy,
@@ -148,16 +148,16 @@ x=\omega+\mu-\mathrm{Re}\ \Sigma^R(\omega),
 y=-\mathrm{Im}\ \Sigma^R(\omega)>0,
 $$
 
-the spectral factor for \(D=1\) is the Lorentzian
+the spectral factor for $D=1$ is the Lorentzian
 
 $$
 A_y(x-\epsilon)
 =\frac{y}{\pi[(x-\epsilon)^2+y^2]}.
 $$
 
-The clean limit is \(y\to0^+\), where this Lorentzian becomes increasingly
-narrow and tends to \(\delta(x-\epsilon)\). If \(x\) is strictly inside a band
-and \(\Phi_m\) is smooth there, the leading behavior is
+The clean limit is $y\to0^+$, where this Lorentzian becomes increasingly
+narrow and tends to $\delta(x-\epsilon)$. If $x$ is strictly inside a band
+and $\Phi_m$ is smooth there, the leading behavior is
 
 $$
 J_{m1}(x+iy)\longrightarrow\Phi_m(x),
@@ -168,8 +168,8 @@ J_{m3}(x+iy)\sim\frac{3\Phi_m(x)}{8\pi^2y^2}.
 $$
 
 Thus the `n=2` and `n=3` kernels become large even though their energy width
-shrinks. Outside a finite band they instead vanish as \(O(y^n)\), while at a
-band edge the behavior depends on how \(\Phi_m\) approaches zero. These very
+shrinks. Outside a finite band they instead vanish as $O(y^n)$, while at a
+band edge the behavior depends on how $\Phi_m$ approaches zero. These very
 different scales make direct quadrature and cancellation-prone closed formulas
 unreliable. The built-in clean-limit implementation uses factored finite-band
 expressions, exterior moment expansions, and conditioned Gaussian/Faddeeva
@@ -191,10 +191,10 @@ The most common index combinations are:
 Physical observables are formed from these moments and appropriate prefactors.
 For example, a Seebeck coefficient involves a ratio of the `o=1` and `o=0`
 moments rather than the `o=1` result alone. The exact conversion depends on the
-normalization of \(\Phi_m\), units, degeneracies, and the conventions used for
+normalization of $\Phi_m$, units, degeneracies, and the conventions used for
 charge and current operators.
 
-Without `-O`, the program evaluates these DC moments. Here \(\omega\) is the
+Without `-O`, the program evaluates these DC moments. Here $\omega$ is the
 internal fermionic frequency.
 
 ## Finite-Frequency Optical Conductivity
@@ -218,11 +218,11 @@ K_m(z_1,z_2)=\int d\epsilon\ \Phi_m(\epsilon)
 z(\omega)=\omega+\mu-\Sigma^R(\omega).
 $$
 
-The optical frequency \(\Omega\) is external and distinct from the integration
-frequency \(\omega\). The self-energy is evaluated independently at
-\(\omega\) and \(\omega+\Omega\). The frequency quadrature is split at
-\(-\Omega\) and zero. It therefore requires self-energy data over approximately
-\([-CT-\Omega,CT+\Omega]\); unless `-q` is used, the program warns before
+The optical frequency $\Omega$ is external and distinct from the integration
+frequency $\omega$. The self-energy is evaluated independently at
+$\omega$ and $\omega+\Omega$. The frequency quadrature is split at
+$-\Omega$ and zero. It therefore requires self-energy data over approximately
+$[-CT-\Omega,CT+\Omega]$; unless `-q` is used, the program warns before
 using its normal out-of-table extrapolation policy.
 
 Optical mode requires `n=2` and a finite `OMEGA >= 0`. It cannot be combined
@@ -246,22 +246,22 @@ normalization factors.
 
 ## Built-in Kernels
 
-For the analytic kernels, \(D=\sigma=1\):
+For the analytic kernels, $D=\sigma=1$:
 
-| `m` | Kernel \(\Phi_m(\epsilon)\) | Domain | Description |
+| `m` | Kernel $\Phi_m(\epsilon)$ | Domain | Description |
 |---:|---|---|---|
 | 0 | User-supplied table | Table interval | Generic numerical kernel |
-| 1 | \(1\) | \([-1,1]\) | Flat, even |
-| 2 | \(\epsilon\) | \([-1,1]\) | Flat, odd |
-| 3 | \(\sqrt{1-\epsilon^2}\) | \([-1,1]\) | Semicircular, even |
-| 4 | \(\epsilon\sqrt{1-\epsilon^2}\) | \([-1,1]\) | Semicircular, odd |
-| 5 | \((1-\epsilon^2)^{3/2}\) | \([-1,1]\) | Bethe transport, even |
-| 6 | \(\epsilon(1-\epsilon^2)^{3/2}\) | \([-1,1]\) | Bethe transport, odd |
-| 7 | \(e^{-2\epsilon^2}\) | \(( -\infty,\infty )\) | Gaussian, even |
-| 8 | \(\epsilon e^{-2\epsilon^2}\) | \(( -\infty,\infty )\) | Gaussian, odd |
+| 1 | $1$ | $[-1,1]$ | Flat, even |
+| 2 | $\epsilon$ | $[-1,1]$ | Flat, odd |
+| 3 | $\sqrt{1-\epsilon^2}$ | $[-1,1]$ | Semicircular, even |
+| 4 | $\epsilon\sqrt{1-\epsilon^2}$ | $[-1,1]$ | Semicircular, odd |
+| 5 | $(1-\epsilon^2)^{3/2}$ | $[-1,1]$ | Bethe transport, even |
+| 6 | $\epsilon(1-\epsilon^2)^{3/2}$ | $[-1,1]$ | Bethe transport, odd |
+| 7 | $e^{-2\epsilon^2}$ | $( -\infty,\infty )$ | Gaussian, even |
+| 8 | $\epsilon e^{-2\epsilon^2}$ | $( -\infty,\infty )$ | Gaussian, odd |
 
 These kernels do not include lattice normalization factors. For example, the
-Bethe-lattice benchmark applies the factor \(2/\pi\) externally. Odd kernels
+Bethe-lattice benchmark applies the factor $2/\pi$ externally. Odd kernels
 are useful in Hall and occupied-energy moments.
 
 For `m=0`, the kernel is read from a whitespace-separated two-column file:
@@ -291,8 +291,8 @@ The positional arguments are:
 | `o` | Power of frequency in the outer integral |
 | `T` | Temperature in the chosen energy unit |
 | `mu` | Chemical potential |
-| `resigma.dat` | Table of \(\omega,\mathrm{Re}\ \Sigma(\omega)\) |
-| `imsigma.dat` | Table of \(\omega,\mathrm{Im}\ \Sigma(\omega)\) |
+| `resigma.dat` | Table of $\omega,\mathrm{Re}\ \Sigma(\omega)$ |
+| `imsigma.dat` | Table of $\omega,\mathrm{Im}\ \Sigma(\omega)$ |
 
 Options:
 
@@ -305,10 +305,10 @@ Options:
 | `-a A` | Absolute integration tolerance, default `1e-7` |
 | `-r R` | Relative integration tolerance, default `1e-8` |
 | `-c C` | Frequency cutoff in units of temperature, default `15` |
-| `-s S` | Positive clipping floor for \(-\mathrm{Im}\ \Sigma\), default `1e-8` |
+| `-s S` | Positive clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
-| `-e E` | Multiply a tabulated kernel by \(\epsilon^E\), default `0` |
+| `-e E` | Multiply a tabulated kernel by $\epsilon^E$, default `0` |
 | `-f` | Use the Fermi function instead of its derivative |
 | `-d` | Skip the frequency integral and write `dos.dat`; requires `m=0` |
 | `-O OMEGA` | External optical frequency; requires `OMEGA >= 0` and `n=2` |
@@ -333,17 +333,17 @@ omega_1  ReSigma_1         omega_1  ImSigma_1
 
 Both files should have the same number of rows and identical, strictly
 increasing frequency grids. The retarded convention
-\(\mathrm{Im}\ \Sigma^R\le 0\) is required.
+$\mathrm{Im}\ \Sigma^R\le 0$ is required.
 
 The following numerical policies are important when interpreting results:
 
-- Input values with \(\mathrm{Im}\ \Sigma>-S\) are replaced by \(-S\),
+- Input values with $\mathrm{Im}\ \Sigma>-S$ are replaced by $-S$,
   including positive noncausal values. The `-s S` option selects this floor and
-  defaults to \(S=10^{-8}\).
+  defaults to $S=10^{-8}$.
 - Outside the input interval, `ReSigma` is held at its nearest endpoint and
-  `ImSigma` is set to \(-10^{-10}\).
+  `ImSigma` is set to $-10^{-10}$.
 - The default Fermi-derivative integration interval is
-  \([-15T,15T]\). Increase `-c` if broader thermal tails matter.
+  $[-15T,15T]$. Increase `-c` if broader thermal tails matter.
 - Optical mode extends the lower endpoint by `OMEGA` and evaluates the shifted
   propagator up to `cutoff*T+OMEGA`.
 
@@ -367,9 +367,9 @@ $$
 \epsilon_F=\mu-\mathrm{Re}\ \Sigma^R(0).
 $$
 
-The value of \(\mathrm{Re}\ \Sigma^R(0)\) is obtained with the interpolation
+The value of $\mathrm{Re}\ \Sigma^R(0)$ is obtained with the interpolation
 selected by `-i`. Therefore a positive `M` requires the self-energy input grid
-to contain \(\omega=0\); the program reports an error rather than extrapolating
+to contain $\omega=0$; the program reports an error rather than extrapolating
 the Fermi-level center. `M` uses the same energy units as the bandwidth,
 temperature, chemical potential, and self-energy.
 
@@ -387,7 +387,7 @@ for an infinite window, not a zero-width interval. Both an omitted `-M` and an
 explicit `-M 0` follow the previous unrestricted code paths exactly.
 If a positive `M` is smaller than floating-point resolution at the resolved
 center, so that the stored bounds do not lie on opposite sides of
-\(\epsilon_F\), the program reports an error instead of using a one-sided
+$\epsilon_F$, the program reports an error instead of using a one-sided
 window. It likewise rejects bounds whose rounding erases a nonzero resolved
 center and would make the stored interval spuriously symmetric.
 
@@ -436,7 +436,7 @@ For example:
 
 ### Occupied Spectral Moments
 
-`-f` replaces \(-\partial f/\partial\omega\) by the Fermi function itself:
+`-f` replaces $-\partial f/\partial\omega$ by the Fermi function itself:
 
 $$
 \int_{\omega_{\min}}^{CT}d\omega
@@ -477,9 +477,9 @@ still syntactically required but are not used in this mode. `-d` overwrites
 
 ## Numerical Method
 
-- The \(n=0,1\) analytic \(J_{mn}\) expressions originate from Mathematica
+- The $n=0,1$ analytic $J_{mn}$ expressions originate from Mathematica
   calculations documented under `notes/`.
-- Built-in \(n=2,3\) kernels use cancellation-free finite-band formulas,
+- Built-in $n=2,3$ kernels use cancellation-free finite-band formulas,
   exterior moment expansions, and conditioned Faddeeva identities. Gaussian
   transition cases have a direct positive-quadrature fallback.
 - Built-in optical kernels use analytic Hilbert transforms and stable divided
@@ -569,10 +569,10 @@ invalid option combinations. It can be run directly with:
 
 `Bethe_lattice_test/` contains a real-frequency DMFT self-energy and independent
 Mathematica reference values for conductivity, resistivity, thermopower,
-thermal conductivity, Lorenz ratio, and \(ZT\). With the documented
+thermal conductivity, Lorenz ratio, and $ZT$. With the documented
 normalization, the current executable agrees with these references to about
-\(10^{-5}\) relative accuracy. The independent occupied-energy check agrees to
-better than \(10^{-7}\) relative accuracy.
+$10^{-5}$ relative accuracy. The independent occupied-energy check agrees to
+better than $10^{-7}$ relative accuracy.
 
 The finite-frequency reference contains 50 optical frequencies. Generate
 `cond.opt.geo.dat` on that exact mesh and compare it with the frozen Mathematica
@@ -582,9 +582,9 @@ output using:
 ./Bethe_lattice_test/cond.opt.geo
 ```
 
-The script applies the benchmark's \(2\pi\) normalization, `20T` cutoff, and
-\(10^{-16}\) self-energy clipping floor. It accepts
-\(|\Delta|\le10^{-12}+3\times10^{-5}|\mathrm{reference}|\), reports the largest
+The script applies the benchmark's $2\pi$ normalization, `20T` cutoff, and
+$10^{-16}$ self-energy clipping floor. It accepts
+$|\Delta|\le10^{-12}+3\times10^{-5}|\mathrm{reference}|$, reports the largest
 errors, and exits unsuccessfully on any mismatch. `cond.opt.geo.mma` is retained
 only as provenance; validation reads `cond.opt.geo-mma.dat` and never launches
 Mathematica.
