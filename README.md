@@ -29,6 +29,12 @@ supplied separately.
 - DC, optical-limit, and independent Bethe-lattice regression tests.
 - Clean-limit kernel checks against independent high-precision quadrature.
 
+## Applications
+
+See [DMFT_NRG_KLM](https://github.com/rokzitko/DMFT_NRG_KLM) for an example of a dynamical mean
+field theory (DMFT) calculation using numerical renormalization group (NRG) as a solver for
+the Kondo lattice model (KLM).
+
 ## Quick Start
 
 ### Requirements
