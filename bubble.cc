@@ -28,6 +28,7 @@
 // 8.8.2026 - strict integration error handling with -E compatibility mode
 //            - strict numeric parsing and negative positional arguments
 //            - enforce the ImSigma floor after interpolation
+//            - peak-removing quadrature for unrestricted tabulated kernels
 
 #include <iostream>
 #include <iomanip>
@@ -468,6 +469,17 @@ bool integration_result_acceptable(const string &operation,
    return false;
 }
 
+bool integration_error_within_bound(const string &operation,
+                                    double result, double error,
+                                    long double error_bound)
+{
+   if (!isfinite(result) || !isfinite(error) || error < 0.0)
+      return integration_result_acceptable(operation, GSL_SUCCESS, result, error);
+   if (static_cast<long double>(error) <= error_bound)
+      return true;
+   return integration_result_acceptable(operation, GSL_ETOL, result, error);
+}
+
 // Faddeeva function
 complex<double> Erfi(complex<double> z) {
    double relerr = 0;
@@ -744,17 +756,6 @@ double J_73(complex<double> z) { return J_builtin(7, 3, z); }
 double J_82(complex<double> z) { return J_builtin(8, 2, z); }
 double J_83(complex<double> z) { return J_builtin(8, 3, z); }
 
-// Gsl function as an integrand for general J integral 
-// (when there is no analytical expression for it)
-double f_gsl (double epsilon, void * params) 
-{
-   const complex<double> OMEGA = *(complex<double> *) params;
-   double phi_interp = gsl_spline_eval(spline_Phi,epsilon,acc_Phi);
-   complex<double> G = 1/(OMEGA - epsilon);
-    
-   return phi_interp*pow(((-1/M_PI)*G.imag()),n);
-}
-
 void load_Phi()
 {
    // Opening and reading file that contains epsilon, Phi(epsilon) pairs
@@ -802,144 +803,6 @@ void load_Phi()
    gsl_spline_init(spline_Phi, &eps[0], &phi[0], N);
 }
 
-// General J integral
-double J_0n (complex<double> OMEGA) 
-{
-   // GSL integration to get J(OMEGA)
-   gsl_function F;
-   F.function = &f_gsl;
-   void *params_ptr = &OMEGA;
-   F.params = params_ptr;
-
-   const size_t ws_size = 1000;
-
-   gsl_set_error_handler_off();
-   gsl_integration_workspace *w = gsl_integration_workspace_alloc (ws_size);
-   if (w == NULL) {
-      cerr << "Unable to allocate custom-kernel integration workspace." << endl;
-      exit(EXIT_FAILURE);
-   }
-
-   double result_Phi = numeric_limits<double>::quiet_NaN();
-   double error_Phi = numeric_limits<double>::quiet_NaN();
-
-   const int status = gsl_integration_qag(&F,
-				          eps_min,
-				          eps_max,
-				          abs_error,
-				          rel_error,
-				          ws_size,
-				          key,
-				          w,
-				          &result_Phi,
-				          &error_Phi);
-   gsl_integration_workspace_free(w);
-
-   if (!integration_result_acceptable("Custom epsilon integration",
-                                      status, result_Phi, error_Phi))
-      exit(EXIT_FAILURE);
-
-   return result_Phi;
-}
-
-struct optical_kernel_params {
-   complex<double> z1;
-   complex<double> z2;
-};
-
-double f_gsl_optical(double epsilon, void *params)
-{
-   const optical_kernel_params &p = *(optical_kernel_params *)params;
-   const double phi_interp = gsl_spline_eval(spline_Phi, epsilon, acc_Phi);
-   const complex<double> G1 = 1.0/(p.z1 - epsilon);
-   const complex<double> G2 = 1.0/(p.z2 - epsilon);
-   const double A1 = -G1.imag()/M_PI;
-   const double A2 = -G2.imag()/M_PI;
-
-   return phi_interp*A1*A2;
-}
-
-void add_optical_peak_breakpoints(vector<double> &points, complex<double> z)
-{
-   const double center = z.real();
-   const double width = abs(z.imag());
-   const double range = eps_max - eps_min;
-   if (!isfinite(center) || !isfinite(width) || width == 0.0 ||
-       (center < eps_min && eps_min - center > width) ||
-       (center > eps_max && center - eps_max > width))
-      return;
-
-   if (eps_min < center && center < eps_max)
-      points.push_back(center);
-   double distance = width;
-   for (int scale = 0; scale < 24; ++scale) {
-      const double lower_point = center - distance;
-      const double upper_point = center + distance;
-      if (eps_min < lower_point && lower_point < eps_max)
-	 points.push_back(lower_point);
-      if (eps_min < upper_point && upper_point < eps_max)
-	 points.push_back(upper_point);
-      if (distance >= range)
-	 break;
-      distance *= 8.0;
-   }
-}
-
-double J_0_optical(complex<double> z1, complex<double> z2)
-{
-   optical_kernel_params params = {z1, z2};
-   gsl_function F;
-   F.function = &f_gsl_optical;
-   F.params = &params;
-
-   const size_t ws_size = 1000;
-   gsl_integration_workspace *work = gsl_integration_workspace_alloc(ws_size);
-   if (work == NULL) {
-      cerr << "Unable to allocate optical kernel integration workspace." << endl;
-      exit(EXIT_FAILURE);
-   }
-
-   double result = numeric_limits<double>::quiet_NaN();
-   double error = numeric_limits<double>::quiet_NaN();
-   vector<double> points;
-   points.push_back(eps_min);
-   points.push_back(eps_max);
-   add_optical_peak_breakpoints(points, z1);
-   add_optical_peak_breakpoints(points, z2);
-   sort(points.begin(), points.end());
-   const double spacing = min(0.25*(eps_max - eps_min),
-      64.0*numeric_limits<double>::epsilon()*
-      max(1.0, max(abs(eps_min), abs(eps_max))));
-   vector<double> filtered_points;
-   filtered_points.push_back(eps_min);
-   for (vector<double>::const_iterator point = points.begin(); point != points.end(); ++point) {
-      if (eps_min < *point && *point < eps_max &&
-	  *point - filtered_points.back() > spacing && eps_max - *point > spacing)
-	 filtered_points.push_back(*point);
-   }
-   filtered_points.push_back(eps_max);
-   points.swap(filtered_points);
-
-   const int status = gsl_integration_qagp(&F,
-					   &points[0],
-					   points.size(),
-					   abs_error,
-					   rel_error,
-					   ws_size,
-					   work,
-					   &result,
-					   &error);
-   gsl_integration_workspace_free(work);
-
-   if (!integration_result_acceptable("Optical epsilon integration",
-                                      status, result, error)) {
-      cerr << "Optical arguments were z1=" << z1 << ", z2=" << z2 << "." << endl;
-      exit(EXIT_FAILURE);
-   }
-
-   return result;
-}
-
 struct epsilon_interval {
    double lower;
    double upper;
@@ -952,10 +815,47 @@ double J_restricted_single(int kernel, int power, complex<double> z,
                            double lower, double upper);
 double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
                             double lower, double upper);
+double J_tabulated_single(int power, complex<double> z,
+                          double lower, double upper);
+double J_tabulated_optical(complex<double> z1, complex<double> z2,
+                           double lower, double upper);
+
+double J_tabulated_mass(double lower, double upper)
+{
+   static bool cached = false;
+   static double cached_lower = 0.0;
+   static double cached_upper = 0.0;
+   static double cached_value = 0.0;
+   if (!cached || cached_lower != lower || cached_upper != upper) {
+      double result = numeric_limits<double>::quiet_NaN();
+      gsl_set_error_handler_off();
+      const int status = gsl_spline_eval_integ_e(spline_Phi, lower, upper,
+                                                  acc_Phi, &result);
+      if (!integration_result_acceptable("Custom epsilon integration",
+                                         status, result, 0.0))
+         exit(EXIT_FAILURE);
+      cached_lower = lower;
+      cached_upper = upper;
+      cached_value = result;
+      cached = true;
+   }
+   return cached_value;
+}
 
 // Switches between J for different m and n indices.
 double J_mn (complex<double> OMEGA)
 {
+   if (m == 0) {
+      const epsilon_interval interval = epsilon_window_limit > 0.0
+         ? restricted_epsilon_interval(0)
+         : epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)};
+      if (interval.empty)
+         return 0.0;
+      if (n == 0)
+         return J_tabulated_mass(interval.lower, interval.upper);
+      return J_tabulated_single(n, OMEGA, interval.lower, interval.upper);
+   }
+
    if (epsilon_window_limit > 0.0) {
       const epsilon_interval interval = restricted_epsilon_interval(m);
       if (interval.empty)
@@ -980,11 +880,6 @@ double J_mn (complex<double> OMEGA)
 	 }
 	 return J_restricted_single(m, n, OMEGA, interval.lower, interval.upper);
       }
-   }
-
-   // Handle the special case first
-   if (m == 0) {
-      return J_0n(OMEGA);
    }
 
    switch(n) {
@@ -1767,12 +1662,103 @@ double restricted_acceptable_absolute_error()
    return max(1.0e-300, min(1.0e-12, 1.0e-4*abs_error));
 }
 
-long double restricted_error_bound(double result, long double result_scale = 1.0L)
+struct epsilon_integration_policy {
+   double absolute_error;
+   double relative_error;
+   double acceptable_absolute_error;
+   double acceptable_relative_error;
+   int rule;
+   bool tabulated;
+};
+
+epsilon_integration_policy restricted_epsilon_policy()
 {
-   return max(static_cast<long double>(restricted_acceptable_absolute_error())/
-                 fabsl(result_scale),
-              static_cast<long double>(restricted_acceptable_relative_error())*
-                 abs(result));
+   return epsilon_integration_policy{0.0, restricted_relative_error(),
+      restricted_acceptable_absolute_error(),
+      restricted_acceptable_relative_error(), GSL_INTEG_GAUSS61, false};
+}
+
+epsilon_integration_policy tabulated_epsilon_policy()
+{
+   return epsilon_integration_policy{abs_error, rel_error, abs_error, rel_error,
+                                     key, true};
+}
+
+epsilon_integration_policy divided_epsilon_policy(
+   epsilon_integration_policy policy, size_t divisor)
+{
+   if (divisor != 0) {
+      policy.absolute_error /= divisor;
+      policy.acceptable_absolute_error /= divisor;
+   }
+   return policy;
+}
+
+double normalized_absolute_error(const epsilon_integration_policy &policy,
+                                 long double result_scale)
+{
+   if (policy.absolute_error == 0.0)
+      return 0.0;
+   const long double scale = fabsl(result_scale);
+   if (scale == 0.0L)
+      return numeric_limits<double>::max();
+   return static_cast<double>(min(
+      static_cast<long double>(numeric_limits<double>::max()),
+      static_cast<long double>(policy.absolute_error)/scale));
+}
+
+long double epsilon_error_bound(const epsilon_integration_policy &policy,
+                                double result,
+                                long double result_scale = 1.0L)
+{
+   const long double scale = fabsl(result_scale);
+   const long double absolute_bound = scale == 0.0L
+      ? numeric_limits<long double>::infinity()
+      : static_cast<long double>(policy.acceptable_absolute_error)/scale;
+   return max(absolute_bound,
+              static_cast<long double>(policy.acceptable_relative_error)*abs(result));
+}
+
+const char *epsilon_description(const epsilon_integration_policy &policy,
+                                const char *restricted_description)
+{
+   return policy.tabulated ? "Custom epsilon integration" : restricted_description;
+}
+
+const char *optical_epsilon_description(const epsilon_integration_policy &policy,
+                                        const char *restricted_description)
+{
+   return policy.tabulated ? "Optical epsilon integration" : restricted_description;
+}
+
+double checked_scaled_epsilon_result(const char *description,
+                                     long double result_scale,
+                                     long double normalized_result,
+                                     double normalized_error = 0.0,
+                                     double *estimated_error = NULL)
+{
+   const long double wide_result = result_scale*normalized_result;
+   if (!isfinite(wide_result) ||
+       fabsl(wide_result) > numeric_limits<double>::max()) {
+      const double invalid_result = isnan(wide_result)
+         ? numeric_limits<double>::quiet_NaN()
+         : (signbit(wide_result) ? -numeric_limits<double>::infinity()
+                                 : numeric_limits<double>::infinity());
+      integration_result_acceptable(description, GSL_SUCCESS,
+                                    invalid_result, 0.0);
+      exit(EXIT_FAILURE);
+   }
+   const double result = static_cast<double>(wide_result);
+   if (!integration_result_acceptable(description, GSL_SUCCESS, result, 0.0))
+      exit(EXIT_FAILURE);
+
+   if (estimated_error != NULL) {
+      const long double wide_error = fabsl(result_scale)*normalized_error;
+      *estimated_error = wide_error <= numeric_limits<double>::max()
+         ? static_cast<double>(wide_error)
+         : numeric_limits<double>::infinity();
+   }
+   return result;
 }
 
 long double restricted_integrand_scale(long double full_scale)
@@ -1899,7 +1885,7 @@ double restricted_single_integrand(double argument, void *raw_params)
       const long double inverse = 1.0L/distance;
       const long double weight = distance <= 1.0L
          ? distance/powl(1.0L + distance*distance, params.power)
-         : powl(inverse, 2*params.power - 1)/
+         : powl(inverse, 2.0L*params.power - 1.0L)/
            powl(1.0L + inverse*inverse, params.power);
       const long double offset = params.transformed_direction*
          params.width*distance;
@@ -1912,7 +1898,7 @@ double restricted_single_integrand(double argument, void *raw_params)
       const long double offset = params.width*tanl(theta);
       return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
          params.center, offset)*
-         powl(cosine, 2*params.power - 2)*params.integrand_scale);
+         powl(cosine, 2.0L*params.power - 2.0L)*params.integrand_scale);
    }
 
    const long double epsilon = argument;
@@ -1988,13 +1974,17 @@ restricted_fixed_result integrate_restricted_fixed_check(gsl_function &function,
 }
 
 double integrate_restricted_qag(gsl_function &function, double lower, double upper,
-                                const char *description,
-                                long double result_scale = 1.0L)
+                                 const char *description,
+                                 long double result_scale = 1.0L,
+                                 const epsilon_integration_policy &policy =
+                                    restricted_epsilon_policy(),
+                                 double *estimated_error = NULL)
 {
    double result = numeric_limits<double>::quiet_NaN();
    double error = numeric_limits<double>::quiet_NaN();
-   const int status = gsl_integration_qag(&function, lower, upper, 0.0,
-      restricted_relative_error(), RESTRICTED_WORKSPACE_SIZE, GSL_INTEG_GAUSS61,
+   const int status = gsl_integration_qag(&function, lower, upper,
+      normalized_absolute_error(policy, result_scale), policy.relative_error,
+      RESTRICTED_WORKSPACE_SIZE, policy.rule,
       restricted_workspace(), &result, &error);
    double verified_error = error;
    if (status == GSL_EROUND) {
@@ -2010,8 +2000,8 @@ double integrate_restricted_qag(gsl_function &function, double lower, double upp
          verified_error = numeric_limits<double>::infinity();
    }
    const bool roundoff_acceptable = status == GSL_EROUND &&
-       isfinite(result) && isfinite(verified_error) &&
-       verified_error <= restricted_error_bound(result, result_scale);
+        isfinite(result) && isfinite(verified_error) &&
+        verified_error <= epsilon_error_bound(policy, result, result_scale);
    const bool successful = status == GSL_SUCCESS && isfinite(result) &&
       isfinite(error) && error >= 0.0;
    if (!successful && !roundoff_acceptable &&
@@ -2019,6 +2009,8 @@ double integrate_restricted_qag(gsl_function &function, double lower, double upp
       exit(EXIT_FAILURE);
    if (roundoff_acceptable)
       warn_restricted_roundoff(description);
+   if (estimated_error != NULL)
+      *estimated_error = verified_error;
    return result;
 }
 
@@ -2080,13 +2072,17 @@ vector<double> filter_integration_points(vector<double> points,
 }
 
 double integrate_restricted_qagp(gsl_function &function, vector<double> points,
-                                 const char *description,
-                                 long double result_scale = 1.0L)
+                                  const char *description,
+                                  long double result_scale = 1.0L,
+                                  const epsilon_integration_policy &policy =
+                                     restricted_epsilon_policy(),
+                                  double *estimated_error = NULL)
 {
    double result = numeric_limits<double>::quiet_NaN();
    double error = numeric_limits<double>::quiet_NaN();
    const int status = gsl_integration_qagp(&function, &points[0], points.size(),
-      0.0, restricted_relative_error(), RESTRICTED_WORKSPACE_SIZE,
+      normalized_absolute_error(policy, result_scale), policy.relative_error,
+      RESTRICTED_WORKSPACE_SIZE,
       restricted_workspace(), &result, &error);
    double verified_error = error;
    if (status == GSL_EROUND) {
@@ -2106,8 +2102,8 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
          verified_error = numeric_limits<double>::infinity();
    }
    const bool roundoff_acceptable = status == GSL_EROUND &&
-       isfinite(result) && isfinite(verified_error) &&
-       verified_error <= restricted_error_bound(result, result_scale);
+        isfinite(result) && isfinite(verified_error) &&
+        verified_error <= epsilon_error_bound(policy, result, result_scale);
    const bool successful = status == GSL_SUCCESS && isfinite(result) &&
       isfinite(error) && error >= 0.0;
    if (!successful && !roundoff_acceptable &&
@@ -2115,68 +2111,97 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
       exit(EXIT_FAILURE);
    if (roundoff_acceptable)
       warn_restricted_roundoff(description);
+   if (estimated_error != NULL)
+      *estimated_error = verified_error;
    return result;
 }
 
 double integrate_restricted_piecewise_qag(gsl_function &function,
-                                           const vector<double> &points,
-                                           const char *description,
-                                           long double result_scale = 1.0L)
+                                            const vector<double> &points,
+                                            const char *description,
+                                            long double result_scale = 1.0L,
+                                            const epsilon_integration_policy &policy =
+                                               restricted_epsilon_policy(),
+                                            double *estimated_error = NULL)
 {
    double total = 0.0;
    double compensation = 0.0;
-   double questionable_error = 0.0;
-   int questionable_status = GSL_SUCCESS;
+   double total_error = 0.0;
+   double roundoff_error = 0.0;
+   bool verified_roundoff = false;
+   const epsilon_integration_policy segment_policy = divided_epsilon_policy(
+      policy, points.size() > 1 ? points.size() - 1 : 1);
    for (size_t interval = 1; interval < points.size(); ++interval) {
       double result = numeric_limits<double>::quiet_NaN();
       double error = numeric_limits<double>::quiet_NaN();
       const int status = gsl_integration_qag(&function, points[interval - 1],
-         points[interval], 0.0, restricted_relative_error(),
-         RESTRICTED_WORKSPACE_SIZE, GSL_INTEG_GAUSS61,
+         points[interval], normalized_absolute_error(segment_policy, result_scale),
+         segment_policy.relative_error, RESTRICTED_WORKSPACE_SIZE,
+         segment_policy.rule,
          restricted_workspace(), &result, &error);
       const bool valid_output = isfinite(result) && isfinite(error) && error >= 0.0;
+      double verified_error = error;
       if (status == GSL_EROUND && valid_output) {
          const restricted_fixed_result check = integrate_restricted_fixed_check(function,
-             points[interval - 1], points[interval]);
+              points[interval - 1], points[interval]);
          if (!isfinite(check.value) || !isfinite(check.difference)) {
             if (!integration_result_acceptable(description, status, result, error))
                exit(EXIT_FAILURE);
+            verified_error = numeric_limits<double>::infinity();
          } else {
-            questionable_error += min(error,
+            verified_error = min(error,
                max(abs(result - check.value), check.difference));
-            questionable_status = status;
+            roundoff_error += verified_error;
+            verified_roundoff = true;
          }
       } else if (status != GSL_SUCCESS || !valid_output) {
          if (!integration_result_acceptable(description, status, result, error))
             exit(EXIT_FAILURE);
       }
+      if (isfinite(total_error) && isfinite(verified_error) && verified_error >= 0.0)
+         total_error += verified_error;
+      else
+         total_error = numeric_limits<double>::infinity();
       const double adjusted = result - compensation;
       const double updated = total + adjusted;
       compensation = (updated - total) - adjusted;
       total = updated;
    }
-   if (questionable_status != GSL_SUCCESS &&
-         questionable_error > restricted_error_bound(total, result_scale)) {
-      if (!integration_result_acceptable(description, questionable_status,
-                                         total, questionable_error))
+   const long double error_bound = epsilon_error_bound(policy, total, result_scale);
+   if (policy.tabulated) {
+      const bool within_bound = isfinite(total_error) && total_error >= 0.0 &&
+         static_cast<long double>(total_error) <= error_bound;
+      if (!integration_error_within_bound(description, total, total_error,
+                                          error_bound))
          exit(EXIT_FAILURE);
-      questionable_status = GSL_SUCCESS;
+      if (!within_bound)
+         verified_roundoff = false;
+   } else if (verified_roundoff &&
+              static_cast<long double>(roundoff_error) > error_bound) {
+      if (!integration_result_acceptable(description, GSL_EROUND,
+                                         total, roundoff_error))
+         exit(EXIT_FAILURE);
+      verified_roundoff = false;
    }
-   if (questionable_status != GSL_SUCCESS)
-      warn_restricted_roundoff(description);
-   if (!isfinite(total)) {
+   if (!policy.tabulated && !isfinite(total)) {
       if (!integration_result_acceptable(description, GSL_SUCCESS, total, 0.0))
          exit(EXIT_FAILURE);
    }
+   if (verified_roundoff)
+      warn_restricted_roundoff(description);
+   if (estimated_error != NULL)
+      *estimated_error = total_error;
    return total;
 }
 
 double integrate_restricted_single_direct(gsl_function &function, int kernel,
-                                          double lower, double upper,
-                                          const char *description)
+                                           double lower, double upper,
+                                           const char *description,
+                                           const epsilon_integration_policy &policy)
 {
    if (kernel != 7 && kernel != 8)
-      return integrate_restricted_qag(function, lower, upper, description);
+      return integrate_restricted_qag(function, lower, upper, description,
+                                      1.0L, policy);
 
    static const double gaussian_landmarks[] = {
       -10.0, -8.0, -5.0, -3.0, -2.0, -1.0, 0.0,
@@ -2189,7 +2214,7 @@ double integrate_restricted_single_direct(gsl_function &function, int kernel,
       if (lower < gaussian_landmarks[i] && gaussian_landmarks[i] < upper)
          points.push_back(gaussian_landmarks[i]);
    return integrate_restricted_qagp(function,
-      filter_integration_points(points, lower, upper), description);
+      filter_integration_points(points, lower, upper), description, 1.0L, policy);
 }
 
 struct restricted_optical_transformed_params {
@@ -2248,8 +2273,10 @@ double restricted_optical_log_integrand(double argument, void *raw_params)
 }
 
 double integrate_restricted_optical_direct(int kernel, complex<double> z1,
-                                           complex<double> z2,
-                                           double lower, double upper)
+                                            complex<double> z2,
+                                            double lower, double upper,
+                                            const epsilon_integration_policy &policy,
+                                            double *estimated_error = NULL)
 {
    restricted_optical_params params = {kernel, z1, z2};
    gsl_function function;
@@ -2260,16 +2287,23 @@ double integrate_restricted_optical_direct(int kernel, complex<double> z1,
    points.push_back(upper);
    add_restricted_peak_points(points, z1, lower, upper);
    add_restricted_peak_points(points, z2, lower, upper);
-   return integrate_restricted_qagp(function,
-      filter_integration_points(points, lower, upper),
+   const vector<double> filtered = filter_integration_points(points, lower, upper);
+   const char *description = optical_epsilon_description(policy,
       "Restricted optical epsilon integration");
+   if (policy.tabulated)
+      return integrate_restricted_piecewise_qag(function, filtered, description,
+                                                1.0L, policy, estimated_error);
+   return integrate_restricted_qagp(function, filtered, description, 1.0L, policy,
+                                    estimated_error);
 }
 
 double integrate_restricted_optical_exterior_log(int kernel,
-                                                  complex<double> anchor,
-                                                  complex<double> other,
-                                                  long double lower,
-                                                  long double upper)
+                                                   complex<double> anchor,
+                                                   complex<double> other,
+                                                   long double lower,
+                                                   long double upper,
+                                                   const epsilon_integration_policy &policy,
+                                                   double *estimated_error = NULL)
 {
    const long double center = anchor.real();
    const long double width = abs(anchor.imag());
@@ -2285,7 +2319,10 @@ double integrate_restricted_optical_exterior_log(int kernel,
       const double direct_upper = static_cast<double>(upper);
       if (direct_lower < direct_upper)
          return integrate_restricted_optical_direct(kernel, anchor, other,
-                                                     direct_lower, direct_upper);
+                                                     direct_lower, direct_upper,
+                                                     policy, estimated_error);
+      if (estimated_error != NULL)
+         *estimated_error = 0.0;
       return 0.0;
    }
 
@@ -2322,22 +2359,29 @@ double integrate_restricted_optical_exterior_log(int kernel,
       }
    }
    log_points = filter_integration_points(log_points, log_lower, log_upper);
+   const char *description = optical_epsilon_description(policy,
+      "Log-transformed restricted optical epsilon integration");
+   double normalized_error = 0.0;
    const long double normalized = integrate_restricted_piecewise_qag(function,
-      log_points, "Log-transformed restricted optical epsilon integration", result_scale);
-   return static_cast<double>(result_scale*normalized);
+      log_points, description, result_scale, policy, &normalized_error);
+   return checked_scaled_epsilon_result(description, result_scale, normalized,
+                                        normalized_error, estimated_error);
 }
 
 double integrate_restricted_optical_transformed(int kernel,
-                                                 complex<double> anchor,
-                                                 complex<double> other,
-                                                 long double lower,
-                                                 long double upper)
+                                                  complex<double> anchor,
+                                                  complex<double> other,
+                                                  long double lower,
+                                                  long double upper,
+                                                  const epsilon_integration_policy &policy,
+                                                  double *estimated_error = NULL)
 {
    const long double width = abs(anchor.imag());
    const long double center = anchor.real();
    if (center < lower || center > upper)
       return integrate_restricted_optical_exterior_log(kernel, anchor, other,
-                                                         lower, upper);
+                                                         lower, upper, policy,
+                                                         estimated_error);
    const long double lower_offset = lower - center;
    const long double upper_offset = upper - center;
    const long double theta_lower = atan2l(lower_offset, width);
@@ -2349,7 +2393,10 @@ double integrate_restricted_optical_transformed(int kernel,
       const double direct_upper = static_cast<double>(upper);
       if (direct_lower < direct_upper)
          return integrate_restricted_optical_direct(kernel, anchor, other,
-                                                     direct_lower, direct_upper);
+                                                     direct_lower, direct_upper,
+                                                     policy, estimated_error);
+      if (estimated_error != NULL)
+         *estimated_error = 0.0;
       return 0.0;
    }
 
@@ -2388,9 +2435,13 @@ double integrate_restricted_optical_transformed(int kernel,
    }
    theta_points = filter_integration_points(theta_points,
       transformed_lower, transformed_upper);
+   const char *description = optical_epsilon_description(policy,
+      "Transformed restricted optical epsilon integration");
+   double normalized_error = 0.0;
    const long double normalized = integrate_restricted_piecewise_qag(function,
-      theta_points, "Transformed restricted optical epsilon integration", result_scale);
-   return static_cast<double>(result_scale*normalized);
+      theta_points, description, result_scale, policy, &normalized_error);
+   return checked_scaled_epsilon_result(description, result_scale, normalized,
+                                        normalized_error, estimated_error);
 }
 
 bool peak_relevant_to_interval(complex<double> z, double lower, double upper)
@@ -2456,12 +2507,14 @@ double integrate_restricted_odd_pair(int kernel, int power,
    function.params = &params;
    const long double normalized = integrate_restricted_qag(function, 0.0, angle_span,
       "Symmetry-paired restricted epsilon integration", result_scale);
-   return static_cast<double>(result_scale*normalized);
+   return checked_scaled_epsilon_result(
+      "Symmetry-paired restricted epsilon integration", result_scale, normalized);
 }
 
 double integrate_restricted_single_exterior_log(gsl_function &function,
-                                                 restricted_single_params &params,
-                                                 double lower, double upper)
+                                                  restricted_single_params &params,
+                                                  double lower, double upper,
+                                                  const epsilon_integration_policy &policy)
 {
    const int direction = params.center < lower ? 1 : -1;
    const long double near_distance = direction > 0
@@ -2473,7 +2526,8 @@ double integrate_restricted_single_exterior_log(gsl_function &function,
    const double span = static_cast<double>(logl(far_distance/near_distance));
    if (!(span > 0.0))
       return integrate_restricted_qag(function, lower, upper,
-         "Restricted exterior epsilon integration");
+         epsilon_description(policy, "Restricted exterior epsilon integration"),
+         1.0L, policy);
 
    params.logarithmic = true;
    params.transformed_near = near_distance;
@@ -2486,9 +2540,11 @@ double integrate_restricted_single_exterior_log(gsl_function &function,
    for (double point = logarithmic_step; point < span; point += logarithmic_step)
       points.push_back(point);
    points = filter_integration_points(points, 0.0, span);
+   const char *description = epsilon_description(policy,
+      "Log-transformed restricted epsilon integration");
    const long double normalized = integrate_restricted_piecewise_qag(function, points,
-      "Log-transformed restricted epsilon integration", result_scale);
-   return static_cast<double>(result_scale*normalized);
+      description, result_scale, policy);
+   return checked_scaled_epsilon_result(description, result_scale, normalized);
 }
 
 double integrate_restricted_single_band_edge(gsl_function &function,
@@ -2520,13 +2576,16 @@ double integrate_restricted_single_band_edge(gsl_function &function,
          "Log-transformed band-edge restricted epsilon integration", result_scale);
    }
 
-   return static_cast<double>(result_scale*normalized);
+   return checked_scaled_epsilon_result(
+      "Band-edge transformed restricted epsilon integration",
+      result_scale, normalized);
 }
 
 } // namespace
 
-double J_restricted_single(int kernel, int power, complex<double> z,
-                           double lower, double upper)
+double J_bounded_single(int kernel, int power, complex<double> z,
+                        double lower, double upper,
+                        const epsilon_integration_policy &policy)
 {
    if (!(lower < upper))
       return 0.0;
@@ -2548,7 +2607,8 @@ double J_restricted_single(int kernel, int power, complex<double> z,
    function.params = &params;
    if (power == 0)
       return integrate_restricted_single_direct(function, kernel, lower, upper,
-					 "Restricted epsilon integration");
+					 epsilon_description(policy,
+					    "Restricted epsilon integration"), policy);
    if (width == 0.0L) {
       cerr << "Restricted spectral kernel requires a nonzero linewidth." << endl;
       exit(EXIT_FAILURE);
@@ -2563,7 +2623,8 @@ double J_restricted_single(int kernel, int power, complex<double> z,
    const long double distance = z.real() < lower ? lower - z.real()
       : (z.real() > upper ? z.real() - upper : 0.0L);
    if (distance > 0.0L)
-      return integrate_restricted_single_exterior_log(function, params, lower, upper);
+      return integrate_restricted_single_exterior_log(function, params, lower, upper,
+                                                       policy);
    if (3 <= kernel && kernel <= 6 &&
        ((params.center == -1.0L && lower == -1.0) ||
         (params.center == 1.0L && upper == 1.0)))
@@ -2577,19 +2638,38 @@ double J_restricted_single(int kernel, int power, complex<double> z,
       restricted_angle_span(lower_offset, upper_offset, width));
    if (!(transformed_lower < transformed_upper))
       return integrate_restricted_single_direct(function, kernel, lower, upper,
-					 "Restricted exterior epsilon integration");
+					 epsilon_description(policy,
+					    "Restricted exterior epsilon integration"), policy);
 
    params.transformed = true;
    params.transformed_origin = theta_lower;
    const long double result_scale = configure_restricted_single_scale(params);
+   const char *description = epsilon_description(policy,
+      "Transformed restricted epsilon integration");
    const long double normalized = integrate_restricted_qag(function,
-      transformed_lower, transformed_upper, "Transformed restricted epsilon integration",
-      result_scale);
-   return static_cast<double>(result_scale*normalized);
+      transformed_lower, transformed_upper, description, result_scale, policy);
+   return checked_scaled_epsilon_result(description, result_scale, normalized);
 }
 
-double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
-                            double lower, double upper)
+double J_restricted_single(int kernel, int power, complex<double> z,
+                           double lower, double upper)
+{
+   return J_bounded_single(kernel, power, z, lower, upper,
+                           restricted_epsilon_policy());
+}
+
+double J_tabulated_single(int power, complex<double> z,
+                          double lower, double upper)
+{
+   if (power == 0)
+      return J_tabulated_mass(lower, upper);
+   return J_bounded_single(0, power, z, lower, upper,
+                           tabulated_epsilon_policy());
+}
+
+double J_bounded_optical(int kernel, complex<double> z1, complex<double> z2,
+                         double lower, double upper,
+                         const epsilon_integration_policy &policy)
 {
    if (!(lower < upper))
       return 0.0;
@@ -2597,7 +2677,7 @@ double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
        z1.real() == -z2.real() && abs(z1.imag()) == abs(z2.imag()))
       return 0.0;
    if (z1 == z2)
-      return J_restricted_single(kernel, 2, z1, lower, upper);
+      return J_bounded_single(kernel, 2, z1, lower, upper, policy);
    if (z1.imag() == 0.0 || z2.imag() == 0.0) {
       cerr << "Restricted optical kernel requires nonzero linewidths." << endl;
       exit(EXIT_FAILURE);
@@ -2614,12 +2694,29 @@ double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
       const complex<double> left = first_is_left ? z1 : z2;
       const complex<double> right = first_is_left ? z2 : z1;
       const long double split = 0.5L*(static_cast<long double>(left.real()) +
-                                     static_cast<long double>(right.real()));
+                                      static_cast<long double>(right.real()));
       if (lower < split && split < upper && left.real() < split && split < right.real()) {
-	 return integrate_restricted_optical_transformed(kernel, left, right,
-	                                                 static_cast<long double>(lower), split)
-	    + integrate_restricted_optical_transformed(kernel, right, left, split,
-	                                                static_cast<long double>(upper));
+	 const epsilon_integration_policy split_policy = policy.tabulated
+	    ? divided_epsilon_policy(policy, 2) : policy;
+	 double left_error = 0.0;
+	 double right_error = 0.0;
+	 const double left_result = integrate_restricted_optical_transformed(
+	    kernel, left, right, static_cast<long double>(lower), split,
+	    split_policy, &left_error);
+	 const double right_result = integrate_restricted_optical_transformed(
+	    kernel, right, left, split, static_cast<long double>(upper),
+	    split_policy, &right_error);
+	 const double result = left_result + right_result;
+	 if (!integration_result_acceptable("Optical epsilon integration",
+	                                    GSL_SUCCESS, result, 0.0))
+	    exit(EXIT_FAILURE);
+	 if (policy.tabulated && !integration_error_within_bound(
+	       "Optical epsilon integration", result, left_error + right_error,
+	       policy.acceptable_absolute_error +
+	          static_cast<long double>(policy.acceptable_relative_error)*
+	          abs(result)))
+	    exit(EXIT_FAILURE);
+	 return result;
       }
    }
 
@@ -2636,7 +2733,22 @@ double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
       anchor = z2;
       other = z1;
    }
-   return integrate_restricted_optical_transformed(kernel, anchor, other, lower, upper);
+   return integrate_restricted_optical_transformed(kernel, anchor, other, lower, upper,
+                                                    policy);
+}
+
+double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
+                            double lower, double upper)
+{
+   return J_bounded_optical(kernel, z1, z2, lower, upper,
+                            restricted_epsilon_policy());
+}
+
+double J_tabulated_optical(complex<double> z1, complex<double> z2,
+                           double lower, double upper)
+{
+   return J_bounded_optical(0, z1, z2, lower, upper,
+                            tabulated_epsilon_policy());
 }
 
 bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
@@ -2704,6 +2816,15 @@ complex<double> hilbert_divided_difference(int kernel,
 
 double J_m2_optical(complex<double> z1, complex<double> z2)
 {
+   if (m == 0) {
+      const epsilon_interval interval = epsilon_window_limit > 0.0
+         ? restricted_epsilon_interval(0)
+         : epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)};
+      if (interval.empty)
+         return 0.0;
+      return J_tabulated_optical(z1, z2, interval.lower, interval.upper);
+   }
+
    if (epsilon_window_limit > 0.0) {
       const epsilon_interval interval = restricted_epsilon_interval(m);
       if (interval.empty)
@@ -2712,8 +2833,6 @@ double J_m2_optical(complex<double> z1, complex<double> z2)
 	 return J_restricted_optical(m, z1, z2, interval.lower, interval.upper);
    }
 
-   if (m == 0)
-      return J_0_optical(z1, z2);
    if (z1 == z2)
       return J_builtin(m, 2, z1);
 
@@ -2983,9 +3102,43 @@ vector<double> restricted_outer_points(double lower, double upper,
    return filter_integration_points(points, lower, upper);
 }
 
+bool integrate_outer_piecewise_qag(gsl_function &function,
+                                   const vector<double> &points,
+                                   gsl_integration_workspace *workspace,
+                                   size_t workspace_size,
+                                   const char *description,
+                                   double &total, double &total_error)
+{
+   total = 0.0;
+   total_error = 0.0;
+   double compensation = 0.0;
+   const size_t segment_count = points.size() > 1 ? points.size() - 1 : 1;
+   for (size_t segment = 1; segment < points.size(); ++segment) {
+      double result = numeric_limits<double>::quiet_NaN();
+      double error = numeric_limits<double>::quiet_NaN();
+      const int status = gsl_integration_qag(&function,
+         points[segment - 1], points[segment], abs_error/segment_count,
+         rel_error, workspace_size, key, workspace, &result, &error);
+      if (!integration_result_acceptable(description, status, result, error))
+         return false;
+
+      const double adjusted = result - compensation;
+      const double updated = total + adjusted;
+      compensation = (updated - total) - adjusted;
+      total = updated;
+      total_error += error;
+   }
+
+   const string total_description = string(description) + " total";
+   return integration_error_within_bound(total_description, total, total_error,
+      static_cast<long double>(abs_error) +
+         static_cast<long double>(rel_error)*abs(total));
+}
+
 bool restricted_outer_failure_acceptable(int status, gsl_function &function,
-                                         const vector<double> &points,
-                                         double result, double error)
+                                          const vector<double> &points,
+                                          double result, double error,
+                                          double *verified_error_out = NULL)
 {
    if (status != GSL_EROUND && status != GSL_ESING)
       return false;
@@ -3007,8 +3160,11 @@ bool restricted_outer_failure_acceptable(int status, gsl_function &function,
    const double verified_error = status == GSL_EROUND &&
       isfinite(error) && error >= 0.0
       ? min(error, independent_error) : independent_error;
-   return isfinite(verified_error) &&
+   const bool acceptable = isfinite(verified_error) &&
       verified_error <= abs_error + rel_error*abs(result);
+   if (acceptable && verified_error_out != NULL)
+      *verified_error_out = verified_error;
+   return acceptable;
 }
 
 struct symmetric_outer_params {
@@ -3120,7 +3276,7 @@ void calc_DOS()
       const double omega = (i == nr_points ? omega_max : omega_min + i*step);
       const complex<double> OMEGA = effective_frequency(omega);
       
-      double result = J_mn(OMEGA); // -1/Pi Im[] already included in f_gsl() integrand
+      double result = J_mn(OMEGA); // Spectral normalization is included in J_mn().
       
       F << omega << " " << result << endl;
    }
@@ -3316,7 +3472,9 @@ void calc()
    gsl_set_error_handler_off();
    const epsilon_interval interval = epsilon_window_limit > 0.0
       ? restricted_epsilon_interval(m)
-      : epsilon_interval{0.0, 0.0, false, false};
+      : (m == 0
+         ? epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)}
+         : epsilon_interval{0.0, 0.0, false, false});
    const bool parity_zero = epsilon_window_limit > 0.0 && interval.truncated &&
       f_type == f_derivative && particle_hole_symmetric_sigma &&
       epsilon_window_center == 0.0 && m != 0 && m % 2 == 0 && o % 2 == 0 &&
@@ -3324,6 +3482,17 @@ void calc()
    if (parity_zero || (epsilon_window_limit > 0.0 && interval.empty)) {
       result = 0.0;
       error = 0.0;
+   } else if (m == 0) {
+      vector<double> points;
+      points.push_back(lower_limit);
+      points.push_back(upper_limit);
+      if (n != 0)
+         points = restricted_outer_points(lower_limit, upper_limit, interval, false);
+      if (!integrate_outer_piecewise_qag(My_function, points, work_ptr, ws_size,
+                                         "Frequency integration", result, error)) {
+	 gsl_integration_workspace_free(work_ptr);
+	 exit(EXIT_FAILURE);
+      }
    } else if (epsilon_window_limit > 0.0 && interval.truncated) {
       vector<double> points;
       points.push_back(lower_limit);
@@ -3357,8 +3526,9 @@ void calc()
 					     restricted_work, &result, &error);
       if (restricted_work != work_ptr)
 	 gsl_integration_workspace_free(restricted_work);
+      double verified_error = error;
       const bool acceptable_failure = restricted_outer_failure_acceptable(
-         status, *integration_function, points, result, error);
+         status, *integration_function, points, result, error, &verified_error);
       const bool successful = status == GSL_SUCCESS && isfinite(result) &&
          isfinite(error) && error >= 0.0;
       if (!successful && !acceptable_failure &&
@@ -3367,6 +3537,8 @@ void calc()
 	 gsl_integration_workspace_free(work_ptr);
 	 exit(EXIT_FAILURE);
       }
+      if (acceptable_failure)
+	 error = verified_error;
       if (acceptable_failure && !quiet_warnings)
 	 cerr << "Warning: restricted frequency integration returned "
 	      << gsl_strerror(status) << "; independent quadrature agreed within tolerance."
@@ -3434,10 +3606,24 @@ void calc_optical()
    bool independently_verified = false;
    const epsilon_interval interval = epsilon_window_limit > 0.0
       ? restricted_epsilon_interval(m)
-      : epsilon_interval{0.0, 0.0, false, false};
+      : (m == 0
+         ? epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)}
+         : epsilon_interval{0.0, 0.0, false, false});
    if (epsilon_window_limit > 0.0 && interval.empty) {
       result = 0.0;
       error = 0.0;
+   } else if (m == 0) {
+      vector<double> points = restricted_outer_points(lower_limit, upper_limit,
+                                                       interval, true);
+      points.push_back(-optical_frequency);
+      points.push_back(0.0);
+      points = filter_integration_points(points, lower_limit, upper_limit);
+      if (!integrate_outer_piecewise_qag(F, points, work, ws_size,
+                                         "Optical frequency integration",
+                                         result, error)) {
+	 gsl_integration_workspace_free(work);
+	 exit(EXIT_FAILURE);
+      }
    } else if (epsilon_window_limit > 0.0 && interval.truncated) {
       vector<double> points = restricted_outer_points(lower_limit, upper_limit,
                                                       interval, true);
@@ -3458,8 +3644,9 @@ void calc_optical()
 					     restricted_work, &result, &error);
       if (restricted_work != work)
 	 gsl_integration_workspace_free(restricted_work);
+      double verified_error = error;
       const bool acceptable_failure = restricted_outer_failure_acceptable(
-         status, F, points, result, error);
+         status, F, points, result, error, &verified_error);
       const bool successful = status == GSL_SUCCESS && isfinite(result) &&
          isfinite(error) && error >= 0.0;
       if (!successful && !acceptable_failure &&
@@ -3468,6 +3655,8 @@ void calc_optical()
 	 gsl_integration_workspace_free(work);
 	 exit(EXIT_FAILURE);
       }
+      if (acceptable_failure)
+	 error = verified_error;
       independently_verified = acceptable_failure;
    } else {
       for (int segment = 0; segment < 3; ++segment) {
@@ -3494,13 +3683,14 @@ void calc_optical()
    }
    gsl_integration_workspace_free(work);
 
-   if (!integration_result_acceptable("Optical frequency integration total",
-                                      GSL_SUCCESS, result, error))
+   if (!integration_error_within_bound("Optical frequency integration total",
+         result, error, static_cast<long double>(abs_error) +
+            static_cast<long double>(rel_error)*abs(result)))
       exit(EXIT_FAILURE);
 
    if (independently_verified && !quiet_warnings) {
       cerr << "Warning: restricted optical frequency integration required independent "
-           << "verification; estimated GSL error=" << error << "." << endl;
+           << "verification; verified error=" << error << "." << endl;
    }
 
    const int width = 20;

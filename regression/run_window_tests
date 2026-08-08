@@ -44,6 +44,8 @@ my $tangent_resigma = write_table('tangent-resigma.dat',
 my $tangent_imsigma = write_table('tangent-imsigma.dat',
     map { "$_ -1e-10" } (-1, -1e-10, 0, 1e-10, 0.1, 0.2, 0.3, 1));
 my $phi = write_table('phi.dat', map { ($_/4) . ' 1' } -4 .. 4);
+my $narrow_phi = write_table('narrow-phi.dat',
+    map { ($_*2.5e-9) . ' 1' } -2 .. 2);
 my @oscillating_re;
 my @oscillating_im;
 for my $index (-50 .. 50) {
@@ -163,7 +165,8 @@ check_result('symmetric odd restricted DC',
     defined $odd_dc ? "value=$odd_dc" : $odd_dc_error);
 
 my ($odd_optical, $odd_optical_error) = run_value(
-    '-q', '-M', '0.5', '-O', '0.3', 2, 2, 0, 0.1, 0, $resigma, $imsigma);
+    '-q', '-a', '1e-12', '-r', '1e-12', '-M', '0.5', '-O', '0.3',
+    2, 2, 0, 0.1, 0, $resigma, $imsigma);
 check_result('symmetric odd restricted optical',
     defined $odd_optical && abs($odd_optical) <= 1e-15,
     defined $odd_optical ? "value=$odd_optical" : $odd_optical_error);
@@ -194,6 +197,35 @@ for my $power (0 .. 3) {
             : "$builtin_error $tabulated_error");
 }
 
+for my $power (1 .. 3) {
+    my @clean_arguments = ('-q', '-a', '1e-7', '-r', '1e-8',
+        $power == 2 ? ('-k', '6') : ());
+    my ($builtin, $builtin_error) = run_value(
+        @clean_arguments, 1, $power, 0, 0.1, 0, $resigma, $clean_imsigma);
+    my ($tabulated, $tabulated_error) = run_value(
+        @clean_arguments, '-p', $phi,
+        0, $power, 0, 0.1, 0, $resigma, $clean_imsigma);
+    check_result("clean tabulated n=$power",
+        defined $builtin && defined $tabulated &&
+        close_enough($tabulated, $builtin, 5e-9, 5e-9),
+        defined $builtin && defined $tabulated
+            ? "builtin=$builtin tabulated=$tabulated"
+            : "$builtin_error $tabulated_error");
+}
+
+my ($narrow_builtin, $narrow_builtin_error) = run_value(
+    '-q', '-a', '1e-8', '-r', '1e-9', '-M', '5e-9',
+    1, 2, 0, 0.1, 0, $resigma, $clean_imsigma);
+my ($narrow_tabulated, $narrow_tabulated_error) = run_value(
+    '-q', '-a', '1e-8', '-r', '1e-9', '-p', $narrow_phi,
+    0, 2, 0, 0.1, 0, $resigma, $clean_imsigma);
+check_result('narrow unrestricted tabulated outer crossings',
+    defined $narrow_builtin && defined $narrow_tabulated &&
+    close_enough($narrow_tabulated, $narrow_builtin, 2e-9, 2e-11),
+    defined $narrow_builtin && defined $narrow_tabulated
+        ? "builtin=$narrow_builtin tabulated=$narrow_tabulated"
+        : "$narrow_builtin_error $narrow_tabulated_error");
+
 my ($tabulated_fourth, $tabulated_fourth_error) = run_value(
     '-M', '0.5', '-p', $phi, 0, 4, 0, 0.1, 0, $resigma, $imsigma);
 check_result('tabulated restricted n=4',
@@ -211,6 +243,46 @@ check_result('tabulated restricted optical',
     defined $optical_builtin && defined $optical_tabulated
         ? "builtin=$optical_builtin tabulated=$optical_tabulated"
         : "$optical_builtin_error $optical_tabulated_error");
+
+my ($verified_optical, $verified_optical_error) = run_value(
+    '-q', '-M', '0.01', '-a', '1e-12', '-r', '1e-12', '-O', '0.01',
+    1, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('restricted optical independent error propagation',
+    close_enough($verified_optical, 0.06963686930909894, 2e-12, 2e-14),
+    defined $verified_optical ? "value=$verified_optical" : $verified_optical_error);
+
+my ($clean_optical_builtin, $clean_optical_builtin_error) = run_value(
+    '-q', '-a', '1e-7', '-r', '1e-8', '-O', '1e-9',
+    1, 2, 0, 0.1, 0, $resigma, $clean_imsigma);
+my ($clean_optical_tabulated, $clean_optical_tabulated_error) = run_value(
+    '-q', '-a', '1e-7', '-r', '1e-8', '-O', '1e-9', '-p', $phi,
+    0, 2, 0, 0.1, 0, $resigma, $clean_imsigma);
+check_result('clean unrestricted tabulated optical',
+    defined $clean_optical_builtin && defined $clean_optical_tabulated &&
+    close_enough($clean_optical_tabulated, $clean_optical_builtin, 2e-9, 2e-6),
+    defined $clean_optical_builtin && defined $clean_optical_tabulated
+        ? "builtin=$clean_optical_builtin tabulated=$clean_optical_tabulated"
+        : "$clean_optical_builtin_error $clean_optical_tabulated_error");
+
+my @cancelling_optical_arguments = (
+    '-a', '1e-20', '-r', '1e-3', '-e', '1', '-O', '0.3', '-p', $phi,
+    0, 2, 0, 0.1, 0, $resigma, $imsigma,
+);
+my ($cancelling_status, $cancelling_stdout, $cancelling_stderr) =
+    run_bubble(@cancelling_optical_arguments);
+check_result('tabulated optical cancellation enforces total tolerance',
+    $cancelling_status == 1 && $cancelling_stdout eq '' &&
+    $cancelling_stderr =~ /Error: Optical epsilon integration: failed to reach/,
+    "exit=$cancelling_status stderr=$cancelling_stderr");
+
+my ($cancelling_ignored_status, $cancelling_ignored_stdout,
+    $cancelling_ignored_stderr) = run_bubble(
+        '-E', '-q', @cancelling_optical_arguments);
+check_result('tabulated optical cancellation compatibility mode',
+    $cancelling_ignored_status == 0 &&
+    $cancelling_ignored_stdout =~ /^\s*$number\s*$/ &&
+    $cancelling_ignored_stderr eq '',
+    "exit=$cancelling_ignored_status stderr=$cancelling_ignored_stderr");
 
 my ($restricted_dc_status, $restricted_dc_stdout, $restricted_dc_stderr) = run_bubble(
     '-M', '0.5', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
@@ -351,6 +423,25 @@ check_result('smooth tangent curvature neighborhood',
 
 my $original_directory = getcwd();
 chdir $directory or die "Cannot enter $directory: $!\n";
+my ($exact_mass_status, $exact_mass_stdout, $exact_mass_stderr) = run_bubble(
+    '-q', '-a', '0', '-r', '1e-20', '-d', '-p', $phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+my $exact_mass_ok = $exact_mass_status == 0 &&
+    $exact_mass_stdout eq '' && $exact_mass_stderr eq '';
+if ($exact_mass_ok) {
+    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    my $rows = 0;
+    while (<$dos>) {
+        my ($omega, $value) = split;
+        $exact_mass_ok = 0 unless defined $value && abs($value - 2.0) <= 1e-12;
+        ++$rows;
+    }
+    close $dos;
+    $exact_mass_ok = 0 unless $rows == 10001;
+}
+check_result('exact unrestricted n=0 spline mass', $exact_mass_ok,
+    "exit=$exact_mass_status stderr=$exact_mass_stderr");
+
 my ($dos_status, $dos_stdout, $dos_stderr) = run_bubble(
     '-q', '-M', '0.5', '-d', '-p', $phi,
     0, 0, 0, 0.1, 0, $resigma, $imsigma);
@@ -413,6 +504,15 @@ check_result('custom DOS integration failure compatibility mode',
     $custom_ignored_status == 0 && $custom_ignored_stdout eq '' &&
     $custom_ignored_stderr eq '',
     "exit=$custom_ignored_status stderr=$custom_ignored_stderr");
+
+my ($overflow_status, $overflow_stdout, $overflow_stderr) = run_bubble(
+    '-q', '-d', '-p', $phi,
+    0, 43, 0, 0.1, 0, $resigma, $clean_imsigma,
+);
+check_result('scaled custom result overflow is fatal',
+    $overflow_status == 1 && $overflow_stdout eq '' &&
+    $overflow_stderr =~ /Error: Custom epsilon integration: non-finite result/,
+    "exit=$overflow_status stderr=$overflow_stderr");
 
 my ($signed_dos_status, $signed_dos_stdout, $signed_dos_stderr) = run_bubble(
     '-q', '-d', '-c', '-1', '-p', $phi,

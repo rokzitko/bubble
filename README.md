@@ -179,8 +179,10 @@ band edge the behavior depends on how $\Phi_m$ approaches zero. These very
 different scales make direct quadrature and cancellation-prone closed formulas
 unreliable. The built-in clean-limit implementation uses factored finite-band
 expressions, exterior moment expansions, and conditioned Gaussian/Faddeeva
-identities to retain accuracy in all three regions. The `-s` option sets the
-minimum linewidth used when the supplied self-energy is even cleaner.
+identities. Tabulated kernels remove the same narrow peaks with tangent or
+logarithmic distance coordinates instead of integrating directly in epsilon.
+The `-s` option sets the minimum linewidth used when the supplied self-energy
+is even cleaner.
 
 ## Transport Moments
 
@@ -314,7 +316,7 @@ Options:
 | `-q` | Suppress non-fatal warnings without suppressing results or errors |
 | `-E`, `--ignore-integration-errors` | Continue after an integration failure when a finite partial result is available |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
-| `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points |
+| `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points; also used by transformed tabulated-kernel quadrature |
 | `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
 | `-r R` | Nonnegative relative integration tolerance, default `1e-8` |
 | `-c C` | Positive frequency cutoff in units of temperature, default `15`; unused by `-d` |
@@ -413,7 +415,8 @@ Gaussian kernels because their natural domain is the full real line.
 The strict endpoint inequalities do not affect these ordinary integrals, so
 the numerical quadrature includes the endpoints. The value `M=0` is a sentinel
 for an infinite window, not a zero-width interval. Both an omitted `-M` and an
-explicit `-M 0` follow the previous unrestricted code paths exactly.
+explicit `-M 0` select the full natural kernel domain and are exactly
+equivalent.
 If a positive `M` is smaller than floating-point resolution at the resolved
 center, so that the stored bounds do not lie on opposite sides of
 $\epsilon_F$, the program reports an error instead of using a one-sided
@@ -438,8 +441,8 @@ linewidths and intervals. The outer frequency integral is split at
 linewidth-aware crossings and nearby extrema of the window boundaries.
 Smooth tangencies use a curvature-scaled neighborhood, while slope reversals
 at interpolation knots receive explicit one-sided neighborhoods.
-Restricted inner integrals use adaptive 61-point quadrature;
-breakpoint-based `qagp` integrations do not use the `-k` selection. A
+Restricted built-in inner integrals use adaptive 61-point quadrature;
+their breakpoint-based `qagp` integrations do not use the `-k` selection. A
 roundoff-limited result is accepted only within the requested error bound or
 after agreement with independent 64- and 128-point rules, and emits a warning
 unless `-q` is active.
@@ -462,6 +465,15 @@ For example:
   Bethe_lattice_test/resigma.dat \
   Bethe_lattice_test/imsigma.dat
 ```
+
+For `n>0`, tabulated DC and optical kernels use the same bounded tangent and
+logarithmic peak-removing coordinates as restricted built-in kernels. Their
+adaptive pieces honor `-a`, `-r`, and `-k`, with the absolute tolerance divided
+among pieces. The outer frequency quadrature is also split where either
+effective-frequency argument crosses a table endpoint. For `n=0`, the result
+does not depend on the propagator and is evaluated directly as the exact
+integral of the Akima spline, then cached for repeated DOS or outer-integrand
+calls.
 
 ### Occupied Spectral Moments
 
@@ -515,23 +527,22 @@ can be combined with `-e`.
   transition cases have a direct positive-quadrature fallback.
 - Built-in optical kernels use analytic Hilbert transforms and stable divided
   differences rather than generated two-frequency expressions.
-- Restricted kernels use bounded, peak-removing epsilon quadrature; separated
-  optical peaks are integrated with independent local regions and exterior
-  peaks use logarithmic distance coordinates.
+- Restricted and tabulated kernels use bounded, peak-removing epsilon
+  quadrature; separated optical peaks are integrated with independent local
+  regions and exterior peaks use logarithmic distance coordinates.
 - The remaining frequency integral uses adaptive GSL `qag` quadrature.
 - The default rule is the 15-point Gauss-Kronrod rule with a workspace of
   1,000 intervals.
-- A custom `m=0` kernel introduces a nested adaptive energy integral. The
-  finite-frequency optical path adds linewidth-aware breakpoints around both
-  spectral peaks.
+- A custom `m=0`, `n>0` kernel introduces a nested transformed energy integral.
+  Its DC and optical outer integrals use linewidth-aware table-edge crossings;
+  `n=0` instead integrates the interpolation spline exactly once.
 - Self-energy interpolation is selectable, with the in-table imaginary part
   clipped again after evaluation; custom-kernel interpolation is always Akima.
 - Every adaptive integration status and result is checked. Unverified failures
   are fatal by default; `-E` explicitly enables finite best-effort results.
 - In verbose mode, the reported error is GSL's estimate for the outer
-  frequency quadrature. Restricted inner uncertainty is validated separately,
-  while unrestricted custom-kernel inner errors are checked but not folded into
-  that printed estimate.
+  frequency quadrature. Inner epsilon uncertainty is validated separately and
+  is not folded into that printed estimate.
 
 ## Validation
 
@@ -586,8 +597,9 @@ include exact odd symmetry, sub-ULP
 transformed spans, finite-band edges, adjacent-double optical centers, huge
 Gaussian windows, and exterior linewidths down to `1e-200`.
 `run_window_tests` additionally checks command parsing, exact `M=0` behavior,
-full and empty intersections, tabulated kernels, optical and occupied moments,
-`n=0` and `n=1` DOS output, and narrow outer-window crossings.
+full and empty intersections, clean and narrow-domain tabulated kernels,
+optical and occupied moments, exact `n=0` spline mass, `n=1` DOS output, and
+narrow outer-window crossings.
 
 ### Optical Regression
 
