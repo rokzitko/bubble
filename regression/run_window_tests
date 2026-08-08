@@ -46,6 +46,15 @@ my $tangent_imsigma = write_table('tangent-imsigma.dat',
 my $phi = write_table('phi.dat', map { ($_/4) . ' 1' } -4 .. 4);
 my $narrow_phi = write_table('narrow-phi.dat',
     map { ($_*2.5e-9) . ' 1' } -2 .. 2);
+my $nonnegative_phi = write_table('nonnegative-phi.dat',
+    '0 1', '1 0', '2 0.1', '3 0', '4 1');
+my $nonnegative_resigma = write_table('nonnegative-resigma.dat', '0 0', '4 0');
+my $nonnegative_imsigma = write_table('nonnegative-imsigma.dat',
+    '0 -1e-8', '4 -1e-8');
+my $precision_resigma = write_table('precision-resigma.dat',
+    '1 0', '1.000001 0');
+my $precision_imsigma = write_table('precision-imsigma.dat',
+    '1 -0.1', '1.000001 -0.1');
 my @oscillating_re;
 my @oscillating_im;
 for my $index (-50 .. 50) {
@@ -154,8 +163,9 @@ check_result('empty finite-band intersection', defined $empty && $empty == 0.0,
 
 my ($mass, $mass_error) = run_value('-M', '0.5', 1, 0, 0, 0.1, 0,
     $resigma, $imsigma);
-my $mass_expected = 0.9999993881955461;
-check_result('restricted n=0 mass', close_enough($mass, $mass_expected, 1e-12, 1e-12),
+my $mass_expected = (1.0 - exp(-30))/(1.0 + exp(-30));
+check_result('default C=30 restricted n=0 mass',
+    close_enough($mass, $mass_expected, 1e-12, 1e-12),
     defined $mass ? "value=$mass" : $mass_error);
 
 my ($odd_dc, $odd_dc_error) = run_value('-q', '-M', '0.5', 2, 2, 0, 0.1, 0,
@@ -245,7 +255,7 @@ check_result('tabulated restricted optical',
         : "$optical_builtin_error $optical_tabulated_error");
 
 my ($verified_optical, $verified_optical_error) = run_value(
-    '-q', '-M', '0.01', '-a', '1e-12', '-r', '1e-12', '-O', '0.01',
+    '-q', '-M', '0.01', '-a', '1e-12', '-r', '1e-12', '-c', '15', '-O', '0.01',
     1, 2, 0, 0.1, 0, $resigma, $imsigma);
 check_result('restricted optical independent error propagation',
     close_enough($verified_optical, 0.06963686930909894, 2e-12, 2e-14),
@@ -354,21 +364,21 @@ for my $case (@close_crossing_cases) {
 }
 
 my ($causal_cubic, $causal_cubic_error) = run_value(
-    '-i', '2', '-a', '1e-12', '-r', '1e-12',
+    '-i', '2', '-a', '1e-12', '-r', '1e-12', '-c', '15',
     1, 1, 0, 0.001, 0, $causal_cubic_resigma, $causal_cubic_imsigma);
 check_result('cubic ImSigma interpolation remains causal',
     close_enough($causal_cubic, 0.9999993818293524, 2e-12, 2e-12),
     defined $causal_cubic ? "value=$causal_cubic" : $causal_cubic_error);
 
 my ($causal_akima, $causal_akima_error) = run_value(
-    '-i', '3', '-a', '1e-12', '-r', '1e-12',
+    '-i', '3', '-a', '1e-12', '-r', '1e-12', '-c', '15',
     1, 1, 0, 0.0001, 0, $causal_akima_resigma, $causal_akima_imsigma);
 check_result('Akima ImSigma interpolation remains causal',
     close_enough($causal_akima, 0.9999993818293523, 2e-12, 2e-12),
     defined $causal_akima ? "value=$causal_akima" : $causal_akima_error);
 
 my ($causal_floor, $causal_floor_error) = run_value(
-    '-i', '2', '-s', '1e-4', '-a', '1e-12', '-r', '1e-12',
+    '-i', '2', '-s', '1e-4', '-a', '1e-12', '-r', '1e-12', '-c', '15',
     1, 1, 0, 0.001, 0, $causal_cubic_resigma, $causal_cubic_imsigma);
 check_result('interpolated ImSigma uses configured floor',
     close_enough($causal_floor, 0.9999357262574704, 2e-12, 2e-12),
@@ -487,15 +497,79 @@ check_result('restricted n=1 DOS output', $spectral_dos_ok,
     "exit=$spectral_dos_status stderr=$spectral_dos_stderr");
 
 chdir $directory or die "Cannot enter $directory: $!\n";
+my ($nonnegative_status, $nonnegative_stdout, $nonnegative_stderr) = run_bubble(
+    '-q', '-v', '-d', '-p', $nonnegative_phi,
+    0, 1, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
+my $nonnegative_ok = $nonnegative_status == 0 &&
+    $nonnegative_stdout =~ /Phi interpolation=steffen/ &&
+    $nonnegative_stderr eq '';
+if ($nonnegative_ok) {
+    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    my $rows = 0;
+    while (<$dos>) {
+        my ($omega, $value) = split;
+        $nonnegative_ok = 0 unless defined $value && $value >= -1e-12;
+        ++$rows;
+    }
+    close $dos;
+    $nonnegative_ok = 0 unless $rows == 10001;
+}
+check_result('nonnegative Phi uses positivity-preserving interpolation',
+    $nonnegative_ok, "exit=$nonnegative_status stderr=$nonnegative_stderr");
+
+my ($signed_interp_status, $signed_interp_stdout, $signed_interp_stderr) = run_bubble(
+    '-q', '-v', '-d', '-e', '1', '-p', $phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_result('signed effective Phi retains Akima interpolation',
+    $signed_interp_status == 0 &&
+    $signed_interp_stdout =~ /Phi interpolation=akima/ &&
+    $signed_interp_stderr eq '',
+    "exit=$signed_interp_status stderr=$signed_interp_stderr");
+
+chmod 0664, "$directory/dos.dat"
+    or die "Cannot set dos.dat test permissions: $!\n";
+my ($precision_status, $precision_stdout, $precision_stderr) = run_bubble(
+    '-q', '-d', '-p', $nonnegative_phi,
+    0, 0, 0, 0.1, 0, $precision_resigma, $precision_imsigma);
+my $precision_ok = $precision_status == 0 &&
+    $precision_stdout eq '' && $precision_stderr eq '';
+if ($precision_ok) {
+    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    my ($rows, $previous) = (0, undef);
+    while (<$dos>) {
+        my ($omega, $value) = split;
+        $precision_ok = 0 unless defined $omega && defined $value &&
+            (!defined $previous || $omega > $previous);
+        $previous = $omega;
+        ++$rows;
+    }
+    close $dos;
+    my $output_mode = (stat "$directory/dos.dat")[2] & 07777;
+    $precision_ok = 0 unless $rows == 10001 &&
+        $output_mode == 0664 && !glob("$directory/dos.dat.tmp.*");
+}
+check_result('DOS output preserves doubles and permissions', $precision_ok,
+    "exit=$precision_status stderr=$precision_stderr");
+
+my $sentinel = "preserve existing dos.dat\n";
+open my $sentinel_file, '>', "$directory/dos.dat"
+    or die "Cannot create sentinel dos.dat: $!\n";
+print {$sentinel_file} $sentinel;
+close $sentinel_file or die "Cannot close sentinel dos.dat: $!\n";
 my @custom_error_arguments = (
     '-a', '0', '-r', '1e-20', '-d', '-p', $phi,
     0, 1, 0, 0.1, 0, $resigma, $imsigma,
 );
 my ($custom_error_status, $custom_error_stdout, $custom_error_stderr) =
     run_bubble(@custom_error_arguments);
+open my $preserved_file, '<', "$directory/dos.dat"
+    or die "Cannot read preserved dos.dat: $!\n";
+my $preserved_output = do { local $/; <$preserved_file> } // '';
+close $preserved_file or die "Cannot close preserved dos.dat: $!\n";
 check_result('custom DOS integration failure is fatal',
     $custom_error_status == 1 && $custom_error_stdout eq '' &&
-    $custom_error_stderr =~ /Error: Custom epsilon integration:/,
+    $custom_error_stderr =~ /Error: Custom epsilon integration:/ &&
+    $preserved_output eq $sentinel && !glob("$directory/dos.dat.tmp.*"),
     "exit=$custom_error_status stderr=$custom_error_stderr");
 
 my ($custom_ignored_status, $custom_ignored_stdout, $custom_ignored_stderr) =
@@ -504,6 +578,18 @@ check_result('custom DOS integration failure compatibility mode',
     $custom_ignored_status == 0 && $custom_ignored_stdout eq '' &&
     $custom_ignored_stderr eq '',
     "exit=$custom_ignored_status stderr=$custom_ignored_stderr");
+
+unlink "$directory/dos.dat" or die "Cannot remove dos.dat: $!\n";
+mkdir "$directory/dos.dat" or die "Cannot create dos.dat directory: $!\n";
+my ($replace_status, $replace_stdout, $replace_stderr) = run_bubble(
+    '-q', '-d', '-p', $phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+my $replace_ok = $replace_status == 1 && $replace_stdout eq '' &&
+    $replace_stderr =~ /Error replacing dos\.dat:/ &&
+    -d "$directory/dos.dat" && !glob("$directory/dos.dat.tmp.*");
+rmdir "$directory/dos.dat" or die "Cannot remove dos.dat directory: $!\n";
+check_result('DOS atomic replacement failure is fatal', $replace_ok,
+    "exit=$replace_status stderr=$replace_stderr");
 
 my ($overflow_status, $overflow_stdout, $overflow_stderr) = run_bubble(
     '-q', '-d', '-p', $phi,
@@ -672,6 +758,7 @@ check_result('M=0 permits grid without zero', $outside_status == 0,
 my ($verbose_status, $verbose_stdout, $verbose_stderr) = run_bubble(
     '-v', '-M', '0.5', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
 check_result('verbose resolved window', $verbose_status == 0 &&
+    $verbose_stdout =~ /cutoff=30(?:\.0+)?(?:\s|$)/ &&
     $verbose_stdout =~ /ReSigma\(0\)=/ &&
     $verbose_stdout =~ /epsilon window=\[-0\.5,0\.5\]/,
     "exit=$verbose_status stderr=$verbose_stderr");

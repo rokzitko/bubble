@@ -15,7 +15,7 @@ my $bethe_imsigma = "$Bin/../Bethe_lattice_test/imsigma.dat";
 my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
 my $passed = 0;
 my $failed = 0;
-my @tight_tolerances = ('-a', '1e-12', '-r', '1e-12');
+my @tight_tolerances = ('-a', '1e-12', '-r', '1e-12', '-c', '15');
 
 sub run_bubble {
     my (@arguments) = @_;

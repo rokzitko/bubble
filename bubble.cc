@@ -29,6 +29,8 @@
 //            - strict numeric parsing and negative positional arguments
 //            - enforce the ImSigma floor after interpolation
 //            - peak-removing quadrature for unrestricted tabulated kernels
+//            - increase the default thermal cutoff to 30
+//            - positivity-preserving interpolation for nonnegative Phi tables
 
 #include <iostream>
 #include <iomanip>
@@ -41,6 +43,7 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cerrno>
 #include <cmath>
@@ -52,6 +55,7 @@
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_integration.h>
 #include <getopt.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "Faddeeva.hh"
@@ -102,7 +106,7 @@ bool ignore_integration_errors = false;
 int key = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
-double cutoff = 15.0;
+double cutoff = 30.0;
 double sigma_clip = 1.0e-8;
 double epsilon_window_limit = 0.0;
 double epsilon_window_center = 0.0;
@@ -136,7 +140,7 @@ void usage()
    cout << "-k K : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
    cout << "-a A : nonnegative absolute error (default = 1e-7)" << endl;
    cout << "-r R : nonnegative relative error (default = 1e-8)" << endl;
-   cout << "-c C : positive frequency cutoff in units of T (default = 15)" << endl;
+   cout << "-c C : positive frequency cutoff in units of T (default = 30)" << endl;
    cout << "-s FLOOR : positive in-table ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
    cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
@@ -794,13 +798,15 @@ void load_Phi()
    eps_min = eps[0];
    eps_max = eps[N - 1];
     
-   // GSL interpolation of Phi(epsilon) (currently this is hard
-   // coded, but akima spline interpolation may be replaced by an
-   // arbitrary interpolation type)
-   const gsl_interp_type * Interp_type = gsl_interp_akima;
+   const bool nonnegative_phi = all_of(phi.begin(), phi.end(),
+      [](double value) { return isfinite(value) && value >= 0.0; });
+   const gsl_interp_type * Interp_type = nonnegative_phi
+      ? gsl_interp_steffen : gsl_interp_akima;
    acc_Phi = gsl_interp_accel_alloc();
    spline_Phi = gsl_spline_alloc(Interp_type, N);
    gsl_spline_init(spline_Phi, &eps[0], &phi[0], N);
+   if (verbose)
+      cout << "Phi interpolation=" << gsl_spline_name(spline_Phi) << endl;
 }
 
 struct epsilon_interval {
@@ -3261,24 +3267,84 @@ void calc_DOS()
       cout << "Warning: maybe you want n=1 here?" << endl;
    }
    
-   ofstream F("dos.dat");
-   if (!F.is_open()) {
-      cerr << "Error opening file dos.dat" << endl;
-      exit(EXIT_FAILURE);
-   }
-   
    const double range = omega_max - omega_min;
    const int nr_points = 10000;
    const double step = range/nr_points;
    assert(step > 0);
-   
+
+   vector<pair<double, double> > rows;
+   rows.reserve(nr_points + 1);
    for (int i = 0; i <= nr_points; ++i) {
       const double omega = (i == nr_points ? omega_max : omega_min + i*step);
       const complex<double> OMEGA = effective_frequency(omega);
-      
-      double result = J_mn(OMEGA); // Spectral normalization is included in J_mn().
-      
-      F << omega << " " << result << endl;
+      const double result = J_mn(OMEGA); // Spectral normalization is included in J_mn().
+      rows.push_back(make_pair(omega, result));
+   }
+
+   const string output_name = "dos.dat";
+   mode_t output_mode;
+   struct stat existing_output;
+   if (lstat(output_name.c_str(), &existing_output) == 0 &&
+       S_ISREG(existing_output.st_mode)) {
+      output_mode = existing_output.st_mode & 0777;
+   } else {
+      const mode_t process_umask = umask(0);
+      umask(process_umask);
+      output_mode = 0666 & ~process_umask;
+   }
+   const string temporary_template = output_name + ".tmp.XXXXXX";
+   vector<char> temporary_path(temporary_template.begin(), temporary_template.end());
+   temporary_path.push_back('\0');
+   const int output_descriptor = mkstemp(&temporary_path[0]);
+   if (output_descriptor == -1) {
+      cerr << "Error opening temporary output for " << output_name << "." << endl;
+      exit(EXIT_FAILURE);
+   }
+   const string temporary_name = &temporary_path[0];
+   if (fchmod(output_descriptor, output_mode) != 0) {
+      const int saved_errno = errno;
+      close(output_descriptor);
+      remove(temporary_name.c_str());
+      cerr << "Error setting permissions for temporary " << output_name << ": "
+           << strerror(saved_errno) << endl;
+      exit(EXIT_FAILURE);
+   }
+   FILE *output = fdopen(output_descriptor, "w");
+   if (output == NULL) {
+      const int saved_errno = errno;
+      close(output_descriptor);
+      remove(temporary_name.c_str());
+      cerr << "Error opening temporary output for " << output_name << ": "
+           << strerror(saved_errno) << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   bool write_failed = false;
+   const int output_precision = numeric_limits<double>::max_digits10;
+   for (vector<pair<double, double> >::const_iterator row = rows.begin();
+        row != rows.end(); ++row) {
+      if (fprintf(output, "%.*g %.*g\n", output_precision, row->first,
+                  output_precision, row->second) < 0) {
+         write_failed = true;
+         break;
+      }
+   }
+   if (!write_failed && fflush(output) != 0)
+      write_failed = true;
+   if (fclose(output) != 0)
+      write_failed = true;
+   if (write_failed) {
+      remove(temporary_name.c_str());
+      cerr << "Error writing " << output_name << "." << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   if (rename(temporary_name.c_str(), output_name.c_str()) != 0) {
+      const int saved_errno = errno;
+      remove(temporary_name.c_str());
+      cerr << "Error replacing " << output_name << ": "
+           << strerror(saved_errno) << endl;
+      exit(EXIT_FAILURE);
    }
 }
 

@@ -40,7 +40,7 @@ the Kondo lattice model (KLM).
 ### Requirements
 
 - A C++ compiler
-- [GNU Scientific Library (GSL)](https://www.gnu.org/software/gsl/)
+- [GNU Scientific Library (GSL)](https://www.gnu.org/software/gsl/) 2.0 or newer
 - GNU Make and `pkg-config`
 - Perl, only for `make check`
 
@@ -281,8 +281,11 @@ epsilon_1  Phi(epsilon_1)
 ```
 
 The energy grid must be strictly increasing and should contain at least five
-points for GSL Akima interpolation. The energy integration is restricted to the
-table interval. Use `-p FILE` to select the table.
+points. After applying `-e`, tables whose effective values are all nonnegative
+use GSL Steffen interpolation. This monotonic cubic method cannot undershoot
+below the supplied values. Signed effective kernels retain Akima interpolation.
+The energy integration is restricted to the table interval. Use `-p FILE` to
+select the table.
 
 ## Command Line
 
@@ -319,7 +322,7 @@ Options:
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points; also used by transformed tabulated-kernel quadrature |
 | `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
 | `-r R` | Nonnegative relative integration tolerance, default `1e-8` |
-| `-c C` | Positive frequency cutoff in units of temperature, default `15`; unused by `-d` |
+| `-c C` | Positive frequency cutoff in units of temperature, default `30`; unused by `-d` |
 | `-s S` | Positive in-table clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
@@ -372,7 +375,7 @@ The following numerical policies are important when interpreting results:
 - Outside the input interval, `ReSigma` is held at its nearest endpoint and
   `ImSigma` is set to $-10^{-10}$.
 - The default Fermi-derivative integration interval is
-  $[-15T,15T]$. Increase `-c` if broader thermal tails matter.
+  $[-30T,30T]$. Increase `-c` if broader thermal tails matter.
 - Optical mode extends the lower endpoint by `OMEGA` and evaluates the shifted
   propagator up to `cutoff*T+OMEGA`.
 
@@ -472,8 +475,8 @@ adaptive pieces honor `-a`, `-r`, and `-k`, with the absolute tolerance divided
 among pieces. The outer frequency quadrature is also split where either
 effective-frequency argument crosses a table endpoint. For `n=0`, the result
 does not depend on the propagator and is evaluated directly as the exact
-integral of the Akima spline, then cached for repeated DOS or outer-integrand
-calls.
+integral of the selected interpolation spline, then cached for repeated DOS or
+outer-integrand calls.
 
 ### Occupied Spectral Moments
 
@@ -516,7 +519,10 @@ The output is a physical interacting DOS (lattice spectral function) only for
 `T` and `o` arguments are still syntactically required but are not used in this
 mode, and neither is `-c`. They must be complete finite numeric values but may
 have either sign. `-d` overwrites `dos.dat` and cannot be combined with `-f`; it
-can be combined with `-e`.
+can be combined with `-e`. Rows are written with enough significant digits to
+round-trip `double` values. The complete result is first written to a checked
+temporary file in the same directory and then atomically replaces `dos.dat`, so
+an existing output is preserved if calculation or output fails.
 
 ## Numerical Method
 
@@ -537,7 +543,8 @@ can be combined with `-e`.
   Its DC and optical outer integrals use linewidth-aware table-edge crossings;
   `n=0` instead integrates the interpolation spline exactly once.
 - Self-energy interpolation is selectable, with the in-table imaginary part
-  clipped again after evaluation; custom-kernel interpolation is always Akima.
+  clipped again after evaluation. Nonnegative effective custom kernels use
+  monotonic Steffen interpolation; signed kernels use Akima.
 - Every adaptive integration status and result is checked. Unverified failures
   are fatal by default; `-E` explicitly enables finite best-effort results.
 - In verbose mode, the reported error is GSL's estimate for the outer
