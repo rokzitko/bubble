@@ -56,8 +56,8 @@ make
 ```
 
 The compiler and flags can be overridden in the usual way, for example with
-`make CXX=clang++`. Run `make clean` before switching compilers. Run the default
-DC regression and optical validation suite with:
+`make CXX=clang++`. Run `make clean` before switching compilers. Run the
+regression, clean-limit, optical, and malformed-input validation suites with:
 
 ```bash
 make check
@@ -272,7 +272,14 @@ These kernels do not include lattice normalization factors. For example, the
 Bethe-lattice benchmark applies the factor $2/\pi$ externally. Odd kernels
 are useful in Hall and occupied-energy moments.
 
-For `m=0`, the kernel is read from a whitespace-separated two-column file:
+All tabulated inputs use the same strict line format. Each nonempty data line
+must contain exactly two complete finite floating-point values separated by
+whitespace. A `#` starts a comment, either on its own line or after the two
+values; blank and comment-only lines are ignored. Malformed values, extra or
+missing columns, overflow, and underflow are rejected with a filename and line
+number.
+
+For `m=0`, the kernel is read from a two-column file:
 
 ```text
 epsilon_0  Phi(epsilon_0)
@@ -280,10 +287,11 @@ epsilon_1  Phi(epsilon_1)
 ...
 ```
 
-The energy grid must be strictly increasing and should contain at least five
-points. After applying `-e`, tables whose effective values are all nonnegative
-use GSL Steffen interpolation. This monotonic cubic method cannot undershoot
-below the supplied values. Signed effective kernels retain Akima interpolation.
+The energy grid must be strictly increasing. After applying `-e`, every
+effective value must remain finite. Tables whose effective values are all
+nonnegative use GSL Steffen interpolation and require at least three rows. This
+monotonic cubic method cannot undershoot below the supplied values. Signed
+effective kernels retain Akima interpolation and require at least five rows.
 The energy integration is restricted to the table interval. Use `-p FILE` to
 select the table.
 
@@ -362,8 +370,11 @@ omega_1  ReSigma_1         omega_1  ImSigma_1
 ...                        ...
 ```
 
-Both files should have the same number of rows and identical, strictly
-increasing frequency grids. The retarded convention
+Both files must have the same number of rows and exactly identical, strictly
+increasing frequency grids. Generate or copy the frequency column once rather
+than independently rounding it in the two files. The selected interpolation
+requires at least two rows for linear mode, three for cubic-spline mode, and
+five for Akima mode. The retarded convention
 $\mathrm{Im}\ \Sigma^R\le 0$ is required.
 
 The following numerical policies are important when interpreting results:

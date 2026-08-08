@@ -1,0 +1,195 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use File::Temp qw(tempdir);
+use FindBin qw($Bin);
+use IPC::Open3;
+use Symbol qw(gensym);
+
+my $bubble = "$Bin/../bubble";
+my $directory = tempdir(CLEANUP => 1);
+my $passed = 0;
+my $failed = 0;
+
+sub write_table {
+    my ($name, @rows) = @_;
+    my $filename = "$directory/$name";
+    open my $file, '>', $filename or die "Cannot create $filename: $!\n";
+    print {$file} "$_\n" for @rows;
+    close $file or die "Cannot close $filename: $!\n";
+    return $filename;
+}
+
+sub run_bubble {
+    my (@arguments) = @_;
+    my $stdout = gensym;
+    my $stderr = gensym;
+    my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
+    my $stdout_text = do { local $/; <$stdout> } // '';
+    my $stderr_text = do { local $/; <$stderr> } // '';
+    $stderr_text =~ s/\s+$//;
+    waitpid $pid, 0;
+    my $wait_status = $?;
+    my $status = ($wait_status & 127)
+        ? 128 + ($wait_status & 127)
+        : $wait_status >> 8;
+    return ($status, $stdout_text, $stderr_text);
+}
+
+sub check_result {
+    my ($name, $ok, $details) = @_;
+    if ($ok) {
+        ++$passed;
+        print "OK: $name";
+    } else {
+        ++$failed;
+        print "FAILED: $name";
+    }
+    print " ($details)" if defined $details && length $details;
+    print "\n";
+}
+
+sub check_failure {
+    my ($name, $pattern, @arguments) = @_;
+    my ($status, $stdout, $stderr) = run_bubble(@arguments);
+    my $ok = $status > 0 && $status < 128 && $stderr =~ $pattern;
+    check_result($name, $ok, "exit=$status stderr=$stderr");
+}
+
+my @frequencies = (-10, -5, 0, 5, 10);
+my $resigma = write_table('resigma.dat', map { "$_ 0" } @frequencies);
+my $imsigma = write_table('imsigma.dat', map { "$_ -0.1" } @frequencies);
+
+my $comment_resigma = write_table('comment-resigma.dat',
+    '# ReSigma header', '', '-10 0 # left edge', '-5 0',
+    '0 0 # center', '5 0', '10 0 # right edge');
+my $comment_imsigma = write_table('comment-imsigma.dat',
+    '# ImSigma header', '-10 -0.1', '-5 -0.1 # comment', '',
+    '0 -0.1', '5 -0.1', '10 -0.1');
+my $comment_phi = write_table('comment-phi.dat',
+    '# epsilon Phi', '-2 1', '-1 1 # inline', '', '0 1', '1 1', '2 1');
+my ($comment_status, undef, $comment_stderr) = run_bubble(
+    '-q', '-p', $comment_phi, 0, 0, 0, 0.1, 0,
+    $comment_resigma, $comment_imsigma);
+check_result('blank lines and comments are accepted',
+    $comment_status == 0,
+    "exit=$comment_status stderr=$comment_stderr");
+
+my $missing_column = write_table('missing-column.dat', '-10 0', '-5', '0 0');
+check_failure('missing column is rejected', qr/column 2 is missing/,
+    1, 0, 0, 0.1, 0, $missing_column, $imsigma);
+
+my $extra_column = write_table('extra-column.dat',
+    '-10 0', '-5 0 extra', '0 0');
+check_failure('extra column is rejected', qr/found extra token 'extra'/,
+    1, 0, 0, 0.1, 0, $extra_column, $imsigma);
+
+my $malformed_number = write_table('malformed-number.dat',
+    '-10 0', '-5 0junk', '0 0');
+check_failure('malformed numeric suffix is rejected',
+    qr/invalid finite number in column 2: '0junk'/,
+    1, 0, 0, 0.1, 0, $malformed_number, $imsigma);
+
+my $nan_value = write_table('nan-value.dat', '-10 0', '-5 nan', '0 0');
+check_failure('NaN is rejected', qr/invalid finite number in column 2: 'nan'/,
+    1, 0, 0, 0.1, 0, $nan_value, $imsigma);
+
+my $infinite_value = write_table('infinite-value.dat',
+    '-10 0', '-5 -inf', '0 0');
+check_failure('infinity is rejected', qr/invalid finite number in column 2: '-inf'/,
+    1, 0, 0, 0.1, 0, $infinite_value, $imsigma);
+
+my $overflow_value = write_table('overflow-value.dat',
+    '-10 0', '-5 1e9999', '0 0');
+check_failure('numeric overflow is rejected',
+    qr/invalid finite number in column 2: '1e9999'/,
+    1, 0, 0, 0.1, 0, $overflow_value, $imsigma);
+
+my $underflow_value = write_table('underflow-value.dat',
+    '-10 0', '-5 1e-9999', '0 0');
+check_failure('numeric underflow is rejected',
+    qr/invalid finite number in column 2: '1e-9999'/,
+    1, 0, 0, 0.1, 0, $underflow_value, $imsigma);
+
+my $empty_table = write_table('empty.dat', '', '# no data');
+check_failure('empty table is rejected', qr/contains no data rows/,
+    1, 0, 0, 0.1, 0, $empty_table, $imsigma);
+
+check_failure('missing table is rejected', qr/unable to open file/,
+    1, 0, 0, 0.1, 0, "$directory/missing.dat", $imsigma);
+
+my $table_directory = "$directory/table-directory";
+mkdir $table_directory or die "Cannot create $table_directory: $!\n";
+check_failure('table read error is rejected', qr/I\/O error while reading file/,
+    1, 0, 0, 0.1, 0, $table_directory, $imsigma);
+
+my $duplicate_grid = write_table('duplicate-grid.dat',
+    '-10 0', '-5 0', '-5 0', '0 0', '10 0');
+check_failure('duplicate grid point is rejected',
+    qr/grid is not strictly increasing/,
+    1, 0, 0, 0.1, 0, $duplicate_grid, $imsigma);
+
+my $descending_grid = write_table('descending-grid.dat',
+    '-10 0', '0 0', '-5 0', '5 0', '10 0');
+check_failure('descending grid point is rejected',
+    qr/grid is not strictly increasing/,
+    1, 0, 0, 0.1, 0, $descending_grid, $imsigma);
+
+my $unrepresentable_span = write_table('unrepresentable-span.dat',
+    '-1e308 0', '0 0', '1e308 0');
+my $matching_large_im = write_table('matching-large-im.dat',
+    '-1e308 -0.1', '0 -0.1', '1e308 -0.1');
+check_failure('unrepresentable grid span is rejected',
+    qr/grid span is not representable/,
+    1, 0, 0, 0.1, 0, $unrepresentable_span, $matching_large_im);
+
+my $short_imsigma = write_table('short-imsigma.dat',
+    map { "$_ -0.1" } (-10, -5, 0, 5));
+check_failure('self-energy row-count mismatch is rejected',
+    qr/row count 4 does not match ReSigma table/,
+    1, 0, 0, 0.1, 0, $resigma, $short_imsigma);
+
+my $mismatched_imsigma = write_table('mismatched-imsigma.dat',
+    '-10 -0.1', '-5 -0.1', '0.00000000000000001 -0.1',
+    '5 -0.1', '10 -0.1');
+check_failure('self-energy frequency mismatch is rejected',
+    qr/frequency .* does not match ReSigma table/,
+    1, 0, 0, 0.1, 0, $resigma, $mismatched_imsigma);
+
+my $four_resigma = write_table('four-resigma.dat',
+    map { "$_ 0" } (-10, -2, 2, 10));
+my $four_imsigma = write_table('four-imsigma.dat',
+    map { "$_ -0.1" } (-10, -2, 2, 10));
+check_failure('undersized Akima self-energy table is rejected',
+    qr/interpolation 'akima' requires at least 5 rows; found 4/,
+    '-i', 3, 1, 0, 0, 0.1, 0, $four_resigma, $four_imsigma);
+
+my $one_row_phi = write_table('one-row-phi.dat', '0 1');
+check_failure('undersized Phi table is rejected',
+    qr/interpolation 'steffen' requires at least 3 rows; found 1/,
+    '-p', $one_row_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+my $four_row_signed_phi = write_table('four-row-signed-phi.dat',
+    '-2 1', '-1 1', '0 -1', '1 1');
+check_failure('undersized signed Phi table is rejected',
+    qr/interpolation 'akima' requires at least 5 rows; found 4/,
+    '-p', $four_row_signed_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+my $malformed_phi = write_table('malformed-phi.dat',
+    '-2 1', '-1 1', '0 1 extra', '1 1', '2 1');
+check_failure('malformed Phi row is rejected', qr/found extra token 'extra'/,
+    '-p', $malformed_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+my $overflow_phi = write_table('overflow-phi.dat',
+    '0 1', '1 1', '2 1', '3 1', '1e200 1e200');
+check_failure('non-finite transformed Phi is rejected',
+    qr/applying epsilon power e=1 produced a non-finite Phi value/,
+    '-e', 1, '-p', $overflow_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+my $empty_phi = write_table('empty-phi.dat', '# no Phi data');
+check_failure('empty Phi table is rejected', qr/contains no data rows/,
+    '-p', $empty_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+print "INPUT OK=$passed FAILED=$failed\n";
+exit($failed == 0 ? 0 : 1);

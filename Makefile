@@ -35,6 +35,7 @@ check: $(TARGET) $(CLEAN_KERNEL_TEST)
 	@cd regression && perl ./run_clean_legacy_tests
 	@cd regression && ./run_optical_tests
 	@cd regression && ./clean_kernel_tests
+	@cd regression && ./run_input_tests
 	@cd regression && perl ./run_window_tests
 	@cd Bethe_lattice_test && ./cond.opt.geo --check
 

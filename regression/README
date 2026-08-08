@@ -28,3 +28,6 @@ generators. `run_window_tests` covers the `-M` command-line behavior and all
 epsilon-integrating modes. The pointwise data also covers exact odd symmetry,
 sub-ULP intervals, finite-band edges, adjacent-double optical centers, huge
 Gaussian windows, and narrow exterior peaks.
+
+`run_input_tests` covers strict Phi and self-energy table parsing, grid
+validation, interpolation-size checks, and controlled malformed-input failures.

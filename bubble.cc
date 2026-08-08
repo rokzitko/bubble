@@ -181,6 +181,180 @@ double parse_finite_double(const char *value, const char *description)
    return result;
 }
 
+struct table_row {
+   double x;
+   double y;
+   size_t line;
+};
+
+string format_table_value(double value)
+{
+   ostringstream formatted;
+   formatted << setprecision(numeric_limits<double>::max_digits10) << value;
+   return formatted.str();
+}
+
+void table_error(const string &description, const string &filename,
+                 size_t line, const string &message)
+{
+   cerr << "Error: " << description << " table " << filename;
+   if (line != 0)
+      cerr << ":" << line;
+   cerr << ": " << message << endl;
+   exit(EXIT_FAILURE);
+}
+
+double parse_table_value(const string &token, const string &description,
+                         const string &filename, size_t line, int column)
+{
+   char *end = NULL;
+   errno = 0;
+   const double result = strtod(token.c_str(), &end);
+   if (errno == ERANGE || end == token.c_str() ||
+       end != token.c_str() + token.size() || !isfinite(result)) {
+      ostringstream message;
+      message << "invalid finite number in column " << column << ": '" << token << "'";
+      table_error(description, filename, line, message.str());
+   }
+   return result;
+}
+
+vector<table_row> read_two_column_table(const string &filename,
+                                        const string &description)
+{
+   ifstream input(filename.c_str());
+   if (!input.is_open())
+      table_error(description, filename, 0, "unable to open file");
+
+   vector<table_row> rows;
+   string line;
+   size_t line_number = 0;
+   while (getline(input, line)) {
+      ++line_number;
+      const string::size_type comment = line.find('#');
+      if (comment != string::npos)
+         line.erase(comment);
+
+      istringstream fields(line);
+      string x_token;
+      if (!(fields >> x_token))
+         continue;
+
+      string y_token;
+      if (!(fields >> y_token))
+         table_error(description, filename, line_number,
+                     "expected exactly two columns; column 2 is missing");
+
+      string extra_token;
+      if (fields >> extra_token) {
+         ostringstream message;
+         message << "expected exactly two columns; found extra token '"
+                 << extra_token << "'";
+         table_error(description, filename, line_number, message.str());
+      }
+
+      const double x = parse_table_value(x_token, description, filename,
+                                         line_number, 1);
+      const double y = parse_table_value(y_token, description, filename,
+                                         line_number, 2);
+      rows.push_back(table_row{x, y, line_number});
+   }
+
+   if (input.bad())
+      table_error(description, filename, line_number, "I/O error while reading file");
+   if (rows.empty())
+      table_error(description, filename, 0, "contains no data rows");
+   return rows;
+}
+
+void require_strictly_increasing(const vector<table_row> &rows,
+                                 const string &description,
+                                 const string &filename)
+{
+   for (size_t index = 1; index < rows.size(); ++index) {
+      if (!(rows[index - 1].x < rows[index].x)) {
+         ostringstream message;
+         message << "grid is not strictly increasing: "
+                 << format_table_value(rows[index].x) << " is not greater than "
+                 << format_table_value(rows[index - 1].x) << " from line "
+                 << rows[index - 1].line;
+         table_error(description, filename, rows[index].line, message.str());
+      }
+   }
+
+   if (!isfinite(rows.back().x - rows.front().x))
+      table_error(description, filename, 0, "grid span is not representable");
+}
+
+void require_interpolation_size(const vector<table_row> &rows,
+                                const gsl_interp_type *type,
+                                const string &description,
+                                const string &filename)
+{
+   const size_t minimum = gsl_interp_type_min_size(type);
+   if (rows.size() < minimum) {
+      ostringstream message;
+      message << "interpolation '" << type->name << "' requires at least "
+              << minimum << " rows; found " << rows.size();
+      table_error(description, filename, 0, message.str());
+   }
+}
+
+struct interpolation_state {
+   gsl_interp_accel *accelerator;
+   gsl_spline *spline;
+};
+
+void free_interpolation_state(interpolation_state &state)
+{
+   if (state.spline != NULL)
+      gsl_spline_free(state.spline);
+   if (state.accelerator != NULL)
+      gsl_interp_accel_free(state.accelerator);
+   state.spline = NULL;
+   state.accelerator = NULL;
+}
+
+bool create_interpolation_state(const gsl_interp_type *type,
+                                const vector<double> &x,
+                                const vector<double> &y,
+                                const string &description,
+                                interpolation_state &state,
+                                string &error_message)
+{
+   state.accelerator = NULL;
+   state.spline = gsl_spline_alloc(type, x.size());
+   if (state.spline == NULL) {
+      error_message = "unable to allocate " + description + " interpolation spline";
+      return false;
+   }
+
+   const int status = gsl_spline_init(state.spline, &x[0], &y[0], x.size());
+   if (status != GSL_SUCCESS) {
+      ostringstream message;
+      message << "unable to initialize " << description << " interpolation '"
+              << type->name << "': " << gsl_strerror(status)
+              << " (status=" << status << ")";
+      error_message = message.str();
+      free_interpolation_state(state);
+      return false;
+   }
+
+   state.accelerator = gsl_interp_accel_alloc();
+   if (state.accelerator == NULL) {
+      error_message = "unable to allocate " + description + " interpolation accelerator";
+      free_interpolation_state(state);
+      return false;
+   }
+   return true;
+}
+
+void interpolation_error(const string &message)
+{
+   cerr << "Error: " << message << "." << endl;
+   exit(EXIT_FAILURE);
+}
+
 double parse_optical_frequency(const char *value)
 {
    const double result = parse_finite_double(value, "optical frequency");
@@ -762,49 +936,43 @@ double J_83(complex<double> z) { return J_builtin(8, 3, z); }
 
 void load_Phi()
 {
-   // Opening and reading file that contains epsilon, Phi(epsilon) pairs
-   ifstream phi_file(fnPhi.c_str());
-   if (!phi_file.is_open()) {
-      cerr << "Error opening file " << fnPhi << endl;
-      exit(EXIT_FAILURE);
-   }
-   vector< vector <double> > data;
-    
-   if(phi_file.is_open()) {
-      double vals;
-      vector<double> phi_vals;
-      while(phi_file >> vals){
-	 phi_vals.push_back(vals);
-	 if (phi_vals.size() == 2){
-	    data.push_back(phi_vals);
-	    phi_vals.clear();
-	 }
-      }
-      phi_file.close();
-   }
-   
-   // Making epsilon and phi vectors out of columns from file Phi.dat
-   vector<double> eps, phi;
+   const vector<table_row> rows = read_two_column_table(fnPhi, "Phi");
+   require_strictly_increasing(rows, "Phi", fnPhi);
 
-   int N = data.size();
-   for (int i=0; i<N; ++i) {
-      double x = data[i][0];
-      double y = data[i][1];
-      y *= pow(x, e); // multiply by epsilon^e
-      eps.push_back(x);
-      phi.push_back(y);
+   vector<double> eps;
+   vector<double> phi;
+   eps.reserve(rows.size());
+   phi.reserve(rows.size());
+   for (vector<table_row>::const_iterator row = rows.begin();
+        row != rows.end(); ++row) {
+      const double power = pow(row->x, e);
+      const double effective_phi = row->y*power;
+      if (!isfinite(power) || !isfinite(effective_phi)) {
+         ostringstream message;
+         message << "applying epsilon power e=" << e
+                 << " produced a non-finite Phi value";
+         table_error("Phi", fnPhi, row->line, message.str());
+      }
+      eps.push_back(row->x);
+      phi.push_back(effective_phi);
    }
-   
-   eps_min = eps[0];
-   eps_max = eps[N - 1];
-    
+
    const bool nonnegative_phi = all_of(phi.begin(), phi.end(),
-      [](double value) { return isfinite(value) && value >= 0.0; });
+      [](double value) { return value >= 0.0; });
    const gsl_interp_type * Interp_type = nonnegative_phi
       ? gsl_interp_steffen : gsl_interp_akima;
-   acc_Phi = gsl_interp_accel_alloc();
-   spline_Phi = gsl_spline_alloc(Interp_type, N);
-   gsl_spline_init(spline_Phi, &eps[0], &phi[0], N);
+   require_interpolation_size(rows, Interp_type, "Phi", fnPhi);
+
+   interpolation_state candidate;
+   string error_message;
+   if (!create_interpolation_state(Interp_type, eps, phi, "Phi",
+                                   candidate, error_message))
+      interpolation_error(error_message);
+
+   eps_min = eps.front();
+   eps_max = eps.back();
+   acc_Phi = candidate.accelerator;
+   spline_Phi = candidate.spline;
    if (verbose)
       cout << "Phi interpolation=" << gsl_spline_name(spline_Phi) << endl;
 }
@@ -3350,87 +3518,30 @@ void calc_DOS()
 
 void load_Sigma()
 {
-   const int COLUMNS = 2;
-   vector< vector <double> > data1, data2;
-    
-   ifstream FileSigmaRe (fnReSigma.c_str());
-   ifstream FileSigmaIm (fnImSigma.c_str());
-    
-   if (FileSigmaRe.is_open()) {
-      double num_re;
-      vector <double> numbers_re;
-      while (FileSigmaRe >> num_re) {
-	 numbers_re.push_back(num_re);
-	 if (numbers_re.size() == COLUMNS) {
-	    data1.push_back(numbers_re);
-	    numbers_re.clear();
-	 }
-      }
-      FileSigmaRe.close();
-   } else {
-      cerr << "Error opening file " << fnReSigma << endl;
-      abort();
-   }
-    
-   if (FileSigmaIm.is_open()) {
-      double num_im;
-      vector <double> numbers_im;
-      while (FileSigmaIm >> num_im) {
-	 numbers_im.push_back(num_im);
-	 if (numbers_im.size() == COLUMNS) {
-	    data2.push_back(numbers_im);
-	    numbers_im.clear();
-	 }
-      }
-      FileSigmaIm.close();
-   } else {
-      cerr << "Error opening file " << fnImSigma << endl;
-      abort();
-   }
-    
-   assert(data1.size() == data2.size()); // sanity check
+   const vector<table_row> real_rows = read_two_column_table(fnReSigma, "ReSigma");
+   const vector<table_row> imaginary_rows = read_two_column_table(fnImSigma, "ImSigma");
+   require_strictly_increasing(real_rows, "ReSigma", fnReSigma);
+   require_strictly_increasing(imaginary_rows, "ImSigma", fnImSigma);
 
-   int N = data1.size();
-   vector <double> omega, reSigma, imSigma;
-    
-   for(int i=0; i<N; ++i) {
-      omega.push_back(data1[i][0]);
-      reSigma.push_back(data1[i][1]);
+   if (real_rows.size() != imaginary_rows.size()) {
+      ostringstream message;
+      message << "row count " << imaginary_rows.size()
+              << " does not match ReSigma table " << fnReSigma
+              << " (" << real_rows.size() << " rows)";
+      table_error("ImSigma", fnImSigma, 0, message.str());
    }
-    
-   omega_min = data1[0][0];
-   omega_max = data1[N-1][0];
-   sigma_omega_knots = omega;
-   assert(omega_min < omega_max);
-
-   reSigma_asymp_neg = data1[0][1]; // use this for omega<omega_min
-   reSigma_asymp_pos = data1[N-1][1]; // use this for omega>omega_max
-   // imSigma assumed to be zero outside the [omega_min:omega_max] interval
-      
-   for(int i=0; i<N; ++i) {
-      imSigma.push_back(clipped_im_sigma(data2[i][1]));
-   }
-
-   particle_hole_symmetric_sigma = true;
-   for (int i = 0; i < N; ++i) {
-      const int mirrored = N - 1 - i;
-      if (omega[i] != -omega[mirrored] ||
-          reSigma[i] != -reSigma[mirrored] ||
-          imSigma[i] != imSigma[mirrored]) {
-         particle_hole_symmetric_sigma = false;
-         break;
+   for (size_t index = 0; index < real_rows.size(); ++index) {
+      if (real_rows[index].x != imaginary_rows[index].x) {
+         ostringstream message;
+         message << "frequency " << format_table_value(imaginary_rows[index].x)
+                 << " does not match ReSigma table " << fnReSigma << ":"
+                 << real_rows[index].line << " frequency "
+                 << format_table_value(real_rows[index].x);
+         table_error("ImSigma", fnImSigma, imaginary_rows[index].line,
+                     message.str());
       }
    }
-   
-   assert(omega_min == data2[0][0]);
-   assert(omega_max == data2[N-1][0]);
-    
-   if (verbose) {
-      cout << "omega_min=" << omega_min << " omega_max=" << omega_max << endl;
-      cout << "reSigma asymptotic values neg=" << reSigma_asymp_neg << " pos=" << reSigma_asymp_pos << endl;
-   }
-   
-   // Create interpolation objects
+
    const gsl_interp_type * Interp_type;
    switch(b) {
    case 1:
@@ -3444,17 +3555,61 @@ void load_Sigma()
       break;
    default:
       cerr << "Interpolation " << b << " is not implemented." << endl;
-      abort();
+      exit(EXIT_FAILURE);
    }
-   
-   // GSL interpolation with linear interpolation as default
-   acc_reSigma = gsl_interp_accel_alloc();
-   spline_reSigma  = gsl_spline_alloc(Interp_type, N);
-   gsl_spline_init(spline_reSigma, &omega[0], &reSigma[0], N);
-    
-   acc_imSigma = gsl_interp_accel_alloc();
-   spline_imSigma = gsl_spline_alloc(Interp_type, N);
-   gsl_spline_init(spline_imSigma, &omega[0], &imSigma[0], N);
+   require_interpolation_size(real_rows, Interp_type, "ReSigma", fnReSigma);
+   require_interpolation_size(imaginary_rows, Interp_type, "ImSigma", fnImSigma);
+
+   vector<double> omega;
+   vector<double> reSigma;
+   vector<double> imSigma;
+   omega.reserve(real_rows.size());
+   reSigma.reserve(real_rows.size());
+   imSigma.reserve(real_rows.size());
+   for (size_t index = 0; index < real_rows.size(); ++index) {
+      omega.push_back(real_rows[index].x);
+      reSigma.push_back(real_rows[index].y);
+      imSigma.push_back(clipped_im_sigma(imaginary_rows[index].y));
+   }
+
+   interpolation_state real_candidate;
+   interpolation_state imaginary_candidate;
+   string error_message;
+   if (!create_interpolation_state(Interp_type, omega, reSigma, "ReSigma",
+                                   real_candidate, error_message))
+      interpolation_error(error_message);
+   if (!create_interpolation_state(Interp_type, omega, imSigma, "ImSigma",
+                                   imaginary_candidate, error_message)) {
+      free_interpolation_state(real_candidate);
+      interpolation_error(error_message);
+   }
+
+   omega_min = omega.front();
+   omega_max = omega.back();
+   sigma_omega_knots = omega;
+   reSigma_asymp_neg = reSigma.front(); // use this for omega<omega_min
+   reSigma_asymp_pos = reSigma.back(); // use this for omega>omega_max
+   // imSigma is assumed to be zero outside the [omega_min:omega_max] interval.
+   particle_hole_symmetric_sigma = true;
+   for (size_t index = 0; index < omega.size(); ++index) {
+      const size_t mirrored = omega.size() - 1 - index;
+      if (omega[index] != -omega[mirrored] ||
+          reSigma[index] != -reSigma[mirrored] ||
+          imSigma[index] != imSigma[mirrored]) {
+         particle_hole_symmetric_sigma = false;
+         break;
+      }
+   }
+   acc_reSigma = real_candidate.accelerator;
+   spline_reSigma = real_candidate.spline;
+   acc_imSigma = imaginary_candidate.accelerator;
+   spline_imSigma = imaginary_candidate.spline;
+
+   if (verbose) {
+      cout << "omega_min=" << omega_min << " omega_max=" << omega_max << endl;
+      cout << "reSigma asymptotic values neg=" << reSigma_asymp_neg
+           << " pos=" << reSigma_asymp_pos << endl;
+   }
 }
 
 void initialize_epsilon_window()
@@ -3773,6 +3928,7 @@ void calc_optical()
 #ifndef BUBBLE_NO_MAIN
 int main (int argc, char *argv[])
 {
+   gsl_set_error_handler_off();
    cmd_line(argc, argv);
 
    load_Sigma();
