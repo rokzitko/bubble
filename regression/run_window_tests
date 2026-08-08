@@ -327,6 +327,26 @@ chdir $original_directory or die "Cannot return to $original_directory: $!\n";
 check_result('restricted n=1 DOS output', $spectral_dos_ok,
     "exit=$spectral_dos_status stderr=$spectral_dos_stderr");
 
+chdir $directory or die "Cannot enter $directory: $!\n";
+my @custom_error_arguments = (
+    '-a', '0', '-r', '1e-20', '-d', '-p', $phi,
+    0, 1, 0, 0.1, 0, $resigma, $imsigma,
+);
+my ($custom_error_status, $custom_error_stdout, $custom_error_stderr) =
+    run_bubble(@custom_error_arguments);
+check_result('custom DOS integration failure is fatal',
+    $custom_error_status == 1 && $custom_error_stdout eq '' &&
+    $custom_error_stderr =~ /Error: Custom epsilon integration:/,
+    "exit=$custom_error_status stderr=$custom_error_stderr");
+
+my ($custom_ignored_status, $custom_ignored_stdout, $custom_ignored_stderr) =
+    run_bubble('--ignore-integration-errors', '-q', @custom_error_arguments);
+check_result('custom DOS integration failure compatibility mode',
+    $custom_ignored_status == 0 && $custom_ignored_stdout eq '' &&
+    $custom_ignored_stderr eq '',
+    "exit=$custom_ignored_status stderr=$custom_ignored_stderr");
+chdir $original_directory or die "Cannot return to $original_directory: $!\n";
+
 my @invalid_cases = (
     ['negative M', qr/Invalid epsilon-window limit/, '-M', '-1', @base],
     ['non-finite M', qr/Invalid epsilon-window limit/, '-M', 'nan', @base],
@@ -351,6 +371,40 @@ for my $case (@invalid_cases) {
     check_result($name, $status == 1 && $stderr =~ $diagnostic,
         "exit=$status stderr=$stderr");
 }
+
+my @integration_error_arguments = (
+    '-a', '0', '-r', '1e-20',
+    1, 0, 0, 0.1, 0, $resigma, $imsigma,
+);
+my ($strict_error_status, $strict_error_stdout, $strict_error_stderr) =
+    run_bubble(@integration_error_arguments);
+check_result('unrestricted integration failure is fatal by default',
+    $strict_error_status == 1 && $strict_error_stdout eq '' &&
+    $strict_error_stderr =~ /Error: Frequency integration:/,
+    "exit=$strict_error_status stderr=$strict_error_stderr");
+
+my ($ignored_error_status, $ignored_error_stdout, $ignored_error_stderr) =
+    run_bubble('-E', @integration_error_arguments);
+my $ignored_error_ok = $ignored_error_status == 0 &&
+    $ignored_error_stdout =~ /^\s*$number\s*$/ &&
+    $ignored_error_stderr =~ /Warning: ignoring integration error: Frequency integration:/;
+check_result('integration failure compatibility warning', $ignored_error_ok,
+    "exit=$ignored_error_status stderr=$ignored_error_stderr");
+
+my ($quiet_error_status, $quiet_error_stdout, $quiet_error_stderr) =
+    run_bubble('--ignore-integration-errors', '-q', @integration_error_arguments);
+check_result('quiet integration failure compatibility mode',
+    $quiet_error_status == 0 && $quiet_error_stdout eq $ignored_error_stdout &&
+    $quiet_error_stderr eq '',
+    "exit=$quiet_error_status stderr=$quiet_error_stderr");
+
+my ($nonfinite_status, $nonfinite_stdout, $nonfinite_stderr) = run_bubble(
+    '-E', 7, 1, 0, 0.1, 14, $resigma, $imsigma,
+);
+check_result('compatibility mode rejects non-finite results',
+    $nonfinite_status == 1 && $nonfinite_stdout eq '' &&
+    $nonfinite_stderr =~ /Error: Frequency integration:.*result=.*nan/i,
+    "exit=$nonfinite_status stderr=$nonfinite_stderr");
 
 my ($outside_status) = run_bubble('-M', '0', 1, 2, 0, 0.1, 0,
     $outside_resigma, $outside_imsigma);

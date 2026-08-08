@@ -106,7 +106,7 @@ for my $point (-10 .. 10) {
 }
 close $phi_file or die "Cannot close $phi_filename: $!\n";
 my ($tabulated, $tabulated_error) = run_value(
-    @tight_tolerances, '-O', '0.3', '-p', $phi_filename,
+    @tight_tolerances, '-E', '-q', '-O', '0.3', '-p', $phi_filename,
     0, 2, 0, 0.1, 0, $resigma, $imsigma,
 );
 my $tabulated_expected = $finite_reference{1};
@@ -144,14 +144,23 @@ check_result('quiet mode preserves verbose output', $verbose_ok,
 my @roundoff_arguments = (
     '-O', '0.1', 5, 2, 0, 0.27, 0, $bethe_resigma, $bethe_imsigma,
 );
-my ($roundoff_status, $roundoff_stdout, $roundoff_stderr) = run_bubble(@roundoff_arguments);
+my ($roundoff_strict_status, $roundoff_strict_stdout, $roundoff_strict_stderr) =
+    run_bubble(@roundoff_arguments);
+my $roundoff_strict_ok = $roundoff_strict_status == 1 &&
+    $roundoff_strict_stdout eq '' &&
+    $roundoff_strict_stderr =~ /Error: Optical frequency integration: roundoff error/;
+check_result('optical roundoff is fatal by default', $roundoff_strict_ok,
+    "exit=$roundoff_strict_status stderr=$roundoff_strict_stderr");
+
+my ($roundoff_status, $roundoff_stdout, $roundoff_stderr) =
+    run_bubble('-E', @roundoff_arguments);
 my ($roundoff_quiet_status, $roundoff_quiet_stdout, $roundoff_quiet_stderr) =
-    run_bubble('-q', @roundoff_arguments);
+    run_bubble('-E', '-q', @roundoff_arguments);
 my $roundoff_ok = $roundoff_status == 0 && $roundoff_quiet_status == 0 &&
-    $roundoff_stderr =~ /Warning: optical frequency integration was limited by roundoff/ &&
+    $roundoff_stderr =~ /Warning: ignoring integration error: Optical frequency integration:/ &&
     $roundoff_quiet_stderr eq '' && $roundoff_stdout =~ /^\s*$number\s*$/ &&
     $roundoff_quiet_stdout eq $roundoff_stdout;
-check_result('quiet mode suppresses roundoff warnings', $roundoff_ok,
+check_result('optical roundoff compatibility mode', $roundoff_ok,
     "exit=$roundoff_quiet_status stderr=$roundoff_quiet_stderr");
 
 my @invalid_cases = (

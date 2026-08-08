@@ -306,6 +306,7 @@ Options:
 |---|---|
 | `-v` | Print parameters, numerical result, and outer integration error estimate |
 | `-q` | Suppress non-fatal warnings without suppressing results or errors |
+| `-E`, `--ignore-integration-errors` | Continue after an integration failure when a finite partial result is available |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points |
 | `-a A` | Absolute integration tolerance, default `1e-7` |
@@ -325,6 +326,19 @@ other DMFT post-processing workflows.
 
 `-q` suppresses only non-fatal warning messages. It does not hide the numerical
 result, fatal diagnostics, or the additional output requested by `-v`.
+
+By default, an adaptive integration failure is reported on standard error and
+the program exits unsuccessfully without printing a numerical result. The
+restricted evaluators retain their existing exception for roundoff or
+singularity statuses that pass an independent quadrature check within the
+requested tolerance.
+
+`-E` downgrades an otherwise fatal integration status or invalid error estimate
+to a warning when GSL supplied a finite partial result. Combining `-E -q`
+reproduces the previous silent best-effort behavior. Allocation failures and
+non-finite numerical results remain fatal. The option does not change input
+parsing or other non-integration diagnostics, and it cannot detect an inaccurate
+calculation for which GSL returned a successful status.
 
 ## Self-Energy Input
 
@@ -496,13 +510,17 @@ still syntactically required but are not used in this mode. `-d` overwrites
 - The remaining frequency integral uses adaptive GSL `qag` quadrature.
 - The default rule is the 15-point Gauss-Kronrod rule with a workspace of
   1,000 intervals.
-- A custom `m=0` kernel introduces a nested adaptive energy integral with
-  linewidth-aware breakpoints around both spectral peaks.
+- A custom `m=0` kernel introduces a nested adaptive energy integral. The
+  finite-frequency optical path adds linewidth-aware breakpoints around both
+  spectral peaks.
 - Self-energy interpolation is selectable, while custom-kernel interpolation
   is always Akima.
+- Every adaptive integration status and result is checked. Unverified failures
+  are fatal by default; `-E` explicitly enables finite best-effort results.
 - In verbose mode, the reported error is GSL's estimate for the outer
-  frequency quadrature. Nested restricted and custom-kernel inner uncertainty
-  is validated separately but is not included in that printed estimate.
+  frequency quadrature. Restricted inner uncertainty is validated separately,
+  while unrestricted custom-kernel inner errors are checked but not folded into
+  that printed estimate.
 
 ## Validation
 
@@ -614,7 +632,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.6.
+current executable is authoritative for version 1.7.
 
 ## References
 

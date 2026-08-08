@@ -67,6 +67,8 @@ for my $index (0 .. $#mesh) {
         '-r', '1e-8',
         '-c', '20',
         '-s', '1e-16',
+        '-E',
+        '-q',
         '-O', $omega,
         '5', '2', '0', $temperature, '0', $resigma, $imsigma,
     );

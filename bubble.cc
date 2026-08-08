@@ -25,11 +25,13 @@
 // 6.8.2026 - merge support for the -d, -e, and -f switches
 // 7.8.2026 - support finite-frequency optical conductivity through -O
 //            - support Fermi-level epsilon windows through -M
+// 8.8.2026 - strict integration error handling with -E compatibility mode
 
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <sstream>
+#include <set>
 #include <vector>
 #include <utility>
 #include <cassert>
@@ -81,7 +83,7 @@ gsl_interp_accel *acc_Phi;
 gsl_spline *spline_Phi;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.6";
+const string VERSION = "1.7";
 
 // Mandatory parameters
 int m, n, o;
@@ -93,6 +95,7 @@ string fnReSigma, fnImSigma;
 int b = 1;
 bool verbose = false;
 bool quiet_warnings = false;
+bool ignore_integration_errors = false;
 int key = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
@@ -124,6 +127,7 @@ void usage()
    cout << "Options:" << endl;
    cout << "-v : increase verbosity" << endl;
    cout << "-q : suppress non-fatal warnings" << endl;
+   cout << "-E, --ignore-integration-errors : continue with finite partial integration results" << endl;
    cout << "-i : interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
    cout << "-k : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
    cout << "-a : absolute error (default = 1e-7)" << endl;
@@ -183,14 +187,22 @@ double parse_epsilon_window_limit(const char *value)
 void cmd_line(int argc, char *argv[])
 {
    int c;
+   static const struct option long_options[] = {
+      {"ignore-integration-errors", no_argument, NULL, 'E'},
+      {NULL, 0, NULL, 0}
+   };
     
-   while ((c = getopt(argc, argv, "vqi:k:a:r:c:s:M:p:dfe:O:")) != -1) {
+   while ((c = getopt_long(argc, argv, "vqEi:k:a:r:c:s:M:p:dfe:O:",
+                           long_options, NULL)) != -1) {
       switch (c) {
       case 'v':
 	 verbose = true;
 	 break;
       case 'q':
 	 quiet_warnings = true;
+	 break;
+      case 'E':
+	 ignore_integration_errors = true;
 	 break;
       case 'i':
 	 b = atoi(optarg);
@@ -323,6 +335,8 @@ void cmd_line(int argc, char *argv[])
       cout << " Sigma: re=" << fnReSigma << ",im=" << fnImSigma << endl;
       cout << "i=" << b << " key=" << key << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
+      if (ignore_integration_errors)
+	 cout << "finite partial integration results are accepted" << endl;
       cout << "ImSigma clipping floor=" << sigma_clip << endl;
       if (epsilon_window_limit > 0.0)
 	 cout << "epsilon-window half-width M=" << epsilon_window_limit << endl;
@@ -347,6 +361,42 @@ void cmd_line(int argc, char *argv[])
 	 }
       }
    }
+}
+
+bool integration_result_acceptable(const string &operation,
+                                   int status, double result, double error)
+{
+   const bool finite_result = isfinite(result);
+   const bool valid_error = isfinite(error) && error >= 0.0;
+   if (status == GSL_SUCCESS && finite_result && valid_error)
+      return true;
+
+   ostringstream message;
+   message << setprecision(17) << operation;
+   if (status != GSL_SUCCESS)
+      message << ": " << gsl_strerror(status) << " (status=" << status << ")";
+   else if (!finite_result)
+      message << ": non-finite result";
+   else
+      message << ": invalid error estimate";
+   message << ", result=" << result << ", error=" << error;
+
+   if (!finite_result) {
+      cerr << "Error: " << message.str() << endl;
+      return false;
+   }
+
+   if (ignore_integration_errors) {
+      if (!quiet_warnings) {
+         static set<string> warned_operations;
+         if (warned_operations.insert(operation).second)
+            cerr << "Warning: ignoring integration error: " << message.str() << endl;
+      }
+      return true;
+   }
+
+   cerr << "Error: " << message.str() << endl;
+   return false;
 }
 
 // Faddeeva function
@@ -693,23 +743,33 @@ double J_0n (complex<double> OMEGA)
    F.params = params_ptr;
 
    const size_t ws_size = 1000;
-   
-   gsl_integration_workspace *w = gsl_integration_workspace_alloc (ws_size);
+
    gsl_set_error_handler_off();
+   gsl_integration_workspace *w = gsl_integration_workspace_alloc (ws_size);
+   if (w == NULL) {
+      cerr << "Unable to allocate custom-kernel integration workspace." << endl;
+      exit(EXIT_FAILURE);
+   }
 
-   double result_Phi, error_Phi;
+   double result_Phi = numeric_limits<double>::quiet_NaN();
+   double error_Phi = numeric_limits<double>::quiet_NaN();
 
-   gsl_integration_qag(&F,
-		       eps_min,
-		       eps_max,
-		       abs_error,
-		       rel_error,
-		       ws_size,
-		       key,
-		       w,
-		       &result_Phi,
-		       &error_Phi);
-   
+   const int status = gsl_integration_qag(&F,
+				          eps_min,
+				          eps_max,
+				          abs_error,
+				          rel_error,
+				          ws_size,
+				          key,
+				          w,
+				          &result_Phi,
+				          &error_Phi);
+   gsl_integration_workspace_free(w);
+
+   if (!integration_result_acceptable("Custom epsilon integration",
+                                      status, result_Phi, error_Phi))
+      exit(EXIT_FAILURE);
+
    return result_Phi;
 }
 
@@ -770,8 +830,8 @@ double J_0_optical(complex<double> z1, complex<double> z2)
       exit(EXIT_FAILURE);
    }
 
-   double result;
-   double error;
+   double result = numeric_limits<double>::quiet_NaN();
+   double error = numeric_limits<double>::quiet_NaN();
    vector<double> points;
    points.push_back(eps_min);
    points.push_back(eps_max);
@@ -802,17 +862,10 @@ double J_0_optical(complex<double> z1, complex<double> z2)
 					   &error);
    gsl_integration_workspace_free(work);
 
-   if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(result)) {
-      cerr << "Optical epsilon integration failed for z1=" << z1 << ", z2=" << z2
-	   << ": " << gsl_strerror(status) << endl;
+   if (!integration_result_acceptable("Optical epsilon integration",
+                                      status, result, error)) {
+      cerr << "Optical arguments were z1=" << z1 << ", z2=" << z2 << "." << endl;
       exit(EXIT_FAILURE);
-   }
-   if (status == GSL_EROUND && !quiet_warnings) {
-      static bool warning_emitted = false;
-      if (!warning_emitted) {
-	 cerr << "Warning: optical epsilon integration was limited by roundoff." << endl;
-	 warning_emitted = true;
-      }
    }
 
    return result;
@@ -1446,15 +1499,18 @@ bool integrate_gaussian_segment(gsl_function &function,
 {
    if (!(lower < upper))
       return true;
-   double value;
-   double error;
+   double value = numeric_limits<double>::quiet_NaN();
+   double error = numeric_limits<double>::quiet_NaN();
    const int status = gsl_integration_qag(&function, lower, upper, 0.0, 2.0e-13,
       300, GSL_INTEG_GAUSS61, workspace, &value, &error);
-   if (!isfinite(value) || !isfinite(error))
-      return false;
-   if (status != GSL_SUCCESS && status != GSL_EROUND) {
-      if (status != GSL_ESING || sum == 0.0L ||
-          fabsl(value) + error > 1.0e-12L*fabsl(sum))
+   const bool negligible_failure = (status == GSL_ESING || status == GSL_EROUND) &&
+      sum != 0.0L &&
+      isfinite(value) && isfinite(error) && error >= 0.0 &&
+      fabsl(value) + error <= 1.0e-12L*fabsl(sum);
+   if ((status != GSL_SUCCESS || !isfinite(value) || !isfinite(error) || error < 0.0) &&
+       !negligible_failure) {
+      if (!integration_result_acceptable("Gaussian epsilon integration",
+                                         status, value, error))
          return false;
    }
    sum += value;
@@ -1866,8 +1922,8 @@ double integrate_restricted_qag(gsl_function &function, double lower, double upp
                                 const char *description,
                                 long double result_scale = 1.0L)
 {
-   double result;
-   double error;
+   double result = numeric_limits<double>::quiet_NaN();
+   double error = numeric_limits<double>::quiet_NaN();
    const int status = gsl_integration_qag(&function, lower, upper, 0.0,
       restricted_relative_error(), RESTRICTED_WORKSPACE_SIZE, GSL_INTEG_GAUSS61,
       restricted_workspace(), &result, &error);
@@ -1877,18 +1933,22 @@ double integrate_restricted_qag(gsl_function &function, double lower, double upp
       // requested tolerance; otherwise require convergence of an independent rule.
       const restricted_fixed_result check =
          integrate_restricted_fixed_check(function, lower, upper);
-      verified_error = min(error,
-         max(abs(result - check.value), check.difference));
+      const double independent_error = max(abs(result - check.value), check.difference);
+      if (isfinite(independent_error) && independent_error >= 0.0)
+         verified_error = isfinite(error) && error >= 0.0
+            ? min(error, independent_error) : independent_error;
+      else
+         verified_error = numeric_limits<double>::infinity();
    }
    const bool roundoff_acceptable = status == GSL_EROUND &&
-      verified_error <= restricted_error_bound(result, result_scale);
-   if ((status != GSL_SUCCESS && !roundoff_acceptable) || !isfinite(result)) {
-      cerr << setprecision(17) << description << " failed on [" << lower << ", "
-           << upper << "]: " << gsl_strerror(status) << ", result=" << result
-           << ", error=" << error << ", verified error=" << verified_error << endl;
+       isfinite(result) && isfinite(verified_error) &&
+       verified_error <= restricted_error_bound(result, result_scale);
+   const bool successful = status == GSL_SUCCESS && isfinite(result) &&
+      isfinite(error) && error >= 0.0;
+   if (!successful && !roundoff_acceptable &&
+       !integration_result_acceptable(description, status, result, error))
       exit(EXIT_FAILURE);
-   }
-   if (status != GSL_SUCCESS)
+   if (roundoff_acceptable)
       warn_restricted_roundoff(description);
    return result;
 }
@@ -1954,8 +2014,8 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
                                  const char *description,
                                  long double result_scale = 1.0L)
 {
-   double result;
-   double error;
+   double result = numeric_limits<double>::quiet_NaN();
+   double error = numeric_limits<double>::quiet_NaN();
    const int status = gsl_integration_qagp(&function, &points[0], points.size(),
       0.0, restricted_relative_error(), RESTRICTED_WORKSPACE_SIZE,
       restricted_workspace(), &result, &error);
@@ -1969,17 +2029,22 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
          fine += check.value;
          check_difference += check.difference;
       }
-      verified_error = min(error, max(abs(result - fine), check_difference));
+      const double independent_error = max(abs(result - fine), check_difference);
+      if (isfinite(independent_error) && independent_error >= 0.0)
+         verified_error = isfinite(error) && error >= 0.0
+            ? min(error, independent_error) : independent_error;
+      else
+         verified_error = numeric_limits<double>::infinity();
    }
    const bool roundoff_acceptable = status == GSL_EROUND &&
-      verified_error <= restricted_error_bound(result, result_scale);
-   if ((status != GSL_SUCCESS && !roundoff_acceptable) || !isfinite(result)) {
-      cerr << setprecision(17) << description << " failed on [" << points.front() << ", "
-           << points.back() << "]: " << gsl_strerror(status)
-           << ", result=" << result << ", error=" << error << endl;
+       isfinite(result) && isfinite(verified_error) &&
+       verified_error <= restricted_error_bound(result, result_scale);
+   const bool successful = status == GSL_SUCCESS && isfinite(result) &&
+      isfinite(error) && error >= 0.0;
+   if (!successful && !roundoff_acceptable &&
+       !integration_result_acceptable(description, status, result, error))
       exit(EXIT_FAILURE);
-   }
-   if (status != GSL_SUCCESS)
+   if (roundoff_acceptable)
       warn_restricted_roundoff(description);
    return result;
 }
@@ -1993,41 +2058,28 @@ double integrate_restricted_piecewise_qag(gsl_function &function,
    double compensation = 0.0;
    double questionable_error = 0.0;
    int questionable_status = GSL_SUCCESS;
-   double questionable_lower = 0.0;
-   double questionable_upper = 0.0;
    for (size_t interval = 1; interval < points.size(); ++interval) {
-      double result;
-      double error;
+      double result = numeric_limits<double>::quiet_NaN();
+      double error = numeric_limits<double>::quiet_NaN();
       const int status = gsl_integration_qag(&function, points[interval - 1],
          points[interval], 0.0, restricted_relative_error(),
          RESTRICTED_WORKSPACE_SIZE, GSL_INTEG_GAUSS61,
          restricted_workspace(), &result, &error);
-      if (!isfinite(result) || !isfinite(error)) {
-         cerr << setprecision(17) << description << " failed on ["
-              << points[interval - 1] << ", " << points[interval] << "]: "
-              << gsl_strerror(status) << ", result=" << result
-              << ", error=" << error << endl;
-         exit(EXIT_FAILURE);
-      }
-      if (status != GSL_SUCCESS && status != GSL_EROUND) {
-         cerr << setprecision(17) << description << " failed on ["
-              << points[interval - 1] << ", " << points[interval] << "]: "
-              << gsl_strerror(status) << endl;
-         exit(EXIT_FAILURE);
-      }
-      if (status == GSL_EROUND) {
+      const bool valid_output = isfinite(result) && isfinite(error) && error >= 0.0;
+      if (status == GSL_EROUND && valid_output) {
          const restricted_fixed_result check = integrate_restricted_fixed_check(function,
              points[interval - 1], points[interval]);
          if (!isfinite(check.value) || !isfinite(check.difference)) {
-            cerr << setprecision(17) << description << " check failed on ["
-                 << points[interval - 1] << ", " << points[interval] << "]" << endl;
-            exit(EXIT_FAILURE);
+            if (!integration_result_acceptable(description, status, result, error))
+               exit(EXIT_FAILURE);
+         } else {
+            questionable_error += min(error,
+               max(abs(result - check.value), check.difference));
+            questionable_status = status;
          }
-         questionable_error += min(error,
-            max(abs(result - check.value), check.difference));
-         questionable_status = status;
-         questionable_lower = points[interval - 1];
-         questionable_upper = points[interval];
+      } else if (status != GSL_SUCCESS || !valid_output) {
+         if (!integration_result_acceptable(description, status, result, error))
+            exit(EXIT_FAILURE);
       }
       const double adjusted = result - compensation;
       const double updated = total + adjusted;
@@ -2035,15 +2087,18 @@ double integrate_restricted_piecewise_qag(gsl_function &function,
       total = updated;
    }
    if (questionable_status != GSL_SUCCESS &&
-        questionable_error > restricted_error_bound(total, result_scale)) {
-      cerr << setprecision(17) << description << " failed on ["
-           << questionable_lower << ", " << questionable_upper << "]: "
-           << gsl_strerror(questionable_status) << ", total=" << total
-           << ", uncertain error=" << questionable_error << endl;
-      exit(EXIT_FAILURE);
+         questionable_error > restricted_error_bound(total, result_scale)) {
+      if (!integration_result_acceptable(description, questionable_status,
+                                         total, questionable_error))
+         exit(EXIT_FAILURE);
+      questionable_status = GSL_SUCCESS;
    }
    if (questionable_status != GSL_SUCCESS)
       warn_restricted_roundoff(description);
+   if (!isfinite(total)) {
+      if (!integration_result_acceptable(description, GSL_SUCCESS, total, 0.0))
+         exit(EXIT_FAILURE);
+   }
    return total;
 }
 
@@ -2858,6 +2913,8 @@ bool restricted_outer_failure_acceptable(int status, gsl_function &function,
 {
    if (status != GSL_EROUND && status != GSL_ESING)
       return false;
+   if (!isfinite(result))
+      return false;
    double fine = 0.0;
    double check_difference = 0.0;
    for (size_t interval = 1; interval < points.size(); ++interval) {
@@ -2869,9 +2926,13 @@ bool restricted_outer_failure_acceptable(int status, gsl_function &function,
       check_difference += check.difference;
    }
    const double independent_error = max(abs(result - fine), check_difference);
-   const double verified_error = status == GSL_EROUND
+   if (!isfinite(independent_error) || independent_error < 0.0)
+      return false;
+   const double verified_error = status == GSL_EROUND &&
+      isfinite(error) && error >= 0.0
       ? min(error, independent_error) : independent_error;
-   return verified_error <= abs_error + rel_error*abs(result);
+   return isfinite(verified_error) &&
+      verified_error <= abs_error + rel_error*abs(result);
 }
 
 struct symmetric_outer_params {
@@ -3172,8 +3233,8 @@ void calc()
       cerr << "Unable to allocate frequency integration workspace." << endl;
       exit(EXIT_FAILURE);
    }
-   double result;
-   double error;
+   double result = numeric_limits<double>::quiet_NaN();
+   double error = numeric_limits<double>::quiet_NaN();
     
    gsl_function My_function;
    My_function.function = &integrand;
@@ -3226,28 +3287,35 @@ void calc()
 	 gsl_integration_workspace_free(restricted_work);
       const bool acceptable_failure = restricted_outer_failure_acceptable(
          status, *integration_function, points, result, error);
-      if ((status != GSL_SUCCESS && !acceptable_failure) || !isfinite(result)) {
+      const bool successful = status == GSL_SUCCESS && isfinite(result) &&
+         isfinite(error) && error >= 0.0;
+      if (!successful && !acceptable_failure &&
+          !integration_result_acceptable("Restricted frequency integration",
+                                         status, result, error)) {
 	 gsl_integration_workspace_free(work_ptr);
-	 cerr << setprecision(17) << "Restricted frequency integration failed: "
-	      << gsl_strerror(status) << ", result=" << result
-	      << ", error=" << error << endl;
 	 exit(EXIT_FAILURE);
       }
-      if (status != GSL_SUCCESS && !quiet_warnings)
+      if (acceptable_failure && !quiet_warnings)
 	 cerr << "Warning: restricted frequency integration returned "
 	      << gsl_strerror(status) << "; independent quadrature agreed within tolerance."
 	      << endl;
    } else {
-      gsl_integration_qag (&My_function,       // integrand function
-			  lower_limit,        // lower integration boundary
-			  upper_limit,        // upper integration boundary
-			  abs_error,          // preferred absolute error
-			  rel_error,          // preferred relative error
-			  ws_size,            // size of workspace
-			  key,                // Gauss-Kronrod rule
-			  work_ptr,           // integration workspace
-			  &result,            // final approximation
-			  &error);            // estimate of absolute error
+      const int status = gsl_integration_qag(
+	 &My_function,       // integrand function
+	 lower_limit,        // lower integration boundary
+	 upper_limit,        // upper integration boundary
+	 abs_error,          // preferred absolute error
+	 rel_error,          // preferred relative error
+	 ws_size,            // size of workspace
+	 key,                // Gauss-Kronrod rule
+	 work_ptr,           // integration workspace
+	 &result,            // final approximation
+	 &error);            // estimate of absolute error
+      if (!integration_result_acceptable("Frequency integration",
+                                         status, result, error)) {
+	 gsl_integration_workspace_free(work_ptr);
+	 exit(EXIT_FAILURE);
+      }
    }
    gsl_integration_workspace_free(work_ptr);
     
@@ -3291,8 +3359,7 @@ void calc_optical()
    gsl_set_error_handler_off();
    double result = 0.0;
    double error = 0.0;
-   bool roundoff_limited = false;
-   bool independent_verification = false;
+   bool independently_verified = false;
    const epsilon_interval interval = epsilon_window_limit > 0.0
       ? restricted_epsilon_interval(m)
       : epsilon_interval{0.0, 0.0, false, false};
@@ -3321,19 +3388,19 @@ void calc_optical()
 	 gsl_integration_workspace_free(restricted_work);
       const bool acceptable_failure = restricted_outer_failure_acceptable(
          status, F, points, result, error);
-      if ((status != GSL_SUCCESS && !acceptable_failure) || !isfinite(result)) {
+      const bool successful = status == GSL_SUCCESS && isfinite(result) &&
+         isfinite(error) && error >= 0.0;
+      if (!successful && !acceptable_failure &&
+          !integration_result_acceptable("Restricted optical frequency integration",
+                                         status, result, error)) {
 	 gsl_integration_workspace_free(work);
-	 cerr << setprecision(17) << "Restricted optical frequency integration failed: "
-	      << gsl_strerror(status) << ", result=" << result
-	      << ", error=" << error << endl;
 	 exit(EXIT_FAILURE);
       }
-      roundoff_limited = status != GSL_SUCCESS;
-      independent_verification = status != GSL_SUCCESS;
+      independently_verified = acceptable_failure;
    } else {
       for (int segment = 0; segment < 3; ++segment) {
-	 double segment_result;
-	 double segment_error;
+	 double segment_result = numeric_limits<double>::quiet_NaN();
+	 double segment_error = numeric_limits<double>::quiet_NaN();
 	 const int status = gsl_integration_qag(&F,
 						boundaries[segment],
 						boundaries[segment + 1],
@@ -3344,28 +3411,24 @@ void calc_optical()
 						work,
 						&segment_result,
 						&segment_error);
-	 if ((status != GSL_SUCCESS && status != GSL_EROUND) || !isfinite(segment_result)) {
+	 if (!integration_result_acceptable("Optical frequency integration",
+	                                    status, segment_result, segment_error)) {
 	    gsl_integration_workspace_free(work);
-	    cerr << "Optical frequency integration failed on ["
-		 << boundaries[segment] << ", " << boundaries[segment + 1]
-		 << "]: " << gsl_strerror(status) << endl;
 	    exit(EXIT_FAILURE);
 	 }
-	 if (status == GSL_EROUND)
-	    roundoff_limited = true;
 	 result += segment_result;
 	 error += segment_error;
       }
    }
    gsl_integration_workspace_free(work);
 
-   if (roundoff_limited && !quiet_warnings) {
-      if (independent_verification)
-         cerr << "Warning: restricted optical frequency integration required independent "
-              << "verification; estimated GSL error=" << error << "." << endl;
-      else
-         cerr << "Warning: optical frequency integration was limited by roundoff; estimated error="
-              << error << "." << endl;
+   if (!integration_result_acceptable("Optical frequency integration total",
+                                      GSL_SUCCESS, result, error))
+      exit(EXIT_FAILURE);
+
+   if (independently_verified && !quiet_warnings) {
+      cerr << "Warning: restricted optical frequency integration required independent "
+           << "verification; estimated GSL error=" << error << "." << endl;
    }
 
    const int width = 20;
