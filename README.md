@@ -129,7 +129,7 @@ $$
 with $z=\omega+\mu-\Sigma^R(\omega)$, and then performs the remaining
 frequency integral numerically.
 
-The current analytic kernels use $D=1$ and $\sigma=1$. Consequently,
+The current analytic kernels use $D=1$. Consequently,
 temperature, chemical potential, frequency, band energy, and self-energy must
 all be expressed in the same energy unit, normally the half-bandwidth. The
 conventions $k_B=\hbar=1$ are used.
@@ -470,7 +470,7 @@ over the self-energy input interval to lowercase `dos.dat`:
   Bethe_lattice_test/imsigma.dat
 ```
 
-The output is a physical interacting DOS only for `n=1` when the supplied
+The output is a physical interacting DOS (lattice spectral function) only for `n=1` when the supplied
 kernel is itself a noninteracting DOS. The positional `T` and `o` arguments are
 still syntactically required but are not used in this mode. `-d` overwrites
 `dos.dat` and cannot be combined with `-f`; it can be combined with `-e`.
