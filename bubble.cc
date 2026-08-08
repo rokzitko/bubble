@@ -27,6 +27,7 @@
 //            - support Fermi-level epsilon windows through -M
 // 8.8.2026 - strict integration error handling with -E compatibility mode
 //            - strict numeric parsing and negative positional arguments
+//            - enforce the ImSigma floor after interpolation
 
 #include <iostream>
 #include <iomanip>
@@ -84,7 +85,7 @@ gsl_interp_accel *acc_Phi;
 gsl_spline *spline_Phi;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.8";
+const string VERSION = "1.9";
 
 // Mandatory parameters
 int m, n, o;
@@ -135,7 +136,7 @@ void usage()
    cout << "-a A : nonnegative absolute error (default = 1e-7)" << endl;
    cout << "-r R : nonnegative relative error (default = 1e-8)" << endl;
    cout << "-c C : positive frequency cutoff in units of T (default = 15)" << endl;
-   cout << "-s FLOOR : positive ImSigma clipping floor (default = 1e-8)" << endl;
+   cout << "-s FLOOR : positive in-table ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
    cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
@@ -2721,13 +2722,20 @@ double J_m2_optical(complex<double> z1, complex<double> z2)
    return (cross.real() - same.real())/(2.0*M_PI*M_PI);
 }
 
+double clipped_im_sigma(double value)
+{
+   return value > -sigma_clip ? -sigma_clip : value;
+}
+
 complex<double> effective_frequency(double omega)
 {
    double sigma_re;
    double sigma_im;
    if (omega_min <= omega && omega <= omega_max) {
       sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
-      sigma_im = gsl_spline_eval(spline_imSigma, omega, acc_imSigma);
+      // Higher-order splines can overshoot causal input knots.
+      sigma_im = clipped_im_sigma(
+         gsl_spline_eval(spline_imSigma, omega, acc_imSigma));
    } else {
       sigma_im = -EPSILON;
       if (omega < omega_min)
@@ -3178,11 +3186,7 @@ void load_Sigma()
    // imSigma assumed to be zero outside the [omega_min:omega_max] interval
       
    for(int i=0; i<N; ++i) {
-      double val = data2[i][1];
-      // IMPORTANT: Perform clipping of Im Sigma !!
-      if (val > -sigma_clip)
-	 val = -sigma_clip;
-      imSigma.push_back(val);
+      imSigma.push_back(clipped_im_sigma(data2[i][1]));
    }
 
    particle_hole_symmetric_sigma = true;

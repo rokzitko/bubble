@@ -11,7 +11,8 @@ my $reference = "$Bin/cond.opt.geo-mma.dat";
 my $resigma = "$Bin/resigma.dat";
 my $imsigma = "$Bin/imsigma.dat";
 my $output = "$Bin/cond.opt.geo.dat";
-my $absolute_tolerance = 1e-12;
+# The frozen Mathematica interpolant clips knots but not inter-knot overshoot.
+my $absolute_tolerance = 3e-11;
 my $relative_tolerance = 3e-5;
 my $quiet = 0;
 my $write_output = 1;

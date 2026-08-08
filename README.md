@@ -318,7 +318,7 @@ Options:
 | `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
 | `-r R` | Nonnegative relative integration tolerance, default `1e-8` |
 | `-c C` | Positive frequency cutoff in units of temperature, default `15`; unused by `-d` |
-| `-s S` | Positive clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
+| `-s S` | Positive in-table clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
 | `-e E` | Multiply a tabulated kernel by $\epsilon^E$ for nonnegative `E`, default `0` |
@@ -363,8 +363,9 @@ $\mathrm{Im}\ \Sigma^R\le 0$ is required.
 
 The following numerical policies are important when interpreting results:
 
-- Input values with $\mathrm{Im}\ \Sigma>-S$ are replaced by $-S$,
-  including positive noncausal values. The `-s S` option selects this floor and
+- Input knots and evaluated in-table interpolated values with
+  $\mathrm{Im}\ \Sigma>-S$ are replaced by $-S$, including positive noncausal
+  values and cubic/Akima overshoot. The `-s S` option selects this floor and
   defaults to $S=10^{-8}$.
 - Outside the input interval, `ReSigma` is held at its nearest endpoint and
   `ImSigma` is set to $-10^{-10}$.
@@ -375,7 +376,9 @@ The following numerical policies are important when interpreting results:
 
 Interpolation mode `-i 1` is the conservative default for noisy DMFT data.
 Higher-order interpolation can be useful for smooth, well-resolved
-self-energies but may introduce artifacts when the grid is sparse.
+self-energies but may introduce artifacts when the grid is sparse. The
+post-interpolation imaginary-part floor preserves causality but can create
+continuous floor plateaus with derivative kinks.
 
 ## Restricted Epsilon Window
 
@@ -521,8 +524,8 @@ can be combined with `-e`.
 - A custom `m=0` kernel introduces a nested adaptive energy integral. The
   finite-frequency optical path adds linewidth-aware breakpoints around both
   spectral peaks.
-- Self-energy interpolation is selectable, while custom-kernel interpolation
-  is always Akima.
+- Self-energy interpolation is selectable, with the in-table imaginary part
+  clipped again after evaluation; custom-kernel interpolation is always Akima.
 - Every adaptive integration status and result is checked. Unverified failures
   are fatal by default; `-E` explicitly enables finite best-effort results.
 - In verbose mode, the reported error is GSL's estimate for the outer
@@ -616,8 +619,10 @@ output using:
 
 The script applies the benchmark's $2\pi$ normalization, `20T` cutoff, and
 $10^{-16}$ self-energy clipping floor. It accepts
-$|\Delta|\le10^{-12}+3\times10^{-5}|\mathrm{reference}|$, reports the largest
-errors, and exits unsuccessfully on any mismatch. `cond.opt.geo.mma` is retained
+$|\Delta|\le3\times10^{-11}+3\times10^{-5}|\mathrm{reference}|$, reports the
+largest errors, and exits unsuccessfully on any mismatch. The absolute allowance
+covers one tiny optical tail where the frozen Mathematica interpolant clips
+input knots but not noncausal inter-knot overshoot. `cond.opt.geo.mma` is retained
 only as provenance; validation reads `cond.opt.geo-mma.dat` and never launches
 Mathematica.
 
@@ -640,7 +645,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.8.
+current executable is authoritative for version 1.9.
 
 ## References
 

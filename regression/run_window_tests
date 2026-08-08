@@ -63,6 +63,22 @@ for my $index (-8 .. 8) {
 }
 my $curvature_resigma = write_table('curvature-resigma.dat', @curvature_re);
 my $curvature_imsigma = write_table('curvature-imsigma.dat', @curvature_im);
+my @causal_cubic_omega = (-1.5, -0.5, 0.5, 1.5);
+my $causal_cubic_resigma = write_table('causal-cubic-resigma.dat',
+    map { "$_ $_" } @causal_cubic_omega);
+my $causal_cubic_imsigma = write_table('causal-cubic-imsigma.dat',
+    '-1.5 -1', '-0.5 -1e-8', '0.5 -1e-8', '1.5 -1');
+my $causal_cubic_control = write_table('causal-cubic-control.dat',
+    map { "$_ -1e-8" } @causal_cubic_omega);
+my @causal_akima_omega = (-1.1, -0.1, 0.9, 1.9, 2.9);
+my $causal_akima_resigma = write_table('causal-akima-resigma.dat',
+    map { "$_ $_" } @causal_akima_omega);
+my $causal_akima_zero_resigma = write_table('causal-akima-zero-resigma.dat',
+    map { "$_ 0" } @causal_akima_omega);
+my $causal_akima_imsigma = write_table('causal-akima-imsigma.dat',
+    '-1.1 -1', '-0.1 -1e-8', '0.9 -0.1', '1.9 -1e-8', '2.9 -1');
+my $causal_akima_control = write_table('causal-akima-control.dat',
+    map { "$_ -1e-8" } @causal_akima_omega);
 
 sub run_bubble {
     my (@arguments) = @_;
@@ -264,6 +280,58 @@ for my $case (@close_crossing_cases) {
         close_enough($value, $expected, 1e-11, 1e-3),
         defined $value ? "value=$value" : $value_error);
 }
+
+my ($causal_cubic, $causal_cubic_error) = run_value(
+    '-i', '2', '-a', '1e-12', '-r', '1e-12',
+    1, 1, 0, 0.001, 0, $causal_cubic_resigma, $causal_cubic_imsigma);
+check_result('cubic ImSigma interpolation remains causal',
+    close_enough($causal_cubic, 0.9999993818293524, 2e-12, 2e-12),
+    defined $causal_cubic ? "value=$causal_cubic" : $causal_cubic_error);
+
+my ($causal_akima, $causal_akima_error) = run_value(
+    '-i', '3', '-a', '1e-12', '-r', '1e-12',
+    1, 1, 0, 0.0001, 0, $causal_akima_resigma, $causal_akima_imsigma);
+check_result('Akima ImSigma interpolation remains causal',
+    close_enough($causal_akima, 0.9999993818293523, 2e-12, 2e-12),
+    defined $causal_akima ? "value=$causal_akima" : $causal_akima_error);
+
+my ($causal_floor, $causal_floor_error) = run_value(
+    '-i', '2', '-s', '1e-4', '-a', '1e-12', '-r', '1e-12',
+    1, 1, 0, 0.001, 0, $causal_cubic_resigma, $causal_cubic_imsigma);
+check_result('interpolated ImSigma uses configured floor',
+    close_enough($causal_floor, 0.9999357262574704, 2e-12, 2e-12),
+    defined $causal_floor ? "value=$causal_floor" : $causal_floor_error);
+
+my @causal_restricted_arguments = (
+    '-q', '-i', '3', '-M', '0.005', '-a', '1e-9', '-r', '1e-10',
+    1, 2, 0, 0.001, 0, $causal_akima_zero_resigma,
+);
+my ($causal_restricted, $causal_restricted_error) = run_value(
+    @causal_restricted_arguments, $causal_akima_imsigma);
+my ($causal_restricted_control, $causal_restricted_control_error) = run_value(
+    @causal_restricted_arguments, $causal_akima_control);
+my $causal_restricted_expected = 15702454.24758367;
+check_result('restricted breakpoints use causal ImSigma floor',
+    close_enough($causal_restricted, $causal_restricted_expected, 2e-10, 1e-3) &&
+    close_enough($causal_restricted_control, $causal_restricted_expected, 2e-10, 1e-3),
+    defined $causal_restricted && defined $causal_restricted_control
+        ? "value=$causal_restricted control=$causal_restricted_control"
+        : "$causal_restricted_error $causal_restricted_control_error");
+
+my @causal_optical_arguments = (
+    '-q', '-i', '2', '-s', '1e-4', '-a', '1e-9', '-r', '1e-9',
+    '-O', '1e-4', 1, 2, 0, 0.001, 0, $causal_cubic_resigma,
+);
+my ($causal_optical, $causal_optical_error) = run_value(
+    @causal_optical_arguments, $causal_cubic_imsigma);
+my ($causal_optical_control, $causal_optical_control_error) = run_value(
+    @causal_optical_arguments, $causal_cubic_control);
+check_result('optical kernel uses causal ImSigma floor',
+    defined $causal_optical && $causal_optical > 0.0 &&
+    close_enough($causal_optical, $causal_optical_control, 2e-10, 2e-10),
+    defined $causal_optical && defined $causal_optical_control
+        ? "value=$causal_optical control=$causal_optical_control"
+        : "$causal_optical_error $causal_optical_control_error");
 
 my ($tangent, $tangent_error) = run_value(
     '-q', '-i', '1', '-M', '0.1', '-s', '1e-10',
