@@ -1,0 +1,91 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use File::Temp qw(tempdir tempfile);
+use FindBin qw($Bin);
+
+my $temporary = tempdir(CLEANUP => 1);
+my $runner = "$Bin/run_tests";
+
+sub write_file
+{
+    my ($path, $contents) = @_;
+    open my $output, '>', $path or die "Cannot create $path: $!\n";
+    print {$output} $contents or die "Cannot write $path: $!\n";
+    close $output or die "Cannot close $path: $!\n";
+}
+
+sub capture_command
+{
+    my (@command) = @_;
+    my ($stdout_file) = tempfile(DIR => $temporary);
+    my ($stderr_file) = tempfile(DIR => $temporary);
+    my $pid = fork();
+    defined $pid or die "Cannot fork: $!\n";
+    if ($pid == 0) {
+        open STDOUT, '>&', $stdout_file or die "Cannot redirect stdout: $!\n";
+        open STDERR, '>&', $stderr_file or die "Cannot redirect stderr: $!\n";
+        exec { $command[0] } @command;
+        die "Cannot execute $command[0]: $!\n";
+    }
+
+    waitpid($pid, 0);
+    my $status = $?;
+    seek $stdout_file, 0, 0 or die "Cannot rewind captured stdout: $!\n";
+    seek $stderr_file, 0, 0 or die "Cannot rewind captured stderr: $!\n";
+    local $/;
+    my $stdout = <$stdout_file> // '';
+    my $stderr = <$stderr_file> // '';
+    return ($status, $stdout, $stderr);
+}
+
+write_file("$temporary/reference_data_99.dat", "1 1 0 0.1 1.25\n");
+write_file("$temporary/resigma_99.dat", "-1 0\n1 0\n");
+write_file("$temporary/imsigma_99.dat", "-1 -0.1\n1 -0.1\n");
+
+my @cases = (
+    ['valid',          "print \"Result = 1.25\\n\";\n",                       1, qr/OK=1 FAILED=0/],
+    ['signal',         "kill 'TERM', \$\$;\nsleep 1;\n",                       0, qr/child terminated by signal/],
+    ['nonzero-exit',   "print \"Result = 1.25\\n\";\nexit 7;\n",              0, qr/child exited with status 7/],
+    ['silent',         "exit 0;\n",                                             0, qr/missing Result line/],
+    ['malformed',      "print \"Result = invalid\\n\";\n",                    0, qr/malformed Result line/],
+    ['overflow',       "print \"Result = 1e9999\\n\";\n",                     0, qr/unrepresentable Result value/],
+    ['underflow',      "print \"Result = 1e-9999\\n\";\n",                    0, qr/unrepresentable Result value/],
+    ['duplicate',      "print \"Result = 1.25\\nResult = 1.25\\n\";\n",     0, qr/multiple Result lines/],
+    ['stderr-warning', "print STDERR \"Warning: mock warning\\n\";\n"
+                       . "print \"Result = 1.25\\n\";\n",                    0, qr/unexpected stderr/],
+    ['stdout-warning', "print \"Warning: mock warning\\nResult = 1.25\\n\";\n", 0, qr/warning emitted on stdout/],
+    ['wrong-result',   "print \"Result = 2\\n\";\n",                          0, qr/result outside tolerance/],
+);
+
+my ($passed, $failed) = (0, 0);
+for my $case (@cases) {
+    my ($name, $body, $should_succeed, $expected_output) = @$case;
+    my $program = "$temporary/mock-$name";
+    write_file($program, "#!/usr/bin/env perl\nuse strict;\nuse warnings;\n$body");
+    chmod 0755, $program or die "Cannot make $program executable: $!\n";
+
+    my ($status, $stdout, $stderr) = capture_command(
+        $runner, '--program', $program, '--data-dir', $temporary, '99'
+    );
+    my $status_ok = $should_succeed ? $status == 0 : $status == 256;
+    my $summary_ok = $should_succeed
+      ? $stdout =~ /OK=1 FAILED=0/
+      : $stdout =~ /OK=0 FAILED=1/;
+    my $output_ok = $stdout =~ $expected_output;
+    my $stderr_ok = $stderr eq '';
+
+    if ($status_ok && $summary_ok && $output_ok && $stderr_ok) {
+        ++$passed;
+        print "RUNNER $name OK\n";
+    } else {
+        ++$failed;
+        print STDERR "RUNNER $name FAILED status=$status\n";
+        print STDERR "stdout: $stdout\n";
+        print STDERR "stderr: $stderr\n";
+    }
+}
+
+print "RUNNER TESTS OK=$passed FAILED=$failed\n";
+exit($failed == 0 ? 0 : 1);

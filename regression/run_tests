@@ -1,55 +1,269 @@
 #!/usr/bin/env perl
 
-$verbose = 0;
+use strict;
+use warnings;
+use Errno qw(ERANGE);
+use FindBin qw($Bin);
+use Getopt::Long qw(GetOptionsFromArray);
+use IO::Select;
+use IPC::Open3;
+use POSIX qw(isfinite strtod);
+use Symbol qw(gensym);
 
-$nr = shift;
-$suffix = shift;
-print "nr=$nr suffix=$suffix\n";
+my $verbose = 0;
+my $run_all = 0;
+my $program = "$Bin/../bubble";
+my $data_dir = $Bin;
+my $number_pattern = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
 
-open (F, "<reference_data_$nr$suffix.dat") or die;
+my @all_suites = (
+    [1,  '', 24], [1,  'a', 24], [1,  'b', 24], [1,  'c', 24], [1,  'd', 24],
+    [2,  '', 24], [3,  '', 24], [4,  '', 24], [5,  '', 24],
+    [11, '', 24], [11, 'a', 24], [11, 'b', 24],
+    [21, '', 12], [21, 'a', 12], [21, 'b', 12], [21, 'c', 12],
+    [22, '', 12], [22, 'a', 12], [22, 'b', 12], [22, 'c', 12],
+);
 
-$ctrok = 0;
-$ctrfailed = 0;
-
-while (<F>) {
-    ($m,$n,$o,$T,$expected) = split;
-    $mu = 0.0;
-    
-    # -i 1
-    open (R, "../bubble -i 1 -v -c 15 -a 1e-7 -r 1e-8 -k 1 $m $n $o $T $mu resigma_$nr.dat imsigma_$nr.dat |") or die;
-    while (<R>) {
-       print if $verbose;
-	if (/Result\s*=\s*(\S*)/) {
-	    $result = $1;
-	    $diff = $result-$expected;
-	    
-	    if (abs($expected) < 1e-6) {
-	      $ok = abs($diff) < 1e-4; # absolute error
-	    } else {
-	      $ok = abs($diff)/abs($expected) < 1e-4; # relative error
-	    }
-	    
-	    if ($ok) {
-		$ctrok++;
-		$status = "OK";
-	    } else {
-		$ctrfailed++;
-		$status = " ** FAILED **";
-	    }
-	    
-	}
-    }
-    close R;
-    print "m=$m n=$n o=$o T=$T expected=$expected result=$result diff=$diff $status\n";
-    if ($verbose) {
-      print "\n";
-    }
-    
-#    exit(1);
+sub usage
+{
+    die "Usage: $0 [--verbose] [--program PATH] [--data-dir DIR] <number> [suffix]\n"
+      . "       $0 [--verbose] [--program PATH] [--data-dir DIR] --all\n";
 }
 
-print "OK=$ctrok FAILED=$ctrfailed\n";
+Getopt::Long::Configure('no_auto_abbrev', 'no_ignore_case');
+GetOptionsFromArray(
+    \@ARGV,
+    'all'        => \$run_all,
+    'verbose'    => \$verbose,
+    'program=s'  => \$program,
+    'data-dir=s' => \$data_dir,
+) or usage();
 
-	    
-    
-    
+my @suites;
+if ($run_all) {
+    @ARGV == 0 or usage();
+    @suites = @all_suites;
+} else {
+    @ARGV >= 1 && @ARGV <= 2 or usage();
+    my ($number, $suffix) = @ARGV;
+    $number =~ /\A\d+\z/ or die "Invalid suite number '$number'.\n";
+    $suffix = '' unless defined $suffix;
+    $suffix =~ /\A[a-z0-9]*\z/ or die "Invalid suite suffix '$suffix'.\n";
+    @suites = ([$number, $suffix, undef]);
+}
+
+sub parse_finite_number
+{
+    my ($token) = @_;
+    return undef unless defined $token && $token =~ /\A$number_pattern\z/;
+    local $! = 0;
+    my ($value, $unparsed) = strtod($token);
+    return undef if $! == ERANGE || $unparsed != 0 || !isfinite($value);
+    return $value;
+}
+
+sub read_reference_rows
+{
+    my ($path, $expected_count) = @_;
+    open my $input, '<', $path or die "Cannot open reference table $path: $!\n";
+
+    my @rows;
+    my $line_number = 0;
+    while (my $line = <$input>) {
+        ++$line_number;
+        $line =~ s/#.*//;
+        next if $line =~ /\A\s*\z/;
+        my @fields = split ' ', $line;
+        @fields == 5
+          or die "$path:$line_number: expected exactly five columns\n";
+
+        my ($m, $n, $o, $temperature, $expected_token) = @fields;
+        $m =~ /\A[+-]?\d+\z/
+          or die "$path:$line_number: invalid integer m '$m'\n";
+        $n =~ /\A[+-]?\d+\z/
+          or die "$path:$line_number: invalid integer n '$n'\n";
+        $o =~ /\A[+-]?\d+\z/
+          or die "$path:$line_number: invalid integer o '$o'\n";
+        defined parse_finite_number($temperature)
+          or die "$path:$line_number: invalid finite temperature '$temperature'\n";
+        my $expected = parse_finite_number($expected_token);
+        defined $expected
+          or die "$path:$line_number: invalid finite expected value '$expected_token'\n";
+
+        push @rows, {
+            m => $m,
+            n => $n,
+            o => $o,
+            temperature => $temperature,
+            expected_token => $expected_token,
+            expected => $expected,
+        };
+    }
+    close $input or die "Cannot close reference table $path: $!\n";
+    @rows or die "Reference table $path contains no data rows.\n";
+
+    if (defined $expected_count && @rows != $expected_count) {
+        die "Reference table $path has " . scalar(@rows)
+          . " rows; expected $expected_count.\n";
+    }
+    return @rows;
+}
+
+sub capture_command
+{
+    my (@command) = @_;
+    my $stdin = gensym;
+    my $stdout = gensym;
+    my $stderr = gensym;
+    my $pid;
+    my $open_error;
+    eval {
+        $pid = open3($stdin, $stdout, $stderr, @command);
+        1;
+    } or $open_error = $@ || 'unknown execution error';
+    return (undef, '', '', $open_error) if defined $open_error;
+    close $stdin;
+
+    my %captured = (stdout => '', stderr => '');
+    my %stream_name = (
+        fileno($stdout) => 'stdout',
+        fileno($stderr) => 'stderr',
+    );
+    my $selector = IO::Select->new($stdout, $stderr);
+    my $read_error;
+    while (my @ready = $selector->can_read()) {
+        for my $handle (@ready) {
+            my $fd = fileno($handle);
+            my $bytes = sysread($handle, my $chunk, 8192);
+            if (!defined $bytes) {
+                $read_error = "unable to read $stream_name{$fd}: $!";
+                $selector->remove($handle);
+                close $handle;
+            } elsif ($bytes == 0) {
+                $selector->remove($handle);
+                close $handle;
+            } else {
+                $captured{$stream_name{$fd}} .= $chunk;
+            }
+        }
+    }
+
+    waitpid($pid, 0);
+    return ($?, $captured{stdout}, $captured{stderr}, $read_error);
+}
+
+sub display_output
+{
+    my ($output) = @_;
+    $output =~ s/\\/\\\\/g;
+    $output =~ s/\r/\\r/g;
+    $output =~ s/\n/\\n/g;
+    return length($output) > 500 ? substr($output, 0, 500) . '...' : $output;
+}
+
+sub parse_result
+{
+    my ($stdout) = @_;
+    my @result_lines = grep { /^\s*Result\s*=/ } split /\n/, $stdout;
+    return (undef, undef, 'missing Result line') unless @result_lines;
+    return (undef, undef, 'multiple Result lines') unless @result_lines == 1;
+
+    my $line = $result_lines[0];
+    $line =~ s/\r\z//;
+    return (undef, undef, "malformed Result line '" . display_output($line) . "'")
+      unless $line =~ /\A\s*Result\s*=\s*($number_pattern)\s*\z/;
+    my $token = $1;
+    my $result = parse_finite_number($token);
+    return (undef, undef, "unrepresentable Result value '$token'")
+      unless defined $result;
+    return ($result, $token, undef);
+}
+
+sub child_failure
+{
+    my ($status) = @_;
+    return undef if defined $status && $status == 0;
+    return 'child status unavailable' unless defined $status;
+    return 'child failed to execute' if $status == -1;
+    if ($status & 127) {
+        return 'child terminated by signal ' . ($status & 127)
+          . (($status & 128) ? ' (core dumped)' : '');
+    }
+    return 'child exited with status ' . ($status >> 8);
+}
+
+sub run_suite
+{
+    my ($number, $suffix, $expected_count) = @_;
+    my $label = "$number$suffix";
+    my $reference_path = "$data_dir/reference_data_$label.dat";
+    my $resigma_path = "$data_dir/resigma_$number.dat";
+    my $imsigma_path = "$data_dir/imsigma_$number.dat";
+    my @rows = read_reference_rows($reference_path, $expected_count);
+
+    print "nr=$number suffix=$suffix\n";
+    my ($ok_count, $failed_count) = (0, 0);
+    for my $row (@rows) {
+        my @command = (
+            $program,
+            '-i', '1', '-v', '-c', '15', '-a', '1e-7', '-r', '1e-8', '-k', '1',
+            $row->{m}, $row->{n}, $row->{o}, $row->{temperature}, '0.0',
+            $resigma_path, $imsigma_path,
+        );
+        my ($status, $stdout, $stderr, $capture_error) = capture_command(@command);
+        print $stdout if $verbose;
+        print STDERR $stderr if $verbose && length $stderr;
+
+        my @failures;
+        push @failures, $capture_error if defined $capture_error;
+        my $child_failure = child_failure($status);
+        push @failures, $child_failure if defined $child_failure;
+        push @failures, 'unexpected stderr: ' . display_output($stderr)
+          if length $stderr;
+        push @failures, 'warning emitted on stdout'
+          if $stdout =~ /^\s*Warning:/mi;
+
+        my ($result, $result_token, $result_error) = parse_result($stdout);
+        push @failures, $result_error if defined $result_error;
+
+        my $diff;
+        if (defined $result && !@failures) {
+            $diff = $result - $row->{expected};
+            my $within_tolerance = abs($row->{expected}) < 1e-6
+              ? abs($diff) < 1e-4
+              : abs($diff) / abs($row->{expected}) < 1e-4;
+            push @failures, 'result outside tolerance' unless $within_tolerance;
+        }
+
+        if (@failures) {
+            ++$failed_count;
+        } else {
+            ++$ok_count;
+        }
+        my $display_result = defined $result_token ? $result_token : '<invalid>';
+        my $display_diff = defined $diff ? sprintf('%.17g', $diff) : '<invalid>';
+        my $status_text = @failures ? 'FAILED: ' . join('; ', @failures) : 'OK';
+        print "m=$row->{m} n=$row->{n} o=$row->{o} T=$row->{temperature} "
+          . "expected=$row->{expected_token} result=$display_result "
+          . "diff=$display_diff $status_text\n";
+        print "\n" if $verbose;
+    }
+
+    print "OK=$ok_count FAILED=$failed_count\n";
+    return ($ok_count, $failed_count, scalar @rows);
+}
+
+my ($total_ok, $total_failed, $total_rows) = (0, 0, 0);
+for my $suite (@suites) {
+    my ($ok, $failed, $rows) = run_suite(@$suite);
+    $total_ok += $ok;
+    $total_failed += $failed;
+    $total_rows += $rows;
+}
+
+if ($run_all) {
+    $total_rows == 384
+      or die "Internal manifest error: processed $total_rows rows; expected 384.\n";
+    print "ALL OK=$total_ok FAILED=$total_failed ROWS=$total_rows\n";
+}
+exit($total_failed == 0 ? 0 : 1);

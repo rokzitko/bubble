@@ -597,22 +597,24 @@ self-energy spline.
 
 The repository contains complementary DC, clean-kernel, restricted-window, and
 optical checks.
-`make check` runs legacy suite 1, the audited clean-limit legacy suites, the
-pointwise kernel suites, restricted-window command tests, and both optical
-checks without invoking Mathematica.
+`make check` runs strict runner self-tests, all 384 legacy rows, the pointwise
+kernel suites, restricted-window command tests, and both optical checks without
+invoking Mathematica.
 
 ### Legacy Regression Data
 
 `regression/` contains constant and linearly varying self-energies together
 with historical reference values over a range of temperatures and kernel
-indices. A representative suite is run with:
+indices. Run the complete manifest with:
 
 ```bash
 cd regression
-./run_tests 1
+./run_tests --all
 ```
 
-The current implementation passes all 384 legacy suite rows. References in
+To run one table, pass its suite number and optional suffix, for example
+`./run_tests 22 b`. The runner validates child status and output and exits
+nonzero on any failed row. References in
 clean-limit suites `5` and `22*` were independently regenerated for the finite
 integration interval used by `run_tests`; parity-forced zeros were preserved
 exactly.

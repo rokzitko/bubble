@@ -12,6 +12,14 @@ The optional suffix selects another reference table while retaining the base
 self-energy files. For example, `./run_tests 22 b` reads
 `reference_data_22b.dat`, `resigma_22.dat`, and `imsigma_22.dat`.
 
+`./run_tests --all` executes an explicit 20-table manifest containing all 384
+legacy rows and verifies each table's row count. The runner invokes `bubble`
+without a shell and requires a successful child exit, empty stderr, no warning,
+and exactly one finite `Result` line for every row. Any protocol or numerical
+failure produces a nonzero runner exit. `run_runner_tests` exercises these
+contracts with temporary mock children, including signaled, silent, malformed,
+warning-producing, and numerically wrong processes.
+
 The suite 5 and 22* references were independently regenerated at 70-100
 decimal digits for the exact finite-cutoff command used by `run_tests`. The
 energy integral used epsilon = x + gamma tan(theta), and the outer integral was

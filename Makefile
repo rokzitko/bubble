@@ -29,10 +29,8 @@ $(CLEAN_KERNEL_TEST): regression/clean_kernel_tests.cc bubble_test.o Faddeeva.o
 	$(CXX) $(CPPFLAGS) $(GSL_CFLAGS) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS) $(GSL_LIBS)
 
 check: $(TARGET) $(CLEAN_KERNEL_TEST)
-	@output="$$(cd regression && ./run_tests 1)"; \
-	printf '%s\n' "$$output"; \
-	printf '%s\n' "$$output" | grep -Fq 'OK=24 FAILED=0'
-	@cd regression && perl ./run_clean_legacy_tests
+	@cd regression && ./run_runner_tests
+	@cd regression && ./run_tests --all
 	@cd regression && ./run_optical_tests
 	@cd regression && ./clean_kernel_tests
 	@cd regression && ./run_input_tests
