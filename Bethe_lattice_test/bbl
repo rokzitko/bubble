@@ -16,12 +16,14 @@ my $factor = 2*pi;
 # (2/pi) from the kernel Phi = 2/pi Sqrt[...]
 # pi^2 from the difference between A(w)=-1/Pi Im[..] and a(w)=-Im[..]
 
+my $param = "-E -i 3 -k 6";
+
 my $res;
-$res = `bubble 5 2 0 $T 0 resigma.dat imsigma.dat`;
+$res = `bubble $param 5 2 0 $T 0 resigma.dat imsigma.dat`;
 my $a0 = $factor*$res;
-$res = `bubble 5 2 1 $T 0 resigma.dat imsigma.dat`;
+$res = `bubble $param 5 2 1 $T 0 resigma.dat imsigma.dat`;
 my $a1 = $factor*$res;
-$res = `bubble 5 2 2 $T 0 resigma.dat imsigma.dat`;
+$res = `bubble $param 5 2 2 $T 0 resigma.dat imsigma.dat`;
 my $a2 = $factor*$res;
 
 my $A0 = $a0*$T;

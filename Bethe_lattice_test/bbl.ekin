@@ -14,8 +14,10 @@ chomp(my $T = `getparam T param.loop`);
 my $factor = 2/pi;
 # Bethe DOS normalization. J_41 already includes A(w)=-Im[G]/pi.
 
+my $param = "-E -i 3 -k 6";
+
 my $res;
-$res = `bubble -f 4 1 0 $T 0 resigma.dat imsigma.dat`;
+$res = `bubble $param -f 4 1 0 $T 0 resigma.dat imsigma.dat`;
 
 my $ekin = $factor*$res;
 print "$ekin\n";
