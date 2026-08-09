@@ -2,20 +2,19 @@
 
 `bubble` is a compact C++ program for evaluating real-frequency bubble
 integrals from a local DMFT self-energy. For a set of commonly used band and
-transport kernels, the unrestricted band-energy integral is evaluated with
+transport kernels, the band-energy integral is evaluated with
 conditioned analytic formulas and numerical fallbacks, leaving a
 one-dimensional adaptive quadrature over frequency. Restricted and tabulated
 kernels use a nested band-energy quadrature.
 
-This is particularly useful in the low-temperature Fermi-liquid regime, where
+This code is particularly useful in the low-temperature Fermi-liquid regime, where
 the spectral function becomes narrow and a direct two-dimensional integration
 over band energy and frequency can become slow or inaccurate.
 
 The program is intended for single-band calculations with a local scalar
 self-energy and no vertex corrections. It computes dimensionless transport
-moments, not conductivities in SI units. Charge, spin/orbital degeneracy,
-velocity, volume, lattice-spacing, and other model-dependent prefactors must be
-supplied separately.
+moments. Charge, spin/orbital degeneracy, velocity, volume, lattice-spacing, 
+and other model-dependent prefactors must be supplied separately.
 
 ## Features
 
@@ -725,9 +724,7 @@ To run one table, pass its suite number and optional suffix, for example
 the broader `n=0,1,2,3` set. The runner validates child status and output and
 exits nonzero on any failed row. It accepts
 $|\Delta|<10^{-4}$ when $|R|<10^{-6}$ and
-$|\Delta|/|R|<10^{-4}$ otherwise. References in clean-limit suites `5` and
-`22*` were regenerated at high precision for the finite interval used by
-`run_tests`; parity-forced zeros were preserved exactly.
+$|\Delta|/|R|<10^{-4}$ otherwise.
 
 ### Clean-Kernel Regression
 
