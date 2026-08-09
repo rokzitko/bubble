@@ -102,9 +102,9 @@ $$
 z(\omega)=x(\omega)+i\gamma(\omega)
 =\omega+\mu-\Sigma^R_{\mathrm{eff}}(\omega),
 \qquad
-x(\omega)=\omega+\mu-\mathrm{Re}\,\Sigma^R(\omega),
+x(\omega)=\omega+\mu-\mathrm{Re}\thinspace{}\Sigma^R(\omega),
 \qquad
-\gamma(\omega)=-\mathrm{Im}\,\Sigma^R_{\mathrm{eff}}(\omega)>0.
+\gamma(\omega)=-\mathrm{Im}\thinspace{}\Sigma^R_{\mathrm{eff}}(\omega)>0.
 $$
 
 The Green's function and spectral function at band energy $\epsilon$ are
@@ -120,7 +120,7 @@ For the selected energy domain $\mathcal E$, `bubble` first evaluates
 
 $$
 J_{mn}(z;\mathcal E)=
-\int_{\mathcal E}d\epsilon\,\Phi_m(\epsilon)[A_\epsilon(z)]^n.
+\int_{\mathcal E}d\epsilon\thinspace{}\Phi_m(\epsilon)[A_\epsilon(z)]^n.
 $$
 
 For $n=0$, this notation means the explicitly defined kernel mass
@@ -128,8 +128,8 @@ $J_{m0}=\int_{\mathcal E}\Phi_m(\epsilon)d\epsilon$, independent of $z$; it
 does not rely on an $A^0$ convention. The ordinary transport mode then computes
 
 $$
-I^{\mathrm{DC}}_{mno}=\int_{-CT}^{CT}d\omega\,
-[-f'(\omega)]\,\omega^oJ_{mn}[z(\omega);\mathcal E],
+I^{\mathrm{DC}}_{mno}=\int_{-CT}^{CT}d\omega\thinspace{}
+[-f'(\omega)]\thinspace{}\omega^oJ_{mn}[z(\omega);\mathcal E],
 $$
 
 where
@@ -143,8 +143,8 @@ $$
 and $C$ is the cutoff selected by `-c`. With `-f`, the outer integral instead is
 
 $$
-I^{\mathrm{occ}}_{mno}=\int_{\omega_{\min}}^{CT}d\omega\,
-f(\omega)\,\omega^oJ_{mn}[z(\omega);\mathcal E].
+I^{\mathrm{occ}}_{mno}=\int_{\omega_{\min}}^{CT}d\omega\thinspace{}
+f(\omega)\thinspace{}\omega^oJ_{mn}[z(\omega);\mathcal E].
 $$
 
 The integration frequency $\omega$ is measured relative to the Fermi level;
@@ -297,8 +297,8 @@ have support on the full real line. Built-ins support `n=0,1,2,3`. A tabulated
 No hidden density-of-states or transport normalization is included. For
 example, the normalized Bethe benchmark transport function is
 $\Phi_{\mathrm{benchmark}}=(2/\pi)(1-\epsilon^2)^{3/2}$. If a reference formula
-uses $[\mathrm{Im}\,G]^2$ rather than
-$A^2=[-\mathrm{Im}\,G/\pi]^2$, the combined conversion from the built-in `m=5`
+uses $[\mathrm{Im}\thinspace{}G]^2$ rather than
+$A^2=[-\mathrm{Im}\thinspace{}G/\pi]^2$, the combined conversion from the built-in `m=5`
 result is $(2/\pi)\pi^2=2\pi$. Odd kernels are useful in Hall and
 occupied-energy moments.
 
@@ -415,14 +415,14 @@ increasing frequency grids. Generate or copy the frequency column once rather
 than independently rounding it in the two files. The selected interpolation
 requires at least two rows for linear mode, three for cubic-spline mode, and
 five for Akima mode. Physical retarded input should satisfy
-$\mathrm{Im}\,\Sigma^R\le0$, but the program corrects rather than rejects
+$\mathrm{Im}\thinspace{}\Sigma^R\le0$, but the program corrects rather than rejects
 positive values. For clipping floor $S$, it constructs
 
 $$
 \widetilde{\Sigma''}_i=\min(\Sigma''_i,-S),
 \qquad
 \Sigma''_{\mathrm{eff}}(\omega)=
-\min\!\left(\operatorname{interp}\{\widetilde{\Sigma''}_i\},-S\right),
+\min\left(\mathop{\mathrm{interp}}\lbrace\widetilde{\Sigma''}_i\rbrace,-S\right),
 $$
 
 so the spectral linewidth obeys $\gamma=-\Sigma''_{\mathrm{eff}}\ge S$ even
@@ -446,32 +446,34 @@ frequency-dependent self-energy and are exempt from this coverage check. The
 test is exact and includes both endpoints, so a table endpoint even one
 binary64 step short is insufficient. Both files remain mandatory for `n=0` and
 are still parsed, grid-matched, and used to construct interpolants. A positive
-`-M` also evaluates $\mathrm{Re}\,\Sigma(0)$ and therefore requires the table to
+`-M` also evaluates $\mathrm{Re}\thinspace{}\Sigma(0)$ and therefore requires the table to
 contain zero; if the resulting epsilon intersection is empty, no additional
 frequency coverage is required.
 
 The following numerical policies are important when interpreting results:
 
-- The `-s S` option selects the in-table clipping floor and defaults to
-  $S=10^{-8}$.
-- `--allow-legacy-self-energy-extrapolation` explicitly restores the historical
-  exterior model
+The `-s S` option selects the in-table clipping floor and defaults to
+$S=10^{-8}$. `--allow-legacy-self-energy-extrapolation` explicitly restores
+the historical exterior model:
 
-  $$
-  \Sigma^R_{\mathrm{ext}}(\omega)=
-  \begin{cases}
-  \mathrm{Re}\,\Sigma^R(\omega_{\min})-i10^{-10},&\omega<\omega_{\min},\\
-  \mathrm{Re}\,\Sigma^R(\omega_{\max})-i10^{-10},&\omega>\omega_{\max}.
-  \end{cases}
-  $$
+```math
+\Sigma^R_{\mathrm{ext}}(\omega)=
+\mathrm{Re}\thinspace{}\Sigma^R(\omega_{\min})-i10^{-10}
+\quad(\omega<\omega_{\min}),
+```
 
-  The fixed exterior width is not controlled by `-s`. The program warns once
-  and splits quadrature at every unshifted and optical-shifted table boundary;
-  `-q` suppresses this warning.
-- The default Fermi-derivative integration interval is
-  $[-30T,30T]$. Increase `-c` if broader thermal tails matter.
-- Optical mode extends the lower endpoint by `OMEGA` and evaluates the shifted
-  propagator up to `cutoff*T+OMEGA`.
+```math
+\Sigma^R_{\mathrm{ext}}(\omega)=
+\mathrm{Re}\thinspace{}\Sigma^R(\omega_{\max})-i10^{-10}
+\quad(\omega>\omega_{\max}).
+```
+
+The fixed exterior width is not controlled by `-s`. The program warns once and
+splits quadrature at every unshifted and optical-shifted table boundary; `-q`
+suppresses this warning. The default Fermi-derivative integration interval is
+$[-30T,30T]$; increase `-c` if broader thermal tails matter. Optical mode extends
+the lower endpoint by `OMEGA` and evaluates the shifted propagator up to
+`cutoff*T+OMEGA`.
 
 Interpolation mode `-i 1` is the conservative default for noisy DMFT data.
 Higher-order interpolation can be useful for smooth, well-resolved
@@ -484,7 +486,7 @@ continuous floor plateaus with derivative kinks.
 Define the interacting Fermi-level band energy
 
 $$
-\epsilon_F=\mu-\mathrm{Re}\,\Sigma^R(0).
+\epsilon_F=\mu-\mathrm{Re}\thinspace{}\Sigma^R(0).
 $$
 
 The energy domain selected by `-M M` is
@@ -609,7 +611,7 @@ example:
 `-d` bypasses the outer frequency integration and writes 10,001 pairs
 
 $$
-\{\omega_i,J_{0n}(\omega_i)\}
+\lbrace\omega_i,J_{0n}(\omega_i)\rbrace
 $$
 
 over the self-energy input interval to lowercase `dos.dat`:
@@ -639,9 +641,9 @@ The analytic starting point is the Hilbert transform
 
 $$
 H_m(z)=\int_{\mathcal E_m}
-\frac{\Phi_m(\epsilon)}{z-\epsilon}\,d\epsilon,
+\frac{\Phi_m(\epsilon)}{z-\epsilon}\thinspace{}d\epsilon,
 \qquad
-J_{m1}(z)=-\frac{\mathrm{Im}\,H_m(z)}{\pi}.
+J_{m1}(z)=-\frac{\mathrm{Im}\thinspace{}H_m(z)}{\pi}.
 $$
 
 Full finite-band `n=2,3` kernels use factored long-double expressions near the
@@ -665,8 +667,8 @@ Then
 
 $$
 K_m(z_1,z_2)=
-\frac{\mathrm{Re}\,\mathcal D_m(z_1^*,z_2)
--\mathrm{Re}\,\mathcal D_m(z_1,z_2)}{2\pi^2}.
+\frac{\mathrm{Re}\thinspace{}\mathcal D_m(z_1^*,z_2)
+-\mathrm{Re}\thinspace{}\mathcal D_m(z_1,z_2)}{2\pi^2}.
 $$
 
 Near-coincident arguments use a derivative limit rather than subtracting two
@@ -869,7 +871,7 @@ A dedicated software DOI is not currently available.
 
 ## Authors
 
-- **Amina Alic**: original implementation
+- **Amina Alić**: original implementation
 - **Rok Žitko**: method notes and subsequent development
 
 Issues and pull requests that improve numerical robustness, validation, or

@@ -1,5 +1,5 @@
 // Transport moments from single-particle bubble diagrams.
-// Original implementation: Amina Alic (2017); subsequent development: R. Zitko.
+// Original implementation: Amina Alić (2017); subsequent development: R. Zitko.
 //
 // The current equations, conventions, and numerical methods are documented in
 // README.md.  The material under notes/ records the historical derivation.
