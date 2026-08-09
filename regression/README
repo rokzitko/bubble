@@ -1,12 +1,15 @@
-Legacy outer-integral regression suites
+Regression and numerical-reference tests
 
-1 - constant Im, Re = 0
-2 - linear Im, Re = 0
-3 - constant Im and Re
-4 - linear Im and Re
-5 - small constant Im, linear Re
-21 - small Im = -0.01
-22 - small Im = -0.001
+Legacy outer-integral suites
+
+1  - constant ImSigma, ReSigma = 0
+2  - linear ImSigma, ReSigma = 0
+3  - constant ImSigma and ReSigma
+4  - linear ImSigma and ReSigma
+5  - small constant ImSigma, linear ReSigma
+11 - ImSigma = -0.01, ReSigma = 0, including n = 0,1,2,3
+21 - small ImSigma = -0.01
+22 - small ImSigma = -0.001
 
 The optional suffix selects another reference table while retaining the base
 self-energy files. For example, `./run_tests 22 b` reads
@@ -15,31 +18,72 @@ self-energy files. For example, `./run_tests 22 b` reads
 `./run_tests --all` executes an explicit 20-table manifest containing all 384
 legacy rows and verifies each table's row count. The runner invokes `bubble`
 without a shell and requires a successful child exit, empty stderr, no warning,
-and exactly one finite `Result` line for every row. Any protocol or numerical
-failure produces a nonzero runner exit. `run_runner_tests` exercises these
-contracts with temporary mock children, including signaled, silent, malformed,
-warning-producing, and numerically wrong processes.
+and exactly one finite `Result` line for every row. It accepts
 
-The suite 5 and 22* references were independently regenerated at 70-100
-decimal digits for the exact finite-cutoff command used by `run_tests`. The
-energy integral used epsilon = x + gamma tan(theta), and the outer integral was
-performed over omega/T in [-15,15]. Exact Hilbert-transform evaluations and
-independent quadrature agreed on the nonzero values; all parity-forced zeros
-remain exact.
+    |value-reference| < 1e-4                    if |reference| < 1e-6,
+    |value-reference|/|reference| < 1e-4        otherwise.
 
-Pointwise clean-limit tests are in `clean_kernel_references.dat`. Their optional
-160-decimal-digit mpmath generator is `generate_clean_kernel_references.py`.
-They cover built-in powers `n=1,2,3`, exact spatial and linewidth parity,
-finite-band edges and tails, and Gaussian pole/tail transitions.
+Any protocol or numerical failure produces a nonzero runner exit.
+`run_runner_tests` exercises these contracts with temporary mock children,
+including signaled, silent, malformed, warning-producing, and numerically wrong
+processes.
 
-Restricted epsilon-window references are in `restricted_kernel_references.dat`
-and `restricted_optical_references.dat`, with matching high-precision Python
-generators. `run_window_tests` covers the `-M` command-line behavior and all
-epsilon-integrating modes. The pointwise data also covers exact odd symmetry,
-sub-ULP intervals, finite-band edges, adjacent-double optical centers, huge
-Gaussian windows, and narrow exterior peaks.
+The suite 5 and 22* references were regenerated at 70-100 decimal digits for
+the exact finite-cutoff command used by `run_tests`. The energy integral used
+epsilon = x + gamma tan(theta), and the outer integral was performed over
+omega/T in [-15,15]. Exact Hilbert-transform evaluations and separate
+quadrature agreed on the nonzero values; all parity-forced zeros remain exact.
+The one-off regeneration program is not stored here, so these rows primarily
+test preservation of the established outer-integral results.
+
+Pointwise high-precision tables
+
+`clean_kernel_tests` reads four frozen tables. For each reference R, relative
+tolerance r, and absolute tolerance a, it requires
+
+    |value-R| <= max(a, r |R|).
+
+Table                                  rows   mpmath digits   r       a
+clean_kernel_references.dat             370       160       5e-11   1e-300
+restricted_kernel_references.dat        128       180       5e-9    1e-290
+restricted_optical_references.dat       136       250       2e-8    1e-290
+clean_optical_references.dat              58       250       5e-8    1e-300
+
+The matching `generate_*_references.py` programs are provenance tools, not part
+of normal testing. They convert each textual coordinate to binary64 first,
+matching the C++ test input, then integrate with mpmath and print 25 significant
+digits. Once reviewed, the generated tables remain fixed while production code
+is refactored.
+
+The clean single-frequency table covers built-in powers n=1,2,3, exact spatial
+and linewidth parity, finite-band edges and tails, Gaussian pole/tail
+transitions, broad linewidths, and branch thresholds. The bounded tables cover
+exact odd symmetry, sub-ULP intervals, adjacent-double optical centers, huge
+Gaussian windows, and exterior linewidths down to 1e-200. The full-domain
+optical table additionally checks exchange symmetry, parity, positivity for
+even positive kernels, and the exact coincident identity K_m(z,z)=J_m2(z).
+
+Command-level tests
 
 `run_input_tests` covers strict Phi and self-energy table parsing, grid
 validation, interpolation-size checks, and controlled malformed-input failures.
-`run_window_tests` and `run_optical_tests` additionally cover fail-closed
-self-energy domains, exact endpoint coverage, and explicit legacy extrapolation.
+
+`run_window_tests` covers all `-M` modes, exact M=0 behavior, full and empty
+domain intersections, tabulated kernels, DOS output, occupied moments, narrow
+outer crossings, self-energy coverage, and explicit legacy extrapolation.
+
+`run_optical_tests` covers the exact Omega=0 DC path, small positive Omega,
+frozen finite-frequency values, shifted integration ranges and self-energy
+boundaries, a tabulated kernel, invalid option combinations, far-exterior
+finite-band cancellation, and the exponentially small Gaussian exterior pole.
+Its scalar command-level values are regression snapshots; the mpmath tables
+above provide the separately generated pointwise accuracy checks.
+
+Faddeeva verification
+
+The `faddeeva_tests` target compiles `Faddeeva.cc` with `TEST_FADDEEVA` and runs
+the embedded upstream tests. They compare w, erf, erfc, erfi, erfcx, and Dawson
+values with stored WolframAlpha/Maple values at maximum componentwise relative
+error 1e-13, including extreme and non-finite arguments, and check real/complex
+consistency over 10,000 logarithmically spaced magnitudes. The Gaussian J and K
+tables then verify the formulas that use this implementation inside `bubble`.

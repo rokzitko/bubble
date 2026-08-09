@@ -7,6 +7,7 @@ prints data suitable for clean_kernel_references.dat.
 """
 
 import mpmath as mp
+import math
 
 
 mp.mp.dps = 160
@@ -154,6 +155,63 @@ def cases():
                 ("1.0000000000000002", "1e-20"),
             )
         )
+
+    for kernel in (1, 2):
+        for power in (1, 2, 3):
+            result.append((kernel, power, "1.001", "0.00075"))
+
+    finite_radius_x = math.sqrt(4.0 - 0.5**2)
+    finite_radius_points = (
+        math.nextafter(finite_radius_x, -math.inf),
+        finite_radius_x,
+        math.nextafter(finite_radius_x, math.inf),
+    )
+    for kernel in range(1, 7):
+        for power in (1, 2, 3):
+            result.extend((kernel, power, repr(x), "0.5") for x in finite_radius_points)
+
+    gaussian_radius_x = math.sqrt(8.0**2 - 0.5**2)
+    gaussian_radius_points = (
+        math.nextafter(gaussian_radius_x, -math.inf),
+        gaussian_radius_x,
+        math.nextafter(gaussian_radius_x, math.inf),
+    )
+    for kernel in (7, 8):
+        for power in (1, 2, 3):
+            result.extend((kernel, power, repr(x), "0.5") for x in gaussian_radius_points)
+
+    for kernel in (7, 8):
+        for power in (1, 2, 3):
+            result.extend(
+                (kernel, power, repr(x), "0.3")
+                for x in (math.nextafter(5.5, -math.inf), math.nextafter(5.5, math.inf))
+            )
+
+    linewidth_points = (
+        math.nextafter(1e-7, 0.0),
+        1e-7,
+        math.nextafter(1e-7, math.inf),
+    )
+    for kernel in (7, 8):
+        for power in (2, 3):
+            result.extend((kernel, power, "2", repr(y)) for y in linewidth_points)
+
+    pole_linewidth = 0.25/8.5
+    pole_linewidth_points = (
+        math.nextafter(pole_linewidth, 0.0),
+        pole_linewidth,
+        math.nextafter(pole_linewidth, math.inf),
+    )
+    for kernel in (7, 8):
+        for power in (1, 2, 3):
+            result.extend((kernel, power, "8.5", repr(y)) for y in pole_linewidth_points)
+
+    for kernel in (7, 8):
+        for power in (1, 2, 3):
+            result.extend(
+                (kernel, power, "6", repr(y))
+                for y in (math.nextafter(6.0, 0.0), 6.0, math.nextafter(6.0, math.inf))
+            )
 
     return result
 

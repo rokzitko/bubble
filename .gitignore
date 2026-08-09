@@ -41,6 +41,7 @@ bubble
 *.out
 *.app
 /regression/clean_kernel_tests
+/regression/faddeeva_tests
 
 # Build directories
 build/

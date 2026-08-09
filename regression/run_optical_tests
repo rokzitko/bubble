@@ -10,6 +10,9 @@ use Symbol qw(gensym);
 my $bubble = "$Bin/../bubble";
 my $resigma = "$Bin/resigma_1.dat";
 my $imsigma = "$Bin/imsigma_1.dat";
+my $small_im_resigma = "$Bin/resigma_22.dat";
+my $small_im_imsigma = "$Bin/imsigma_22.dat";
+my $positive_sigma = "$Bin/resigma_3.dat";
 my $bethe_resigma = "$Bin/../Bethe_lattice_test/resigma.dat";
 my $bethe_imsigma = "$Bin/../Bethe_lattice_test/imsigma.dat";
 my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
@@ -114,6 +117,29 @@ my $large_expected = 0.008339741084697084;
 my $large_ok = defined $large && abs($large - $large_expected) <= 1e-11;
 check_result('large Omega shifted integration range', $large_ok,
     $large_ok ? "absolute_error=" . abs($large - $large_expected) : "$large_error value=$large");
+
+my @far_options = ('-c', '15', '-a', '1e-50', '-r', '1e-10');
+my @far_arguments = (1, 2, 0, 0.01, 1e8, $small_im_resigma, $small_im_imsigma);
+my ($far_dc, $far_dc_error) = run_value(@far_options, '-O', '0', @far_arguments);
+my ($far_optical, $far_optical_error) = run_value(
+    @far_options, '-O', '1e-5', @far_arguments);
+my $far_ok = defined $far_dc && defined $far_optical && $far_optical > 0 &&
+    relative_error($far_optical, $far_dc) < 1e-8;
+check_result('far exterior optical cancellation is resolved', $far_ok,
+    $far_ok ? "dc=$far_dc optical=$far_optical"
+            : "$far_dc_error $far_optical_error dc=$far_dc optical=$far_optical");
+
+my $gaussian_expected = 1.3512228260316294e-139;
+my ($gaussian_pole, $gaussian_pole_error) = run_value(
+    '-i', '1', '-c', '15', '-a', '1e-152', '-r', '1e-9', '-s', '1e-100',
+    '-O', '9.094947017729282e-13',
+    7, 2, 0, '9.094947017729282e-13', 8.5, $resigma, $positive_sigma,
+);
+my $gaussian_pole_ok = defined $gaussian_pole && $gaussian_pole > 0 &&
+    relative_error($gaussian_pole, $gaussian_expected) < 1e-8;
+check_result('Gaussian exterior optical pole is retained', $gaussian_pole_ok,
+    $gaussian_pole_ok ? "relative_error=" . relative_error($gaussian_pole, $gaussian_expected)
+                      : "$gaussian_pole_error expected=$gaussian_expected value=$gaussian_pole");
 
 my ($phi_file, $phi_filename) = tempfile('bubble-phi-XXXX', TMPDIR => 1, UNLINK => 1);
 for my $point (-10 .. 10) {

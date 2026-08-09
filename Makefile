@@ -8,6 +8,7 @@ GSL_LIBS = $(shell $(PKG_CONFIG) --libs gsl)
 TARGET := bubble
 OBJECTS := bubble.o Faddeeva.o
 CLEAN_KERNEL_TEST := regression/clean_kernel_tests
+FADDEEVA_TEST := regression/faddeeva_tests
 
 .PHONY: all check clean
 
@@ -28,7 +29,11 @@ bubble_test.o: bubble.cc Faddeeva.hh
 $(CLEAN_KERNEL_TEST): regression/clean_kernel_tests.cc bubble_test.o Faddeeva.o
 	$(CXX) $(CPPFLAGS) $(GSL_CFLAGS) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS) $(GSL_LIBS)
 
-check: $(TARGET) $(CLEAN_KERNEL_TEST)
+$(FADDEEVA_TEST): Faddeeva.cc Faddeeva.hh
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) -DTEST_FADDEEVA -o $@ Faddeeva.cc $(LDLIBS) -lm
+
+check: $(TARGET) $(CLEAN_KERNEL_TEST) $(FADDEEVA_TEST)
+	@./$(FADDEEVA_TEST) >/dev/null
 	@cd regression && ./run_runner_tests
 	@cd regression && ./run_tests --all
 	@cd regression && ./run_optical_tests
@@ -38,4 +43,4 @@ check: $(TARGET) $(CLEAN_KERNEL_TEST)
 	@cd Bethe_lattice_test && ./cond.opt.geo --check
 
 clean:
-	$(RM) $(TARGET) $(OBJECTS) bubble_test.o $(CLEAN_KERNEL_TEST)
+	$(RM) $(TARGET) $(OBJECTS) bubble_test.o $(CLEAN_KERNEL_TEST) $(FADDEEVA_TEST)

@@ -2,8 +2,10 @@
 
 `bubble` is a compact C++ program for evaluating real-frequency bubble
 integrals from a local DMFT self-energy. For a set of commonly used band and
-transport kernels, the band-energy integral is evaluated analytically, leaving
-only a one-dimensional adaptive quadrature over frequency.
+transport kernels, the unrestricted band-energy integral is evaluated with
+conditioned analytic formulas and numerical fallbacks, leaving a
+one-dimensional adaptive quadrature over frequency. Restricted and tabulated
+kernels use a nested band-energy quadrature.
 
 This is particularly useful in the low-temperature Fermi-liquid regime, where
 the spectral function becomes narrow and a direct two-dimensional integration
@@ -81,7 +83,7 @@ The repository contains a real-frequency self-energy from a DMFT calculation
 and corresponding independent reference results:
 
 ```bash
-./bubble 5 2 0 0.27 0 \
+./bubble -E -q 5 2 0 0.27 0 \
   Bethe_lattice_test/resigma.dat \
   Bethe_lattice_test/imsigma.dat
 ```
@@ -94,25 +96,40 @@ The expected raw transport moment is
 
 ## Physical Quantity
 
-For a retarded self-energy, the momentum-resolved Green's function and spectral
-function are
+For a retarded self-energy, define
 
 $$
-G^R_\epsilon(\omega) =
-\frac{1}{\omega+\mu-\epsilon-\Sigma^R(\omega)},
+z(\omega)=x(\omega)+i\gamma(\omega)
+=\omega+\mu-\Sigma^R_{\mathrm{eff}}(\omega),
 \qquad
-\rho_\epsilon(\omega) =
--\frac{1}{\pi}\mathrm{Im}\ G^R_\epsilon(\omega).
+x(\omega)=\omega+\mu-\mathrm{Re}\,\Sigma^R(\omega),
+\qquad
+\gamma(\omega)=-\mathrm{Im}\,\Sigma^R_{\mathrm{eff}}(\omega)>0.
 $$
 
-The general dimensionless moments (described in the accompanying notes) are
+The Green's function and spectral function at band energy $\epsilon$ are
 
 $$
-I_{mno} = \frac{1}{D}\int d\epsilon\ \Phi_m(\epsilon)
-\int d\omega
-\ \left(-\frac{\partial f}{\partial\omega}\right)
-[D\rho_\epsilon(\omega)]^n
-\left(\frac{\omega}{D}\right)^o,
+G^R_\epsilon(\omega)=\frac{1}{z(\omega)-\epsilon},
+\qquad
+A_\epsilon(z)=-\frac{1}{\pi}\mathrm{Im}\frac{1}{z-\epsilon}
+=\frac{\gamma}{\pi[(x-\epsilon)^2+\gamma^2]}.
+$$
+
+For the selected energy domain $\mathcal E$, `bubble` first evaluates
+
+$$
+J_{mn}(z;\mathcal E)=
+\int_{\mathcal E}d\epsilon\,\Phi_m(\epsilon)[A_\epsilon(z)]^n.
+$$
+
+For $n=0$, this notation means the explicitly defined kernel mass
+$J_{m0}=\int_{\mathcal E}\Phi_m(\epsilon)d\epsilon$, independent of $z$; it
+does not rely on an $A^0$ convention. The ordinary transport mode then computes
+
+$$
+I^{\mathrm{DC}}_{mno}=\int_{-CT}^{CT}d\omega\,
+[-f'(\omega)]\,\omega^oJ_{mn}[z(\omega);\mathcal E],
 $$
 
 where
@@ -120,25 +137,23 @@ where
 $$
 f(\omega)=\frac{1}{1+e^{\omega/T}},
 \qquad
--\frac{\partial f}{\partial\omega}
-=\frac{1}{T[2+2\cosh(\omega/T)]}.
+-f'(\omega)=\frac{1}{T[2+2\cosh(\omega/T)]},
 $$
 
-The code first evaluates
+and $C$ is the cutoff selected by `-c`. With `-f`, the outer integral instead is
 
 $$
-J_{mn}(z)=\frac{1}{D}\int d\epsilon\ \Phi_m(\epsilon)
-\left[-\frac{1}{\pi}\mathrm{Im}
-\ \frac{D}{z-\epsilon}\right]^n,
+I^{\mathrm{occ}}_{mno}=\int_{\omega_{\min}}^{CT}d\omega\,
+f(\omega)\,\omega^oJ_{mn}[z(\omega);\mathcal E].
 $$
 
-with $z=\omega+\mu-\Sigma^R(\omega)$, and then performs the remaining
-frequency integral numerically.
-
-The current analytic kernels use $D=1$. Consequently,
-temperature, chemical potential, frequency, band energy, and self-energy must
-all be expressed in the same energy unit, normally the half-bandwidth. The
-conventions $k_B=\hbar=1$ are used.
+The integration frequency $\omega$ is measured relative to the Fermi level;
+$\mu$ enters $z(\omega)$, not the Fermi function. The implementation has no
+bandwidth parameter and uses $D=1$ throughout, including for a tabulated
+`m=0` kernel. Temperature, chemical potential, frequency, band energy, and
+self-energy must therefore be nondimensionalized consistently before use,
+normally by the half-bandwidth. A custom table is not rescaled automatically.
+The conventions $k_B=\hbar=1$ are used.
 
 ### Clean-Limit Kernels
 
@@ -219,23 +234,29 @@ $$
 where
 
 $$
-K_m(z_1,z_2)=\int d\epsilon\ \Phi_m(\epsilon)
+K_m(z_1,z_2;\mathcal E)=\int_{\mathcal E}d\epsilon\ \Phi_m(\epsilon)
 \left[-\frac{1}{\pi}\mathrm{Im}\frac{1}{z_1-\epsilon}\right]
 \left[-\frac{1}{\pi}\mathrm{Im}\frac{1}{z_2-\epsilon}\right],
 \qquad
-z(\omega)=\omega+\mu-\Sigma^R(\omega).
+z(\omega)=\omega+\mu-\Sigma^R_{\mathrm{eff}}(\omega).
 $$
 
 The optical frequency $\Omega$ is external and distinct from the integration
-frequency $\omega$. The self-energy is evaluated independently at
-$\omega$ and $\omega+\Omega$. The frequency quadrature is split at
-$-\Omega$ and zero. It therefore requires self-energy data over the closed
-interval $[-(CT+\Omega),CT+\Omega]$.
+frequency $\omega$. The power $\omega^o$ uses the unshifted incoming frequency,
+not $\omega+\Omega$ or $\omega+\Omega/2$. The self-energy is evaluated
+independently at $\omega$ and $\omega+\Omega$. The frequency quadrature is split
+at $-\Omega$ and zero. Its two propagator arguments require the union
+
+$$
+[-CT-\Omega,CT]\cup[-CT,CT+\Omega]
+=[-CT-\Omega,CT+\Omega].
+$$
 
 Optical mode requires `n=2` and a finite `OMEGA >= 0`. It cannot be combined
-with `-f` or `-d`. At `OMEGA=0`, the existing Fermi derivative and DC kernel are
-used exactly. For small positive `OMEGA`, the finite-frequency result therefore
-approaches the DC value without a subtractive Fermi-function cancellation.
+with `-f` or `-d`. At `OMEGA=0`, the exact DC `n=2` path is used, with
+$K_m(z,z)=J_{m2}(z)$. For small positive `OMEGA`, the finite-frequency result
+therefore approaches the DC value without a subtractive Fermi-function
+cancellation.
 The physical longitudinal optical conductivity uses `o=0`; other powers remain
 available as generalized moments.
 
@@ -253,23 +274,33 @@ normalization factors.
 
 ## Built-in Kernels
 
-For the analytic kernels, $D=\sigma=1$:
+The finite-band half-width and Gaussian scale are fixed by the displayed
+dimensionless formulas:
 
-| `m` | Kernel $\Phi_m(\epsilon)$ | Domain | Description |
-|---:|---|---|---|
-| 0 | User-supplied table | Table interval | Generic numerical kernel |
-| 1 | $1$ | $[-1,1]$ | Flat, even |
-| 2 | $\epsilon$ | $[-1,1]$ | Flat, odd |
-| 3 | $\sqrt{1-\epsilon^2}$ | $[-1,1]$ | Semicircular, even |
-| 4 | $\epsilon\sqrt{1-\epsilon^2}$ | $[-1,1]$ | Semicircular, odd |
-| 5 | $(1-\epsilon^2)^{3/2}$ | $[-1,1]$ | Bethe transport, even |
-| 6 | $\epsilon(1-\epsilon^2)^{3/2}$ | $[-1,1]$ | Bethe transport, odd |
-| 7 | $e^{-2\epsilon^2}$ | $( -\infty,\infty )$ | Gaussian, even |
-| 8 | $\epsilon e^{-2\epsilon^2}$ | $( -\infty,\infty )$ | Gaussian, odd |
+| `m` | Kernel $\Phi_m(\epsilon)$ | Natural domain | $J_{m0}$ | Description |
+|---:|---|---|---:|---|
+| 0 | User-supplied table | Table interval | Spline integral | Generic numerical kernel |
+| 1 | $1$ | $[-1,1]$ | $2$ | Flat, even |
+| 2 | $\epsilon$ | $[-1,1]$ | $0$ | Flat, odd |
+| 3 | $\sqrt{1-\epsilon^2}$ | $[-1,1]$ | $\pi/2$ | Semicircular, even |
+| 4 | $\epsilon\sqrt{1-\epsilon^2}$ | $[-1,1]$ | $0$ | Semicircular, odd |
+| 5 | $(1-\epsilon^2)^{3/2}$ | $[-1,1]$ | $3\pi/8$ | Bethe transport, even |
+| 6 | $\epsilon(1-\epsilon^2)^{3/2}$ | $[-1,1]$ | $0$ | Bethe transport, odd |
+| 7 | $e^{-2\epsilon^2}$ | $(-\infty,\infty)$ | $\sqrt{\pi/2}$ | Gaussian, even |
+| 8 | $\epsilon e^{-2\epsilon^2}$ | $(-\infty,\infty)$ | $0$ | Gaussian, odd |
 
-These kernels do not include lattice normalization factors. For example, the
-Bethe-lattice benchmark applies the factor $2/\pi$ externally. Odd kernels
-are useful in Hall and occupied-energy moments.
+Kernels `m=1` through `6` vanish outside `[-1,1]`; Gaussian kernels `m=7,8`
+have support on the full real line. Built-ins support `n=0,1,2,3`. A tabulated
+`m=0` kernel supports any nonnegative `n`, although optical mode always requires
+`n=2`.
+
+No hidden density-of-states or transport normalization is included. For
+example, the normalized Bethe benchmark transport function is
+$\Phi_{\mathrm{benchmark}}=(2/\pi)(1-\epsilon^2)^{3/2}$. If a reference formula
+uses $[\mathrm{Im}\,G]^2$ rather than
+$A^2=[-\mathrm{Im}\,G/\pi]^2$, the combined conversion from the built-in `m=5`
+result is $(2/\pi)\pi^2=2\pi$. Odd kernels are useful in Hall and
+occupied-energy moments.
 
 All tabulated inputs use the same strict line format. Each nonempty data line
 must contain exactly two complete finite floating-point values separated by
@@ -286,13 +317,16 @@ epsilon_1  Phi(epsilon_1)
 ...
 ```
 
-The energy grid must be strictly increasing. After applying `-e`, every
-effective value must remain finite. Tables whose effective values are all
+The energy grid must be strictly increasing. The `-e E` transformation is
+applied to the knots first, producing $\epsilon_i^E\Phi_i$, and that effective
+table is then interpolated. Every effective value must remain finite. Tables
+whose effective values are all
 nonnegative use GSL Steffen interpolation and require at least three rows. This
 monotonic cubic method cannot undershoot below the supplied values. Signed
 effective kernels retain Akima interpolation and require at least five rows.
-The energy integration is restricted to the table interval. Use `-p FILE` to
-select the table.
+The self-energy option `-i 2` uses GSL's natural cubic spline. The energy
+integration is restricted to the table interval. Use `-p FILE` to select the
+table.
 
 ## Command Line
 
@@ -339,25 +373,31 @@ Options:
 | `-d` | Skip the frequency integral and write `dos.dat`; requires `m=0` |
 | `-O OMEGA` | External optical frequency; requires `OMEGA >= 0` and `n=2` |
 
-Without `-v`, normal integration mode prints one number to standard output.
+### Output and Exit Status
+
+Without `-v`, a normal DC or optical integration prints one number with 16
+significant digits to standard output. With `-v`, the program prints the parsed
+parameters followed by `Result` and the outer quadrature's `Error` estimate.
 This makes the executable convenient to call from shell, Python, Julia, or
 other DMFT post-processing workflows.
 
-`-q` suppresses only non-fatal warning messages. It does not hide the numerical
-result, fatal diagnostics, or the additional output requested by `-v`.
+DOS mode `-d` writes `dos.dat` and normally prints no scalar result. If `n!=1`,
+its nonfatal warning is currently written to standard output unless `-q` is
+used. The executable has no `-h` or `--help` option; invoking it without all
+seven positional arguments prints its usage and exits unsuccessfully.
 
-By default, an adaptive integration failure is reported on standard error and
-the program exits unsuccessfully without printing a numerical result. The
-restricted evaluators retain their existing exception for roundoff or
-singularity statuses that pass an independent quadrature check within the
-requested tolerance.
+Fatal diagnostics are written to standard error and return a nonzero status.
+`-q` suppresses only nonfatal warnings; it does not hide numerical results,
+fatal diagnostics, or output requested by `-v`.
 
-`-E` downgrades an otherwise fatal integration status or invalid error estimate
-to a warning when GSL supplied a finite partial result. Combining `-E -q`
-reproduces the previous silent best-effort behavior. Allocation failures and
-non-finite numerical results remain fatal. The option does not change input
-parsing or other non-integration diagnostics, and it cannot detect an inaccurate
-calculation for which GSL returned a successful status.
+By default, an adaptive integration failure is fatal and no numerical result is
+printed. A restricted evaluator may accept a roundoff or singularity status
+only after an independent quadrature check agrees within the requested bound.
+`-E` downgrades other integration failures or invalid error estimates to a
+warning when GSL supplied a finite partial result. Combining `-E -q` reproduces
+the historical silent best-effort behavior. This is not an accuracy guarantee:
+allocation failures and non-finite results remain fatal, and `-E` cannot detect
+an inaccurate calculation for which GSL returned success.
 
 ## Self-Energy Input
 
@@ -374,8 +414,20 @@ Both files must have the same number of rows and exactly identical, strictly
 increasing frequency grids. Generate or copy the frequency column once rather
 than independently rounding it in the two files. The selected interpolation
 requires at least two rows for linear mode, three for cubic-spline mode, and
-five for Akima mode. The retarded convention
-$\mathrm{Im}\ \Sigma^R\le 0$ is required.
+five for Akima mode. Physical retarded input should satisfy
+$\mathrm{Im}\,\Sigma^R\le0$, but the program corrects rather than rejects
+positive values. For clipping floor $S$, it constructs
+
+$$
+\widetilde{\Sigma''}_i=\min(\Sigma''_i,-S),
+\qquad
+\Sigma''_{\mathrm{eff}}(\omega)=
+\min\!\left(\operatorname{interp}\{\widetilde{\Sigma''}_i\},-S\right),
+$$
+
+so the spectral linewidth obeys $\gamma=-\Sigma''_{\mathrm{eff}}\ge S$ even
+if a higher-order spline overshoots between causal knots. Because `-s` changes
+the linewidth, it can strongly affect clean-limit `n=2,3` moments.
 
 For `n>0`, the self-energy tables must cover every frequency used by the
 selected calculation. Coverage is checked as an exact closed interval before
@@ -390,21 +442,32 @@ quadrature starts:
 
 An incomplete interval is fatal even with `-q` or `-E`. Extend both tables or
 reduce `-c` or `-O` as appropriate. Calculations with `n=0` do not evaluate the
-frequency-dependent self-energy and are exempt. A positive `-M` still requires
-the table to contain zero so that the interacting window center can be found;
-if the resulting epsilon intersection is empty, no additional frequency
-coverage is required.
+frequency-dependent self-energy and are exempt from this coverage check. The
+test is exact and includes both endpoints, so a table endpoint even one
+binary64 step short is insufficient. Both files remain mandatory for `n=0` and
+are still parsed, grid-matched, and used to construct interpolants. A positive
+`-M` also evaluates $\mathrm{Re}\,\Sigma(0)$ and therefore requires the table to
+contain zero; if the resulting epsilon intersection is empty, no additional
+frequency coverage is required.
 
 The following numerical policies are important when interpreting results:
 
-- Input knots and evaluated in-table interpolated values with
-  $\mathrm{Im}\ \Sigma>-S$ are replaced by $-S$, including positive noncausal
-  values and cubic/Akima overshoot. The `-s S` option selects this floor and
-  defaults to $S=10^{-8}$.
+- The `-s S` option selects the in-table clipping floor and defaults to
+  $S=10^{-8}$.
 - `--allow-legacy-self-energy-extrapolation` explicitly restores the historical
-  exterior model: `ReSigma` is held at its nearest endpoint and `ImSigma` is set
-  to $-10^{-10}$. The program warns once and splits quadrature at every
-  unshifted and optical-shifted table boundary. `-q` suppresses this warning.
+  exterior model
+
+  $$
+  \Sigma^R_{\mathrm{ext}}(\omega)=
+  \begin{cases}
+  \mathrm{Re}\,\Sigma^R(\omega_{\min})-i10^{-10},&\omega<\omega_{\min},\\
+  \mathrm{Re}\,\Sigma^R(\omega_{\max})-i10^{-10},&\omega>\omega_{\max}.
+  \end{cases}
+  $$
+
+  The fixed exterior width is not controlled by `-s`. The program warns once
+  and splits quadrature at every unshifted and optical-shifted table boundary;
+  `-q` suppresses this warning.
 - The default Fermi-derivative integration interval is
   $[-30T,30T]$. Increase `-c` if broader thermal tails matter.
 - Optical mode extends the lower endpoint by `OMEGA` and evaluates the shifted
@@ -418,18 +481,28 @@ continuous floor plateaus with derivative kinks.
 
 ## Restricted Epsilon Window
 
-With `-M M`, for `M > 0`, every band-energy integral is restricted by
+Define the interacting Fermi-level band energy
 
 $$
--M < \mu-\epsilon-\mathrm{Re}\ \Sigma^R(0) < M.
+\epsilon_F=\mu-\mathrm{Re}\,\Sigma^R(0).
 $$
 
-Equivalently, the fixed epsilon interval is
+The energy domain selected by `-M M` is
 
 $$
-\epsilon_F-M < \epsilon < \epsilon_F+M,
-\qquad
-\epsilon_F=\mu-\mathrm{Re}\ \Sigma^R(0).
+\mathcal E_m(M)=
+\begin{cases}
+\mathcal E_m,&M=0,\\
+\mathcal E_m\cap[\epsilon_F-M,\epsilon_F+M],&M>0,
+\end{cases}
+$$
+
+with
+
+$$
+\mathcal E_0=[\epsilon_{\min},\epsilon_{\max}],\qquad
+\mathcal E_{1\ldots6}=[-1,1],\qquad
+\mathcal E_{7,8}=\mathbb R.
 $$
 
 The value of $\mathrm{Re}\ \Sigma^R(0)$ is obtained with the interpolation
@@ -439,12 +512,13 @@ the Fermi-level center. `M` uses the same energy units as the bandwidth,
 temperature, chemical potential, and self-energy.
 
 The restriction applies to DC and optical calculations, occupied moments with
-`-f`, tabulated `m=0` kernels, and DOS output with `-d`. The requested interval
-is intersected with the kernel's natural domain: `[-1,1]` for built-in finite
-bands and the tabulated interval for `m=0`. An empty intersection gives zero.
-If the interval completely covers a finite natural domain, the existing
-full-band evaluator is retained. Every positive finite `M` truncates the
-Gaussian kernels because their natural domain is the full real line.
+`-f`, tabulated `m=0` kernels, and DOS output with `-d`. It truncates only the
+epsilon integral: it does not shorten the frequency interval, follow the
+frequency-dependent center $x(\omega)$, or renormalize the retained part of the
+kernel. An empty intersection gives zero. If the interval completely covers a
+finite natural domain, the full-band evaluator is retained. Every positive
+finite `M` truncates a Gaussian kernel because its natural domain is the full
+real line.
 
 The strict endpoint inequalities do not affect these ordinary integrals, so
 the numerical quadrature includes the endpoints. The value `M=0` is a sentinel
@@ -515,7 +589,7 @@ outer-integrand calls.
 
 $$
 \int_{\omega_{\min}}^{CT}d\omega
-\ f(\omega)\ \omega^oJ_{mn}(\omega).
+\ f(\omega)\ \omega^oJ_{mn}[z(\omega)].
 $$
 
 This is useful for quantities such as occupied spectral moments and
@@ -561,45 +635,77 @@ self-energy spline.
 
 ## Numerical Method
 
-- The $n=0$ analytic $J_{m0}$ expressions originate from Mathematica
-  calculations documented under `notes/`.
-- Built-in $n=1$ kernels use $-\operatorname{Im} H_m(z)/\pi$, where $H_m$ is
-  the stable analytic Hilbert transform. Lower-half-plane arguments are
-  canonicalized by exact spectral parity, and Gaussian kernels include their
-  explicit on-shell pole contribution.
-- Built-in $n=2,3$ kernels use cancellation-free finite-band formulas,
-  exterior moment expansions, and conditioned Faddeeva identities. Gaussian
-  transition cases have a direct positive-quadrature fallback.
-- Built-in optical kernels use analytic Hilbert transforms and stable divided
-  differences rather than generated two-frequency expressions.
-- Restricted and tabulated kernels use bounded, peak-removing epsilon
-  quadrature; separated optical peaks are integrated with independent local
-  regions and exterior peaks use logarithmic distance coordinates.
-- The remaining frequency integral uses adaptive GSL `qag` quadrature.
-- The default rule is the 15-point Gauss-Kronrod rule with a workspace of
-  1,000 intervals.
-- A custom `m=0`, `n>0` kernel introduces a nested transformed energy integral.
-  Its DC and optical outer integrals use linewidth-aware table-edge crossings;
-  `n=0` instead integrates the interpolation spline exactly once.
-- Self-energy interpolation is selectable, with the in-table imaginary part
-  clipped again after evaluation. Nonnegative effective custom kernels use
-  monotonic Steffen interpolation; signed kernels use Akima.
-- Frequency-dependent calculations fail before quadrature unless their
-  self-energy tables cover the complete required closed interval. Legacy
-  extrapolation is available only through its explicit long option.
-- Every adaptive integration status and result is checked. Unverified failures
-  are fatal by default; `-E` explicitly enables finite best-effort results.
-- In verbose mode, the reported error is GSL's estimate for the outer
-  frequency quadrature. Inner epsilon uncertainty is validated separately and
-  is not folded into that printed estimate.
+The analytic starting point is the Hilbert transform
+
+$$
+H_m(z)=\int_{\mathcal E_m}
+\frac{\Phi_m(\epsilon)}{z-\epsilon}\,d\epsilon,
+\qquad
+J_{m1}(z)=-\frac{\mathrm{Im}\,H_m(z)}{\pi}.
+$$
+
+Full finite-band `n=2,3` kernels use factored long-double expressions near the
+band edges and moment expansions outside the band. Gaussian kernels use
+conditioned Faddeeva/Hilbert identities together with the exponentially small
+on-shell pole that an algebraic asymptotic series omits. If cancellation or a
+sign diagnostic rejects those identities, the code uses direct positive
+quadrature.
+
+For an unrestricted optical kernel, define the continued divided difference
+
+$$
+\mathcal D_m(a,b)=
+\begin{cases}
+[H_m(a)-H_m(b)]/(b-a),&a\ne b,\\
+-H'_m(a),&a=b.
+\end{cases}
+$$
+
+Then
+
+$$
+K_m(z_1,z_2)=
+\frac{\mathrm{Re}\,\mathcal D_m(z_1^*,z_2)
+-\mathrm{Re}\,\mathcal D_m(z_1,z_2)}{2\pi^2}.
+$$
+
+Near-coincident arguments use a derivative limit rather than subtracting two
+nearby Hilbert transforms. Non-finite values, a forbidden sign, a Gaussian pole
+outside the safe asymptotic sector, or an estimated cancellation loss trigger
+direct epsilon quadrature. Finite-band odd kernels are symmetry-paired in this
+fallback so a tiny residual is not lost by final subtraction. Gaussian fallback
+quadrature separates the central region, narrow peaks, and tails.
+
+Restricted and tabulated kernels use tangent coordinates for peaks inside the
+energy interval and logarithmic distance coordinates for peaks outside it.
+Well-separated optical peaks receive separate local regions; finite-band edge
+charts, scaled integrands, and compensated sums protect very narrow or
+sub-ULP geometries. A custom `m=0`, `n=0` kernel instead integrates its
+interpolation spline once and caches the mass.
+
+The remaining frequency integral uses adaptive GSL `qag` quadrature, with a
+15-point Gauss-Kronrod rule and a workspace of 1,000 intervals by default.
+Restricted outer integrals add linewidth-aware crossings of energy-window
+boundaries and nearby extrema. Self-energy table boundaries, including shifted
+optical boundaries, are also explicit quadrature partitions when legacy
+extrapolation is enabled.
+
+The user options `-a`, `-r`, and `-k` govern the outer quadrature and applicable
+custom-kernel pieces. Built-in fallback paths use tighter internal policies, and
+restricted breakpoint integrations use fixed internal rules. Every adaptive
+status and result is checked; route-specific roundoff or singularity failures
+are accepted only after a stated error bound or independent fixed-rule check.
+Unverified failures are fatal unless `-E` explicitly permits a finite partial
+result. In verbose mode, `Error` is only the outer frequency-quadrature estimate;
+nested epsilon uncertainty is checked separately and is not folded into it.
 
 ## Validation
 
-The repository contains complementary DC, clean-kernel, restricted-window, and
-optical checks.
-`make check` runs strict runner self-tests, all 384 legacy rows, the pointwise
-kernel suites, restricted-window command tests, and both optical checks without
-invoking Mathematica.
+The repository contains complementary DC, clean-kernel, restricted-window,
+optical, Faddeeva, input, and DMFT benchmark checks. `make check` runs the
+embedded Faddeeva suite, strict runner self-tests, all 384 legacy rows, all
+pointwise kernel tables, restricted-window and input command tests, optical
+checks, and the Bethe optical comparison without invoking Mathematica.
 
 ### Legacy Regression Data
 
@@ -613,19 +719,41 @@ cd regression
 ```
 
 To run one table, pass its suite number and optional suffix, for example
-`./run_tests 22 b`. The runner validates child status and output and exits
-nonzero on any failed row. References in
-clean-limit suites `5` and `22*` were independently regenerated for the finite
-integration interval used by `run_tests`; parity-forced zeros were preserved
-exactly.
+`./run_tests 22 b`. Suite `11` uses `ReSigma=0`, `ImSigma=-0.01` and includes
+the broader `n=0,1,2,3` set. The runner validates child status and output and
+exits nonzero on any failed row. It accepts
+$|\Delta|<10^{-4}$ when $|R|<10^{-6}$ and
+$|\Delta|/|R|<10^{-4}$ otherwise. References in clean-limit suites `5` and
+`22*` were regenerated at high precision for the finite interval used by
+`run_tests`; parity-forced zeros were preserved exactly.
 
 ### Clean-Kernel Regression
 
-`regression/clean_kernel_references.dat` contains pointwise values for all
-built-in kernels with `n=1,2,3`. It covers interior points, exact and nearby band
-edges, clean exterior points, Gaussian pole/tail transitions, broad linewidths,
-and exact spatial and linewidth parity. Frozen values were generated at 160
-decimal digits after the substitution
+The pointwise reference reader accepts a computed value $V$ for reference $R$
+when
+
+$$
+|V-R|\le\max(a,r|R|).
+$$
+
+The frozen tables are:
+
+| Reference table | Rows | `mpmath` working precision | $r$ | $a$ |
+|---|---:|---:|---:|---:|
+| `clean_kernel_references.dat` | 370 | 160 digits | `5e-11` | `1e-300` |
+| `restricted_kernel_references.dat` | 128 | 180 digits | `5e-9` | `1e-290` |
+| `restricted_optical_references.dat` | 136 | 250 digits | `2e-8` | `1e-290` |
+| `clean_optical_references.dat` | 58 | 250 digits | `5e-8` | `1e-300` |
+
+Each generator first converts textual coordinates through binary64, matching
+the C++ inputs, then performs high-precision quadrature and prints 25
+significant digits. The generated files are frozen regression inputs; normal
+testing and source refactoring do not regenerate them.
+
+`regression/clean_kernel_references.dat` covers every built-in kernel with
+`n=1,2,3`: interior points, exact and nearby band edges, clean exterior points,
+Gaussian pole/tail transitions, broad linewidths, and exact spatial and
+linewidth parity. Its generator uses the substitution
 
 $$
 \epsilon=x+y\tan\theta,
@@ -643,21 +771,33 @@ python3 regression/generate_clean_kernel_references.py
 The bounded single- and two-peak values are stored in
 `restricted_kernel_references.dat` and `restricted_optical_references.dat`.
 Their corresponding `generate_restricted_*_references.py` scripts use
-180-250-decimal-digit quadrature and controlled clean-limit asymptotics. They
-include exact odd symmetry, sub-ULP
-transformed spans, finite-band edges, adjacent-double optical centers, huge
-Gaussian windows, and exterior linewidths down to `1e-200`.
+controlled clean-limit asymptotics where direct quadrature becomes singular.
+They include exact odd symmetry, sub-ULP transformed spans, finite-band edges,
+adjacent-double optical centers, huge Gaussian windows, and exterior linewidths
+down to `1e-200`. Full-domain two-frequency values are generated separately by
+`generate_clean_optical_references.py` and stored in
+`clean_optical_references.dat`.
 `run_window_tests` additionally checks command parsing, exact `M=0` behavior,
 full and empty intersections, clean and narrow-domain tabulated kernels,
 optical and occupied moments, exact `n=0` spline mass, `n=1` DOS output, and
 narrow outer-window crossings.
 
+The `regression/faddeeva_tests` target builds the bundled implementation with
+its upstream `TEST_FADDEEVA` suite. It checks the complex error function,
+`erf`, `erfc`, `erfi`, `erfcx`, and Dawson values against embedded
+WolframAlpha/Maple references, including extreme and non-finite arguments, at a
+maximum componentwise relative error of `1e-13`. Real/complex consistency is
+also sampled over 10,000 logarithmically spaced magnitudes. The clean Gaussian
+$J$ and $K$ tables then test how `bubble` uses these functions.
+
 ### Optical Regression
 
 `regression/run_optical_tests` checks the exact `-O 0` DC path, small-frequency
-convergence, independent finite-frequency values for the built-in kernel
-families, a large-frequency shifted-range case, a tabulated `m=0` kernel, and
-invalid option combinations. It can be run directly with:
+convergence, frozen finite-frequency values for the built-in kernel families, a
+large-frequency shifted-range case, a tabulated `m=0` kernel, shifted
+self-energy boundaries, and invalid option combinations. It also retains
+regressions for a far-exterior finite-band cancellation and an exponentially
+small Gaussian exterior pole. It can be run directly with:
 
 ```bash
 ./regression/run_optical_tests
@@ -669,15 +809,14 @@ invalid option combinations. It can be run directly with:
 Mathematica reference values for conductivity, resistivity, thermopower,
 thermal conductivity, Lorenz ratio, and $ZT$. With the documented
 normalization, the current executable agrees with these references to about
-$10^{-5}$ relative accuracy. The independent occupied-energy check agrees to
-better than $10^{-7}$ relative accuracy.
+$10^{-5}$ relative accuracy. The occupied-energy check agrees to about
+$1.3\times10^{-7}$ relative accuracy.
 
-The finite-frequency reference contains 50 optical frequencies. Generate
-`cond.opt.geo.dat` on that exact mesh and compare it with the frozen Mathematica
-output using:
+The finite-frequency reference contains 50 optical frequencies. Compare that
+mesh with the frozen Mathematica output without changing files using:
 
 ```bash
-./Bethe_lattice_test/cond.opt.geo
+./Bethe_lattice_test/cond.opt.geo --check
 ```
 
 The script applies the benchmark's $2\pi$ normalization, `20T` cutoff, and
@@ -688,6 +827,9 @@ covers one tiny optical tail where the frozen Mathematica interpolant clips
 input knots but not noncausal inter-knot overshoot. `cond.opt.geo.mma` is retained
 only as provenance; validation reads `cond.opt.geo-mma.dat` and never launches
 Mathematica.
+
+Running `./Bethe_lattice_test/cond.opt.geo` without `--check` performs the same
+comparison and also rewrites `cond.opt.geo.dat`.
 
 Some scripts in this directory belong to the original larger DMFT/NRG workflow
 and require tools that are not distributed here. The `bubble` invocations and

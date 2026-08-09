@@ -1,37 +1,14 @@
-// Evaluation of the integrals arising in the bubble diagrams
-// Amina Alic, May 2017
-// later updates by RZ
-
-// Calculates integrals over frequency in the bubble formula for transport properties
-// using analytical expressions for integrals over energy that were evaluated in Mathematica.
-// 
-// The full description is given in the specification (bubble.pdf)
-// Syntax: bubble <m> <n> <o> <T> <mu> <resigma> <imsigma>
-// The input files must contain a table of space-separated (frequency, self-energy) pairs
+// Transport moments from single-particle bubble diagrams.
+// Original implementation: Amina Alic (2017); subsequent development: R. Zitko.
 //
-// In integration over frequencies, the Gauss-Kronrod rules with 15 points are used. 
-// Interpolation is implemented using the GSL, with possibility to choose between linear, 
-// cubic and Akima splines.
-// In case that there is no analytical expression for the kernel function Phi(epsilon), 
-// the user has to provide the file "Phi.dat", which contains a table of space-separated 
-// (epsilon, Phi(epsilon)) pairs.
-
-// CHANGE LOG
-// 7.6.2017 - code cleanup (rz)
-// 10.10.2017 - support for the -f switch
-// 22.11.2017 - support for the -e switch
-// 23.12.2017 - compute the spectral function (debugging aid) (rz)
-//            - clipping of Im Sigma
-// 6.8.2026 - merge support for the -d, -e, and -f switches
-// 7.8.2026 - support finite-frequency optical conductivity through -O
-//            - support Fermi-level epsilon windows through -M
-// 8.8.2026 - strict integration error handling with -E compatibility mode
-//            - strict numeric parsing and negative positional arguments
-//            - enforce the ImSigma floor after interpolation
-//            - peak-removing quadrature for unrestricted tabulated kernels
-//            - increase the default thermal cutoff to 30
-//            - positivity-preserving interpolation for nonnegative Phi tables
-//            - fail closed on incomplete self-energy frequency coverage
+// The current equations, conventions, and numerical methods are documented in
+// README.md.  The material under notes/ records the historical derivation.
+//
+// The calculation has two stages.  It first evaluates the band-energy integral
+// J_mn[z(omega)] (or the two-frequency optical kernel K_m), then integrates the
+// result over omega with the appropriate Fermi weight.  Stable analytic formulas
+// are used on full built-in domains; bounded and tabulated domains use numerical
+// coordinates centered on the Lorentzian peaks.
 
 #include <iostream>
 #include <iomanip>
@@ -63,32 +40,19 @@
 
 using namespace std;
 
-// The Mathematica-generated expressions use integer coefficients with
-// complex<double>. Normalize those mixed operations for standard libraries
-// that require both operands of the complex scalar overloads to have the same
-// value type.
-complex<double> operator+(const complex<double>& lhs, int rhs) { return lhs + static_cast<double>(rhs); }
-complex<double> operator+(int lhs, const complex<double>& rhs) { return static_cast<double>(lhs) + rhs; }
-complex<double> operator-(const complex<double>& lhs, int rhs) { return lhs - static_cast<double>(rhs); }
-complex<double> operator-(int lhs, const complex<double>& rhs) { return static_cast<double>(lhs) - rhs; }
-complex<double> operator*(const complex<double>& lhs, int rhs) { return lhs * static_cast<double>(rhs); }
-complex<double> operator*(int lhs, const complex<double>& rhs) { return static_cast<double>(lhs) * rhs; }
-complex<double> operator/(const complex<double>& lhs, int rhs) { return lhs / static_cast<double>(rhs); }
-complex<double> operator/(int lhs, const complex<double>& rhs) { return static_cast<double>(lhs) / rhs; }
-
-// Interpolation object for re and im parts of Sigma(omega)
-gsl_interp_accel *acc_reSigma;
-gsl_spline *spline_reSigma;
-gsl_interp_accel *acc_imSigma;
-gsl_spline *spline_imSigma;
+// Interpolants for the real and imaginary parts of Sigma(omega).
+gsl_interp_accel *real_sigma_accelerator;
+gsl_spline *real_sigma_spline;
+gsl_interp_accel *imaginary_sigma_accelerator;
+gsl_spline *imaginary_sigma_spline;
 double omega_min, omega_max;
-double reSigma_asymp_neg, reSigma_asymp_pos; // asymptotic values
+double real_sigma_left_endpoint, real_sigma_right_endpoint;
 vector<double> sigma_omega_knots;
 bool particle_hole_symmetric_sigma = false;
 
-// Interpolation object for generic Phi(epsilon) function
-gsl_interp_accel *acc_Phi;
-gsl_spline *spline_Phi;
+// Interpolant for a tabulated Phi(epsilon).
+gsl_interp_accel *phi_accelerator;
+gsl_spline *phi_spline;
 double eps_min, eps_max; // Interval boundaries
 
 const string VERSION = "1.10";
@@ -97,28 +61,28 @@ const string VERSION = "1.10";
 int m, n, o;
 double T;
 double mu;
-string fnReSigma, fnImSigma;
+string real_sigma_filename, imaginary_sigma_filename;
 
 // Optional parameters (with defaults)
-int b = 1;
+int interpolation_selector = 1;
 bool verbose = false;
 bool quiet_warnings = false;
 bool ignore_integration_errors = false;
 bool allow_legacy_self_energy_extrapolation = false;
-int key = GSL_INTEG_GAUSS15;
+int integration_rule = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
 double cutoff = 30.0;
-double sigma_clip = 1.0e-8;
-double epsilon_window_limit = 0.0;
+double sigma_clip_floor = 1.0e-8;
+double epsilon_window_half_width = 0.0;
 double epsilon_window_center = 0.0;
 double epsilon_window_lower = 0.0;
 double epsilon_window_upper = 0.0;
-string fnPhi = "Phi.dat";
-bool calcdos = false; // compute the spectral function
-enum ff { f_f, f_derivative };
-ff f_type = f_derivative;
-int e = 0; // power of epsilon
+string phi_filename = "Phi.dat";
+bool dos_mode = false;
+enum frequency_weight { FERMI_FUNCTION, MINUS_FERMI_DERIVATIVE };
+frequency_weight selected_frequency_weight = MINUS_FERMI_DERIVATIVE;
+int epsilon_power = 0;
 bool optical_mode = false;
 double optical_frequency = 0.0;
 
@@ -150,7 +114,7 @@ void usage()
    cout << "-c C : positive frequency cutoff in units of T (default = 30)" << endl;
    cout << "-s FLOOR : positive in-table ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
-   cout << "-p : filename for Phi tables (default = Phi.dat)" << endl;
+   cout << "-p FILE : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
    cout << "-e E : nonnegative power of epsilon when using the m=0 code (default=0)" << endl;
    cout << "-f : switch (-df/dw) to f in the w integration (incompatible with -d)" << endl;
@@ -372,7 +336,7 @@ double parse_optical_frequency(const char *value)
    return result;
 }
 
-double parse_sigma_clip(const char *value)
+double parse_sigma_clip_floor(const char *value)
 {
    const double result = parse_finite_double(value, "ImSigma clipping floor");
 
@@ -382,7 +346,7 @@ double parse_sigma_clip(const char *value)
    return result;
 }
 
-double parse_epsilon_window_limit(const char *value)
+double parse_epsilon_window_half_width(const char *value)
 {
    const double result = parse_finite_double(value, "epsilon-window limit");
 
@@ -392,7 +356,7 @@ double parse_epsilon_window_limit(const char *value)
    return result;
 }
 
-void cmd_line(int argc, char *argv[])
+void parse_command_line(int argc, char *argv[])
 {
    const int positional_count = 7;
    if (argc < positional_count + 1) {
@@ -430,10 +394,10 @@ void cmd_line(int argc, char *argv[])
          allow_legacy_self_energy_extrapolation = true;
          break;
       case 'i':
-	 b = parse_integer(optarg, "interpolation selector");
+	 interpolation_selector = parse_integer(optarg, "interpolation selector");
 	 break;
       case 'k':
-         key = parse_integer(optarg, "integration rule");
+         integration_rule = parse_integer(optarg, "integration rule");
          break;
       case 'a':
 	 abs_error = parse_finite_double(optarg, "absolute integration tolerance");
@@ -445,22 +409,22 @@ void cmd_line(int argc, char *argv[])
 	 cutoff = parse_finite_double(optarg, "frequency cutoff");
 	 break;
       case 's':
-	 sigma_clip = parse_sigma_clip(optarg);
+	 sigma_clip_floor = parse_sigma_clip_floor(optarg);
 	 break;
       case 'M':
-	 epsilon_window_limit = parse_epsilon_window_limit(optarg);
+	 epsilon_window_half_width = parse_epsilon_window_half_width(optarg);
 	 break;
       case 'p':
-	 fnPhi = string(optarg);
+	 phi_filename = string(optarg);
 	 break;
       case 'd':
-	 calcdos = true;
+         dos_mode = true;
 	 break;
       case 'f':
-	 f_type = f_f;
+         selected_frequency_weight = FERMI_FUNCTION;
 	 break;
       case 'e':
-	 e = parse_integer(optarg, "epsilon power");
+	 epsilon_power = parse_integer(optarg, "epsilon power");
 	 break;
       case 'O':
 	 optical_mode = true;
@@ -484,8 +448,8 @@ void cmd_line(int argc, char *argv[])
    o = parse_integer(argv[first_positional + 2], "frequency power o");
    T = parse_finite_double(argv[first_positional + 3], "temperature T");
    mu = parse_finite_double(argv[first_positional + 4], "chemical potential mu");
-   fnReSigma = string(argv[first_positional + 5]);
-   fnImSigma = string(argv[first_positional + 6]);
+   real_sigma_filename = string(argv[first_positional + 5]);
+   imaginary_sigma_filename = string(argv[first_positional + 6]);
 
    if (m < 0 || m > 8) {
       cerr << "Unsupported kernel index m=" << m << "." << endl;
@@ -495,12 +459,12 @@ void cmd_line(int argc, char *argv[])
       cerr << "Unsupported spectral power n=" << n << " for m=" << m << "." << endl;
       exit(EXIT_FAILURE);
    }
-   if (b < 1 || b > 3) {
-      cerr << "Unsupported interpolation selector i=" << b << "." << endl;
+   if (interpolation_selector < 1 || interpolation_selector > 3) {
+      cerr << "Unsupported interpolation selector i=" << interpolation_selector << "." << endl;
       exit(EXIT_FAILURE);
    }
-   if (key < GSL_INTEG_GAUSS15 || key > GSL_INTEG_GAUSS61) {
-      cerr << "Unsupported integration rule k=" << key << "." << endl;
+   if (integration_rule < GSL_INTEG_GAUSS15 || integration_rule > GSL_INTEG_GAUSS61) {
+      cerr << "Unsupported integration rule k=" << integration_rule << "." << endl;
       exit(EXIT_FAILURE);
    }
    if (abs_error < 0.0) {
@@ -511,16 +475,16 @@ void cmd_line(int argc, char *argv[])
       cerr << "Relative integration tolerance must be nonnegative." << endl;
       exit(EXIT_FAILURE);
    }
-   if (m == 0 && e < 0) {
+   if (m == 0 && epsilon_power < 0) {
       cerr << "Tabulated epsilon power e must be nonnegative." << endl;
       exit(EXIT_FAILURE);
    }
 
-   if (calcdos && m != 0) {
+   if (dos_mode && m != 0) {
       cerr << "Option -d requires m=0." << endl;
       exit(EXIT_FAILURE);
    }
-   if (calcdos && f_type == f_f) {
+   if (dos_mode && selected_frequency_weight == FERMI_FUNCTION) {
       cerr << "Options -d and -f cannot be used together." << endl;
       exit(EXIT_FAILURE);
    }
@@ -528,15 +492,15 @@ void cmd_line(int argc, char *argv[])
       cerr << "Option -O requires n=2." << endl;
       exit(EXIT_FAILURE);
    }
-   if (optical_mode && calcdos) {
+   if (optical_mode && dos_mode) {
       cerr << "Options -O and -d cannot be used together." << endl;
       exit(EXIT_FAILURE);
    }
-   if (optical_mode && f_type == f_f) {
+   if (optical_mode && selected_frequency_weight == FERMI_FUNCTION) {
       cerr << "Options -O and -f cannot be used together." << endl;
       exit(EXIT_FAILURE);
    }
-   if (!calcdos) {
+   if (!dos_mode) {
       if (o < 0) {
          cerr << "Frequency power o must be nonnegative during frequency integration." << endl;
          exit(EXIT_FAILURE);
@@ -592,29 +556,29 @@ void cmd_line(int argc, char *argv[])
       cout << ")";
       cout << " n=" << n << " o=" << o;
       cout << " T=" << T << " mu=" << mu;
-      cout << " Sigma: re=" << fnReSigma << ",im=" << fnImSigma << endl;
-      cout << "i=" << b << " key=" << key << endl;
+      cout << " Sigma: re=" << real_sigma_filename << ",im=" << imaginary_sigma_filename << endl;
+      cout << "i=" << interpolation_selector << " key=" << integration_rule << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
       if (ignore_integration_errors)
 	 cout << "finite partial integration results are accepted" << endl;
       if (allow_legacy_self_energy_extrapolation)
          cout << "legacy self-energy extrapolation is permitted" << endl;
-      cout << "ImSigma clipping floor=" << sigma_clip << endl;
-      if (epsilon_window_limit > 0.0)
-	 cout << "epsilon-window half-width M=" << epsilon_window_limit << endl;
-      cout << "Phi=" << fnPhi << " e=" << e << endl;
+      cout << "ImSigma clipping floor=" << sigma_clip_floor << endl;
+      if (epsilon_window_half_width > 0.0)
+	 cout << "epsilon-window half-width M=" << epsilon_window_half_width << endl;
+      cout << "Phi=" << phi_filename << " e=" << epsilon_power << endl;
       if (optical_mode)
 	 cout << "external Omega=" << optical_frequency << endl;
-      if (calcdos) {
+      if (dos_mode) {
 	 cout << "epsilon integrals only (dos.dat)" << endl;
       } else if (optical_mode && optical_frequency > 0.0) {
 	 cout << "[f(omega)-f(omega+Omega)]/Omega" << endl;
       } else {
-	 switch (f_type) {
-	 case f_f:
+         switch (selected_frequency_weight) {
+         case FERMI_FUNCTION:
 	    cout << "f(T)" << endl;
 	    break;
-	 case f_derivative:
+         case MINUS_FERMI_DERIVATIVE:
 	    cout << "-df/dw" << endl;
 	    break;
 	 default:
@@ -672,294 +636,31 @@ bool integration_error_within_bound(const string &operation,
    return integration_result_acceptable(operation, GSL_ETOL, result, error);
 }
 
-// Faddeeva function
-complex<double> Erfi(complex<double> z) {
-   double relerr = 0;
-   return Faddeeva::erfi(z,relerr);
-}
-
-const complex<double> I(0,1);
+const complex<double> imaginary_unit(0,1);
 
 double J_builtin(int kernel, int power, complex<double> z);
 
-// Functions Jmn, for m = 1,...,8 and n = 0,1,2,3
-// The historical generated n=1,2,3 expressions are retained with a _generated
-// suffix for provenance; production dispatch uses the stable functions below.
-double J_10(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return 2.0;
-}
-
-double J_11_generated(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return (atan((1.0 - x)/y) + atan((1.0 + x)/y))/M_PI;
-}
-
-
-double J_12_generated(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return ((2*y*(1 + pow(y,2) - pow(x,2)) + (pow(y,2) + pow(1 - x,2)) * (pow(y,2) + pow(1 + x,2))*(atan((1 - x)/y) + atan((1 + x)/y))))/(2.*y*pow(M_PI,2)*(pow(y,2) + pow(1 - x,2))*(pow(y,2) + pow(1 + x,2)));
-}
-
-double J_13_generated(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return ((2 * y * (pow(1 + pow(y,2),2) * (3 + 5 * pow(y,2)) - (9 + 2 * pow(y,2) + pow(y,4)) * pow(x,2) + 9 * (1 - y) * (1 + y) * pow(x,4) - 3 * pow(x,6)) + 3 * pow(1 + 2 * (y - x) * (y + x) + pow(pow(y,2) + pow(x,2),2),2) * (atan((1 - x)/y) + atan((1 + x)/y))))/(8. * pow(y,2) * pow(M_PI,3) * pow(1+ 2 * (y - x) * (y + x) + pow(pow(y,2) + pow(x,2),2),2));
-}
-
-double J_20(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return 0.0;
-}
-
-double J_21_generated(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return (2 * x * atan((1 - x)/y) + 2 * x * atan((1 + x)/y) + y * log(1 - (4*x)/(pow(y,2) + pow(1 + x,2))))/(2.*M_PI);
-}
-
-
-double J_22_generated(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return  (x*(-2*y*(-1 + pow(x,2) + pow(y,2)) - (pow(-1 + x,2) + pow(y,2))*(pow(1 + x,2) + pow(y,2))*atan((-1 + x)/y) +(pow(-1 + x,2) + pow(y,2))*(pow(1 + x,2) + pow(y,2))*atan((1 + x)/y)))/(2.*pow(M_PI,2)*y*(pow(-1 + x,2) + pow(y,2))*(pow(1 + x,2) + pow(y,2)));
-}
-
-double J_23_generated(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return -(x*(6*pow(-1 + pow(x,2),3)*y + 2*(-11 + 2*pow(x,2) + 9*pow(x,4))*pow(y,3) + 2*(-5 + 9*pow(x,2))*pow(y,5) + 6*pow(y,7) + 3*pow(pow(x,4) + 2*pow(x,2)*(-1 + pow(y,2)) + pow(1 + pow(y,2),2),2)*atan((-1 + x)/y) - 3*pow(pow(x,4) + 2*pow(x,2)*(-1 + pow(y,2)) + pow(1 + pow(y,2),2),2)*atan((1 + x)/y)))/(8.*pow(M_PI,3)*pow(y,2)*pow(pow(x,4) + 2*pow(x,2)*(-1 + pow(y,2)) + pow(1 + pow(y,2),2),2));
-}
-
-double J_30(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return M_PI/2;
-}
-
-double J_31_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (1./2.)*(I*x - I*xbar + (sqrt(1 - x*x) + sqrt(1 - xbar*xbar))*s);
-    
-   return z.real();
-}
-
-double J_32_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = -(-2 - (I * x * s)/sqrt(1 - x*x) + (I * xbar * s)/sqrt(1 - xbar*xbar)- (2 * (- x + xbar + I * (sqrt(1 - x*x) + sqrt(1 - xbar*xbar)) * s)/(x-xbar)))/(4.*M_PI);
-   return z.real();
-}
-
-double J_33_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = ((pow(1 - x*x,-1.5) + pow(1 - xbar*xbar,-1.5) - (6*(1 - x*xbar + sqrt(1 - x*x)*sqrt(1 - xbar*xbar)))/(sqrt(1 - x*x)*(x - xbar)*(x - xbar)) - (6*(1 - x*xbar + sqrt(1 - x*x)*sqrt(1 - xbar*xbar)))/((x - xbar)*(x - xbar)*sqrt(1 - xbar*xbar)))*s)/(16.*pow(M_PI,2));
-    
-   return z.real();
-}
-
-double J_40(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return 0.0;
-}
-
-double J_41_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (-I*xbar*xbar + xbar*sqrt(1 - xbar*xbar)*s + I*x*x + x*sqrt(1 - x*x)*s)/2.;
-   
-   return z.real();
-}
-
-double J_42_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = -((I*(2*x*sqrt(1 - x*x)*xbar*xbar - x*(sqrt(1-x*x) + sqrt(1 - xbar*xbar)) - xbar*(sqrt(1-x*x) + sqrt(1-xbar*xbar) - 2*x*x*sqrt(1-xbar*xbar)))*s)/(4*M_PI*sqrt(1 - x*x)*(x-xbar)*sqrt(1 - xbar*xbar)));
-    
-   return z.real();
-}
-
-double J_43_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  -I*(2 - I*x*(-3 + 2*x*x)*s/pow(1 - x*x,1.5) - (2 - 2*xbar*xbar - 3*I*xbar*s/sqrt(1 - xbar*xbar) + 2*I*xbar*xbar*xbar*s/sqrt(1 - xbar*xbar))/(1 - xbar*xbar) + 6*I*(-I - (x - 2*x*xbar*xbar + pow(xbar,3) + x*sqrt(1 - x*x)*sqrt(1 - xbar*xbar))*s/((x - xbar)*(x - xbar)*sqrt(1 - xbar*xbar))) - 6*I*(-I + (x*x*x + xbar*(1 - 2*x*x + sqrt(1 - x*x)*sqrt(1- xbar*xbar)))*s/(sqrt(1 - x*x)*(x - xbar)*(x - xbar))))/(16.*M_PI*M_PI);
-   
-   return z.real();
-}
-
-double J_50(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return 3*M_PI/8;
-}
-
-double J_51_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (1./4.)*I*(3*x - 2*pow(x,3) - 3*xbar + 2*pow(xbar,3) - 2*I*pow(1 - x*x,1.5)*s - 2*I*pow(1 - xbar*xbar,1.5)*s);
-   
-   return z.real();
-}
-
-double J_52_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (-pow(x,3) + pow(xbar,3) + I*(x*x*sqrt(1 - x*x) + 2*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar)))*s + xbar*xbar*(-3*x + I*sqrt(1 - xbar*xbar)*s) + 3*x*xbar*(x - I*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar))*s))/(4.*M_PI*(x - xbar));
-   
-   return z.real();
-}
-
-double J_53_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  -(3*(2*x*sqrt(1 - x*x)*pow(xbar,3) + 4*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar)) - x*x*(sqrt(1 - x*x)+ 3*sqrt(1 - xbar*xbar)) + xbar*(2*pow(x,3)*sqrt(1 - xbar*xbar) - 4*x*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar))) + xbar*xbar*(-3*sqrt(1 - x*x) - sqrt(1 - xbar*xbar) + 2*x*x*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar))))*s) /(16.*sqrt(1 - x*x)*M_PI*M_PI*(x - xbar)*(x - xbar)*sqrt(1 - xbar*xbar));
-   
-   return z.real();
-}
-
-double J_60(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return 0.0;
-}
-
-double J_61_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  (-3*I*xbar*xbar + 2*I*pow(xbar,4) + 2*xbar*sqrt(1 - xbar*xbar)*s - 2*pow(xbar,3)*sqrt(1 - xbar*xbar)*s + x*(I*x*(3 - 2*x*x) + 2*pow(1 - x*x,1.5)*s))/4.;
-   
-   return z.real();
-}
-
-double J_62_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  -(x*(-3 + 4*x*x) - 3*xbar + 4*pow(xbar,3) - I*sqrt(1 - x*x)*(-1 + 4*x*x)*s - I*sqrt(1 - xbar*xbar)*s + 4*I*xbar*xbar*sqrt(1 - xbar*xbar)*s - (I*(3*I*x*x - 2*I*pow(x,4) - 3*I*xbar*xbar + 2*I*pow(xbar,4) + 2*x*pow(1 - x*x,1.5)*s + 2*xbar*pow(1 - xbar*xbar,1.5)*s))/(x - xbar))/(4.*M_PI);
-   
-   return z.real();
-}
-
-double J_63_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  -(3*(sqrt(1 - x*x)*(-1 + 4*x*x)*pow(xbar,3) + xbar*xbar*(-4*x*sqrt(1 - x*x) - 3*x*sqrt(1 - xbar*xbar) + 4*pow(x,3)*sqrt(1 - xbar*xbar)) + x*(-x*x*sqrt(1 - xbar*xbar) + 2*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar))) + xbar*(2*(sqrt(1 - x*x) + sqrt(1 - xbar*xbar)) - x*x*(3*sqrt(1 - x*x) + 4*sqrt(1 - xbar*xbar))))*s)/(16.*sqrt(1 - x*x)*M_PI*M_PI*(x - xbar)*(x - xbar)*sqrt(1 - xbar*xbar));
-   
-   return z.real();
-}
-
-double J_70(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return sqrt(M_PI/2);
-}
-
-double J_71_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  I*(exp(2*xbar*xbar)*(M_PI*Erfi(sqrt(2)*x) - log(-(1/x)) - log(x)) + exp(2*x*x)*(-(M_PI*Erfi(sqrt(2)*xbar)) + log(-(1/xbar)) + log(xbar)))/(2.*exp(2*(x*x + xbar*xbar))*M_PI);
-   
-   return z.real();
-}
-
-double J_72_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (2*exp(2*(x*x + xbar*xbar))*x*sqrt(2*M_PI) - exp(2*xbar*xbar)*(1 + 2*x*x)*M_PI*Erfi(sqrt(2)*x) + exp(2*x*x)*M_PI*Erfi(sqrt(2)*xbar) + exp(2*xbar*xbar)*log(-(1/x)) + 2*exp(2*xbar*xbar)*x*x*log(-(1/x)) - exp(2*xbar*xbar)*log(1/x) - 2*exp(2*xbar*xbar)*x*x*log(1/x) - exp(2*x*x)*log(-(1/xbar)) + exp(2*x*x)*log(1/xbar) + 2*exp(2*x*x)*xbar*xbar*(M_PI*Erfi(sqrt(2)*xbar) - log(-(1/xbar)) + log(1/xbar)) - 2*xbar*(exp(2*(x*x + xbar*xbar))*sqrt(2*M_PI) - exp(2*xbar*xbar)*x*M_PI*Erfi(sqrt(2)*x) + exp(2*x*x)*x*M_PI*Erfi(sqrt(2)*xbar) + exp(2*xbar*xbar)*x*log(-(1/x)) - exp(2*xbar*xbar)*x*log(1/x) - exp(2*x*x)*x*log(-(1/xbar)) + exp(2*x*x)*x*log(1/xbar)))/(2.*exp(2*(x*x + xbar*xbar))*M_PI*M_PI*(x - xbar));
-   
-   return z.real();
-}
-
-double J_73_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (I*(6*exp(2*(x*x + xbar*xbar))*x*sqrt(2*M_PI) + 2*exp(2*(x*x + xbar*xbar))*pow(x,3)*sqrt(2*M_PI) - exp(2*xbar*xbar)*(3 + 5*x*x + 4*pow(x,4))*M_PI*Erfi(sqrt(2)*x) + 3*exp(2*x*x)*M_PI*Erfi(sqrt(2)*xbar) - exp(2*x*x)*x*x*M_PI*Erfi(sqrt(2)*xbar) + 3*exp(2*xbar*xbar)*log(-(1/x)) + 5*exp(2*xbar*xbar)*x*x*log(-(1/x)) + 4*exp(2*xbar*xbar)*pow(x,4)*log(-(1/x)) + 3*exp(2*xbar*xbar)*log(x) + 5*exp(2*xbar*xbar)*x*x*log(x) + 4*exp(2*xbar*xbar)*pow(x,4)*log(x) - 3*exp(2*x*x)*log(-(1/xbar)) + exp(2*x*x)*x*x*log(-(1/xbar)) + 4*exp(2*x*x)*pow(xbar,4)*(M_PI*Erfi(sqrt(2)*xbar) - log(-(1/xbar)) - log(xbar)) - 3*exp(2*x*x)*log(xbar) + exp(2*x*x)*x*x*log(xbar) - 2*exp(2*x*x)*pow(xbar,3)*(exp(2*xbar*xbar)*sqrt(2*M_PI) + 4*x*M_PI*Erfi(sqrt(2)*xbar) - 4*x*log(-(1/xbar)) - 4*x*log(xbar)) - 2*xbar*(3*exp(2*(x*x + xbar*xbar))*sqrt(2*M_PI) + 3*exp(2*(x*x + xbar*xbar))*x*x*sqrt(2*M_PI) - 2*exp(2*xbar*xbar)*x*(1 + 2*x*x)*M_PI*Erfi(sqrt(2)*x) + 2*exp(2*x*x)*x*M_PI*Erfi(sqrt(2)*xbar) + 2*exp(2*xbar*xbar)*x*log(-(1/x)) + 4*exp(2*xbar*xbar)*pow(x,3)*log(-(1/x)) + 2*exp(2*xbar*xbar)*x*log(x) + 4*exp(2*xbar*xbar)*pow(x,3)*log(x) - 2*exp(2*x*x)*x*log(-(1/xbar)) - 2*exp(2*x*x)*x*log(xbar)) + xbar*xbar*(6*exp(2*(x*x + xbar*xbar))*x*sqrt(2*M_PI) - exp(2*xbar*xbar)*(-1 + 4*x*x)*M_PI*Erfi(sqrt(2)*x) + exp(2*x*x)*(5 + 4*x*x)*M_PI*Erfi(sqrt(2)*xbar) - exp(2*xbar*xbar)*log(-(1/x)) + 4*exp(2*xbar*xbar)*x*x*log(-(1/x)) - exp(2*xbar*xbar)*log(x) + 4*exp(2*xbar*xbar)*x*x*log(x) - 5*exp(2*x*x)*log(-(1/xbar)) - 4*exp(2*x*x)*x*x*log(-(1/xbar)) - 5*exp(2*x*x)*log(xbar) - 4*exp(2*x*x)*x*x*log(xbar))))/(4.*exp(2*(x*x + xbar*xbar))*pow(M_PI,3)*pow(x - xbar,2));
-   return z.real();
-}
-
-double J_80(complex<double> OMEGA) {
-   double x = OMEGA.real();
-   double y = OMEGA.imag();
-   return 0.0;
-}
-
-double J_81_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z =  (I*(exp(2*xbar*xbar)*x*(M_PI*Erfi(sqrt(2)*x) - log(-(1/x)) - log(x)) - exp(2*x*x)*xbar*(M_PI*Erfi(sqrt(2)*xbar) - log(-(1/xbar)) - log(xbar))))/(2.*exp(2*(x*x + xbar*xbar))*M_PI);
-   
-   return z.real();
-}
-
-double J_82_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = -(-4*exp(2*x*x)*pow(xbar,3)*(M_PI*Erfi(sqrt(2)*xbar) - log(-(1/xbar)) - log(xbar)) + x*(-2*exp(2*(x*x + xbar*xbar))*x*sqrt(2*M_PI) + exp(2*xbar*xbar)*(1 + 4*x*x)*M_PI*Erfi(sqrt(2)*x) - exp(2*x*x)*M_PI*Erfi(sqrt(2)*xbar) - exp(2*xbar*xbar)*log(-(1/x)) - 4*exp(2*xbar*xbar)*x*x*log(-(1/x)) - exp(2*xbar*xbar)*log(x) - 4*exp(2*xbar*xbar)*x*x*log(x) + exp(2*x*x)*log(-(1/xbar)) + exp(2*x*x)*log(xbar)) + xbar*(-(exp(2*xbar*xbar)*(-1 + 4*x*x)*M_PI*Erfi(sqrt(2)*x)) - exp(2*x*x)*M_PI*Erfi(sqrt(2)*xbar) - exp(2*xbar*xbar)*log(-(1/x)) + 4*exp(2*xbar*xbar)*x*x*log(-(1/x)) - exp(2*xbar*xbar)*log(x) + 4*exp(2*xbar*xbar)*x*x*log(x) + exp(2*x*x)*log(-(1/xbar)) + exp(2*x*x)*log(xbar)) + 2*exp(2*x*x)*xbar*xbar*(exp(2*xbar*xbar)*sqrt(2*M_PI) + 2*x*M_PI*Erfi(sqrt(2)*xbar) - 2*x*log(-(1/xbar)) - 2*x*log(xbar)))/(4.*exp(2*(x*x + xbar*xbar))*M_PI*M_PI*(x - xbar));
-   
-   return z.real();
-}
-
-double J_83_generated(complex<double> OMEGA) {
-   complex<double> x = OMEGA;
-   complex<double> xbar = conj(OMEGA);
-   double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
-   complex<double> z = (-I*(2*exp(2*xbar*xbar)*xbar*xbar*(3*exp(2*x*x)*sqrt(2*M_PI) + x*(-3 + 4*x*x)*M_PI*Erfi(sqrt(2)*x) + (3*x - 4*pow(x,3))*log(-(1/x)) + 3*x*log(x) - 4*pow(x,3)*log(x)) - 8*exp(2*x*x)*pow(xbar,5)*(M_PI*Erfi(sqrt(2)*xbar) - log(-(1/xbar)) - log(xbar)) - x*(6*exp(2*(x*x + xbar*xbar))*x*sqrt(2*M_PI) + 4*exp(2*(x*x + xbar*xbar))*pow(x,3)*sqrt(2*M_PI) - exp(2*xbar*xbar)*(3 + 6*x*x + 8*pow(x,4))*M_PI*Erfi(sqrt(2)*x) + 3*exp(2*x*x)*M_PI*Erfi(sqrt(2)*xbar) + 3*exp(2*xbar*xbar)*log(-(1/x)) + 6*exp(2*xbar*xbar)*x*x*log(-(1/x)) + 8*exp(2*xbar*xbar)*pow(x,4)*log(-(1/x)) + 3*exp(2*xbar*xbar)*log(x) + 6*exp(2*xbar*xbar)*x*x*log(x) + 8*exp(2*xbar*xbar)*pow(x,4)*log(x) - 3*exp(2*x*x)*log(-(1/xbar)) - 3*exp(2*x*x)*log(xbar)) + 4*exp(2*x*x)*pow(xbar,4)*(exp(2*xbar*xbar)*sqrt(2*M_PI) + 4*x*M_PI*Erfi(sqrt(2)*xbar) - 4*x*log(-(1/xbar)) - 4*x*log(xbar)) - 2*exp(2*x*x)*pow(xbar,3)*(4*exp(2*xbar*xbar)*x*sqrt(2*M_PI) + (3 + 4*x*x)*M_PI*Erfi(sqrt(2)*xbar) - (3 + 4*x*x)*log(-(1/xbar)) - 3*log(xbar) - 4*x*x*log(xbar)) + xbar*(8*exp(2*(x*x + xbar*xbar))*pow(x,3)*sqrt(2*M_PI) - exp(2*xbar*xbar)*(-3 + 16*pow(x,4))*M_PI*Erfi(sqrt(2)*x) + 3*exp(2*x*x)*(-1 + 2*x*x)*M_PI*Erfi(sqrt(2)*xbar) - 3*exp(2*xbar*xbar)*log(-(1/x)) + 16*exp(2*xbar*xbar)*pow(x,4)*log(-(1/x)) - 3*exp(2*xbar*xbar)*log(x) + 16*exp(2*xbar*xbar)*pow(x,4)*log(x) + 3*exp(2*x*x)*log(-(1/xbar)) - 6*exp(2*x*x)*x*x*log(-(1/xbar)) + 3*exp(2*x*x)*log(xbar) - 6*exp(2*x*x)*x*x*log(xbar))))/(8.*exp(2*(x*x + xbar*xbar))*pow(M_PI,3)*(x - xbar)*(x - xbar));
-    
-   return z.real();
-}
-
-double J_11(complex<double> z) { return J_builtin(1, 1, z); }
-double J_12(complex<double> z) { return J_builtin(1, 2, z); }
-double J_13(complex<double> z) { return J_builtin(1, 3, z); }
-double J_21(complex<double> z) { return J_builtin(2, 1, z); }
-double J_22(complex<double> z) { return J_builtin(2, 2, z); }
-double J_23(complex<double> z) { return J_builtin(2, 3, z); }
-double J_31(complex<double> z) { return J_builtin(3, 1, z); }
-double J_32(complex<double> z) { return J_builtin(3, 2, z); }
-double J_33(complex<double> z) { return J_builtin(3, 3, z); }
-double J_41(complex<double> z) { return J_builtin(4, 1, z); }
-double J_42(complex<double> z) { return J_builtin(4, 2, z); }
-double J_43(complex<double> z) { return J_builtin(4, 3, z); }
-double J_51(complex<double> z) { return J_builtin(5, 1, z); }
-double J_52(complex<double> z) { return J_builtin(5, 2, z); }
-double J_53(complex<double> z) { return J_builtin(5, 3, z); }
-double J_61(complex<double> z) { return J_builtin(6, 1, z); }
-double J_62(complex<double> z) { return J_builtin(6, 2, z); }
-double J_63(complex<double> z) { return J_builtin(6, 3, z); }
-double J_71(complex<double> z) { return J_builtin(7, 1, z); }
-double J_72(complex<double> z) { return J_builtin(7, 2, z); }
-double J_73(complex<double> z) { return J_builtin(7, 3, z); }
-double J_81(complex<double> z) { return J_builtin(8, 1, z); }
-double J_82(complex<double> z) { return J_builtin(8, 2, z); }
-double J_83(complex<double> z) { return J_builtin(8, 3, z); }
-
-void load_Phi()
+double J_builtin_mass(int kernel)
 {
-   const vector<table_row> rows = read_two_column_table(fnPhi, "Phi");
-   require_strictly_increasing(rows, "Phi", fnPhi);
+   switch (kernel) {
+   case 1: return 2.0;
+   case 2: return 0.0;
+   case 3: return M_PI/2.0;
+   case 4: return 0.0;
+   case 5: return 3.0*M_PI/8.0;
+   case 6: return 0.0;
+   case 7: return sqrt(M_PI/2.0);
+   case 8: return 0.0;
+   default:
+      cerr << "Built-in kernel mass not implemented for m=" << kernel << endl;
+      exit(EXIT_FAILURE);
+   }
+}
+
+void load_phi_table()
+{
+   const vector<table_row> rows = read_two_column_table(phi_filename, "Phi");
+   require_strictly_increasing(rows, "Phi", phi_filename);
 
    vector<double> eps;
    vector<double> phi;
@@ -967,13 +668,13 @@ void load_Phi()
    phi.reserve(rows.size());
    for (vector<table_row>::const_iterator row = rows.begin();
         row != rows.end(); ++row) {
-      const double power = pow(row->x, e);
+      const double power = pow(row->x, epsilon_power);
       const double effective_phi = row->y*power;
       if (!isfinite(power) || !isfinite(effective_phi)) {
          ostringstream message;
-         message << "applying epsilon power e=" << e
+         message << "applying epsilon power e=" << epsilon_power
                  << " produced a non-finite Phi value";
-         table_error("Phi", fnPhi, row->line, message.str());
+         table_error("Phi", phi_filename, row->line, message.str());
       }
       eps.push_back(row->x);
       phi.push_back(effective_phi);
@@ -981,22 +682,22 @@ void load_Phi()
 
    const bool nonnegative_phi = all_of(phi.begin(), phi.end(),
       [](double value) { return value >= 0.0; });
-   const gsl_interp_type * Interp_type = nonnegative_phi
+   const gsl_interp_type * interpolation_type = nonnegative_phi
       ? gsl_interp_steffen : gsl_interp_akima;
-   require_interpolation_size(rows, Interp_type, "Phi", fnPhi);
+   require_interpolation_size(rows, interpolation_type, "Phi", phi_filename);
 
    interpolation_state candidate;
    string error_message;
-   if (!create_interpolation_state(Interp_type, eps, phi, "Phi",
+   if (!create_interpolation_state(interpolation_type, eps, phi, "Phi",
                                    candidate, error_message))
       interpolation_error(error_message);
 
    eps_min = eps.front();
    eps_max = eps.back();
-   acc_Phi = candidate.accelerator;
-   spline_Phi = candidate.spline;
+   phi_accelerator = candidate.accelerator;
+   phi_spline = candidate.spline;
    if (verbose)
-      cout << "Phi interpolation=" << gsl_spline_name(spline_Phi) << endl;
+      cout << "Phi interpolation=" << gsl_spline_name(phi_spline) << endl;
 }
 
 struct epsilon_interval {
@@ -1025,8 +726,8 @@ double J_tabulated_mass(double lower, double upper)
    if (!cached || cached_lower != lower || cached_upper != upper) {
       double result = numeric_limits<double>::quiet_NaN();
       gsl_set_error_handler_off();
-      const int status = gsl_spline_eval_integ_e(spline_Phi, lower, upper,
-                                                  acc_Phi, &result);
+      const int status = gsl_spline_eval_integ_e(phi_spline, lower, upper,
+                                                  phi_accelerator, &result);
       if (!integration_result_acceptable("Custom epsilon integration",
                                          status, result, 0.0))
          exit(EXIT_FAILURE);
@@ -1038,21 +739,21 @@ double J_tabulated_mass(double lower, double upper)
    return cached_value;
 }
 
-// Switches between J for different m and n indices.
-double J_mn (complex<double> OMEGA)
+// Selects the requested tabulated, restricted, or built-in J_mn(z) path.
+double J_selected(complex<double> z)
 {
    if (m == 0) {
-      const epsilon_interval interval = epsilon_window_limit > 0.0
+      const epsilon_interval interval = epsilon_window_half_width > 0.0
          ? restricted_epsilon_interval(0)
          : epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)};
       if (interval.empty)
          return 0.0;
       if (n == 0)
          return J_tabulated_mass(interval.lower, interval.upper);
-      return J_tabulated_single(n, OMEGA, interval.lower, interval.upper);
+      return J_tabulated_single(n, z, interval.lower, interval.upper);
    }
 
-   if (epsilon_window_limit > 0.0) {
+   if (epsilon_window_half_width > 0.0) {
       const epsilon_interval interval = restricted_epsilon_interval(m);
       if (interval.empty)
 	 return 0.0;
@@ -1065,7 +766,7 @@ double J_mn (complex<double> OMEGA)
 	    static double cached_upper = 0.0;
 	    if (!cached || cached_kernel != m || cached_lower != interval.lower ||
 		cached_upper != interval.upper) {
-	       cached_value = J_restricted_single(m, n, OMEGA,
+               cached_value = J_restricted_single(m, n, z,
 		  interval.lower, interval.upper);
 	       cached_kernel = m;
 	       cached_lower = interval.lower;
@@ -1074,56 +775,30 @@ double J_mn (complex<double> OMEGA)
 	    }
 	    return cached_value;
 	 }
-	 return J_restricted_single(m, n, OMEGA, interval.lower, interval.upper);
+         return J_restricted_single(m, n, z, interval.lower, interval.upper);
       }
    }
 
-   switch(n) {
-   case 0:
-      switch (m) {
-      case 1:
-	 return J_10(OMEGA);
-      case 2:
-	 return J_20(OMEGA);
-      case 3:
-	 return J_30(OMEGA);
-      case 4:
-	 return J_40(OMEGA);
-      case 5:
-	 return J_50(OMEGA);
-      case 6:
-	 return J_60(OMEGA);
-      case 7:
-	 return J_70(OMEGA);
-      case 8:
-	 return J_80(OMEGA);
-      }
-	 break;
-
-   case 1:
-   case 2:
-   case 3:
-      if (1 <= m && m <= 8)
-	 return J_builtin(m, n, OMEGA);
-      break;
-      
-   default:
-      break;
+   if (1 <= m && m <= 8) {
+      if (n == 0)
+         return J_builtin_mass(m);
+      if (1 <= n && n <= 3)
+         return J_builtin(m, n, z);
    }
 
    cerr << "Jmn not implemented for m=" << m << ", n=" << n << endl;
    abort();
 }
 
-struct hilbert_pair {
-   complex<double> value;
-   complex<double> derivative;
-   complex<double> second_derivative;
+struct HilbertDerivatives {
+   complex<double> H;
+   complex<double> dH;
+   complex<double> d2H;
 };
 
 // H_m(z) = integral Phi_m(epsilon)/(z-epsilon) d epsilon.
 
-hilbert_pair flat_hilbert(int kernel, complex<double> z)
+HilbertDerivatives H_box(int kernel, complex<double> z)
 {
    if (abs(z) > 2.0) {
       const complex<double> u = 1.0/z;
@@ -1135,7 +810,7 @@ hilbert_pair flat_hilbert(int kernel, complex<double> z)
 	 for (int k = 0; k < 64; ++k, term *= u2)
 	    value += 2.0*term/(2*k + 1.0);
 
-	 return hilbert_pair{value,
+	 return HilbertDerivatives{value,
 	    -2.0*u2/(1.0 - u2),
 	    4.0*u*u2/((1.0 - u2)*(1.0 - u2))};
       }
@@ -1149,7 +824,7 @@ hilbert_pair flat_hilbert(int kernel, complex<double> z)
 	 derivative -= 4.0*k*term*u/(2*k + 1.0);
 	 second_derivative += 4.0*k*term*u2;
       }
-      return hilbert_pair{value, derivative, second_derivative};
+      return HilbertDerivatives{value, derivative, second_derivative};
    }
 
    const complex<double> value1 = log(z + 1.0) - log(z - 1.0);
@@ -1157,14 +832,14 @@ hilbert_pair flat_hilbert(int kernel, complex<double> z)
    const complex<double> second_derivative1 =
       4.0*z/((1.0 - z*z)*(1.0 - z*z));
    if (kernel == 1)
-      return hilbert_pair{value1, derivative1, second_derivative1};
+      return HilbertDerivatives{value1, derivative1, second_derivative1};
 
-   return hilbert_pair{z*value1 - 2.0,
+   return HilbertDerivatives{z*value1 - 2.0,
 		       value1 + z*derivative1,
 		       2.0*derivative1 + z*second_derivative1};
 }
 
-hilbert_pair gaussian_hilbert_asymptotic(int kernel, complex<double> z)
+HilbertDerivatives H_gaussian_asymptotic(int kernel, complex<double> z)
 {
    const double mass = sqrt(M_PI/2.0);
    const complex<double> u = 1.0/z;
@@ -1195,8 +870,8 @@ hilbert_pair gaussian_hilbert_asymptotic(int kernel, complex<double> z)
    }
 
    if (kernel == 7)
-      return hilbert_pair{value7, derivative7, second_derivative7};
-   return hilbert_pair{value8, derivative8, second_derivative8};
+      return HilbertDerivatives{value7, derivative7, second_derivative7};
+   return HilbertDerivatives{value8, derivative8, second_derivative8};
 }
 
 bool lower_half_plane(complex<double> z)
@@ -1204,45 +879,45 @@ bool lower_half_plane(complex<double> z)
    return z.imag() < 0.0 || (z.imag() == 0.0 && signbit(z.imag()));
 }
 
-hilbert_pair kernel_hilbert(int kernel, complex<double> z)
+HilbertDerivatives H_builtin(int kernel, complex<double> z)
 {
    if (kernel == 1 || kernel == 2)
-      return flat_hilbert(kernel, z);
+      return H_box(kernel, z);
 
    if (3 <= kernel && kernel <= 6) {
       const complex<double> root = sqrt(z - 1.0)*sqrt(z + 1.0);
       const complex<double> t = 1.0/(z + root);
 
       if (kernel == 3)
-	 return hilbert_pair{M_PI*t, -M_PI*t/root, M_PI/(root*root*root)};
+	 return HilbertDerivatives{M_PI*t, -M_PI*t/root, M_PI/(root*root*root)};
       if (kernel == 4)
-	 return hilbert_pair{0.5*M_PI*t*t,
+	 return HilbertDerivatives{0.5*M_PI*t*t,
 			     -M_PI*t*t/root,
 			     M_PI*t*t*(z + 2.0*root)/(root*root*root)};
       if (kernel == 5)
-	 return hilbert_pair{0.25*M_PI*t*(3.0 - t*t),
+	 return HilbertDerivatives{0.25*M_PI*t*(3.0 - t*t),
 			     -1.5*M_PI*t*t,
 			     3.0*M_PI*t*t/root};
-      return hilbert_pair{0.125*M_PI*t*t*(2.0 - t*t),
+      return HilbertDerivatives{0.125*M_PI*t*t*(2.0 - t*t),
 			  -M_PI*t*t*t,
 			  3.0*M_PI*t*t*t/root};
    }
 
    if (kernel == 7 || kernel == 8) {
       if (abs(z) > 8.0)
-	 return gaussian_hilbert_asymptotic(kernel, z);
+	 return H_gaussian_asymptotic(kernel, z);
 
       const double sqrt2 = sqrt(2.0);
       const double mass = sqrt(M_PI/2.0);
       const complex<double> value7 = lower_half_plane(z)
-	 ? I*M_PI*Faddeeva::w(-sqrt2*z)
-	 : -I*M_PI*Faddeeva::w(sqrt2*z);
+	 ? imaginary_unit*M_PI*Faddeeva::w(-sqrt2*z)
+	 : -imaginary_unit*M_PI*Faddeeva::w(sqrt2*z);
       const complex<double> derivative7 = 4.0*mass - 4.0*z*value7;
       const complex<double> second_derivative7 = -4.0*value7 - 4.0*z*derivative7;
 
       if (kernel == 7)
-	 return hilbert_pair{value7, derivative7, second_derivative7};
-      return hilbert_pair{z*value7 - mass,
+	 return HilbertDerivatives{value7, derivative7, second_derivative7};
+      return HilbertDerivatives{z*value7 - mass,
 			  value7 + z*derivative7,
 			  2.0*derivative7 + z*second_derivative7};
    }
@@ -1263,7 +938,7 @@ void compensated_add(long double term, long double &sum, long double &correction
    sum = updated;
 }
 
-long double finite_moment_series(int kernel, int power, long double x, long double y)
+long double J_finite_band_series(int kernel, int power, long double x, long double y)
 {
    // Expanding J itself avoids cancellation between Hilbert-transform terms
    // when the Lorentzian center is far from a finite band.
@@ -1331,7 +1006,7 @@ long double finite_moment_series(int kernel, int power, long double x, long doub
    return powl(scaled_y, power)*sum/powl(radius, power);
 }
 
-long double flat_exterior_kernel(int kernel, int power, long double x, long double y)
+long double J_box_exterior(int kernel, int power, long double x, long double y)
 {
    const long double distance = x - 1.0L;
    const long double eta = y/distance;
@@ -1374,7 +1049,7 @@ long double flat_exterior_kernel(int kernel, int power, long double x, long doub
       (powl(PI_L, power)*powl(distance, power - 1));
 }
 
-long double flat_kernel(int kernel, int power, long double x, long double y)
+long double J_box_n2_n3(int kernel, int power, long double x, long double y)
 {
    const long double y2 = y*y;
    const long double lower_distance = 1.0L - x;
@@ -1404,7 +1079,7 @@ long double flat_kernel(int kernel, int power, long double x, long double y)
        upper_denominator*upper_denominator));
 }
 
-long double square_root_kernel(int kernel, int power, long double x, long double y)
+long double J_sqrt_band_n2_n3(int kernel, int power, long double x, long double y)
 {
    // These branch variables keep every numerator nonnegative for x >= 0 and
    // avoid subtracting nearly equal square roots at and outside the band edge.
@@ -1543,7 +1218,7 @@ bool gaussian_hilbert_kernel(int kernel, int power, double x, double y,
 {
    const complex<double> z(x, y);
    const double mass = sqrt(M_PI/2.0);
-   const complex<double> h7 = -I*M_PI*Faddeeva::w(sqrt(2.0)*z);
+   const complex<double> h7 = -imaginary_unit*M_PI*Faddeeva::w(sqrt(2.0)*z);
    const complex<double> h7_derivative = 4.0*mass - 4.0*z*h7;
    const complex<double> h7_second_derivative = -4.0*h7 - 4.0*z*h7_derivative;
    complex<double> h = h7;
@@ -1719,7 +1394,7 @@ bool gaussian_quadrature_kernel(int kernel, int power,
    return success && isfinite(result) && result >= 0.0L;
 }
 
-long double gaussian_kernel(int kernel, int power, long double x, long double y)
+long double J_gaussian_n2_n3(int kernel, int power, long double x, long double y)
 {
    long double result;
    if ((x >= 5.5L || hypotl(x, y) >= 8.0L) &&
@@ -1739,10 +1414,10 @@ long double gaussian_kernel(int kernel, int power, long double x, long double y)
    exit(EXIT_FAILURE);
 }
 
-long double hilbert_single_kernel(int kernel, long double x, long double y)
+long double J_n1(int kernel, long double x, long double y)
 {
    if (kernel <= 6 && hypotl(x, y) >= 2.0L)
-      return finite_moment_series(kernel, 1, x, y);
+      return J_finite_band_series(kernel, 1, x, y);
 
    if (kernel == 1 || kernel == 2) {
       const long double angle = atan2l(2.0L*y,
@@ -1786,7 +1461,7 @@ long double hilbert_single_kernel(int kernel, long double x, long double y)
    }
 
    const complex<double> z(static_cast<double>(x), static_cast<double>(y));
-   long double result = -kernel_hilbert(kernel, z).value.imag()/PI_L;
+   long double result = -H_builtin(kernel, z).H.imag()/PI_L;
 
    // The Gaussian moment asymptotic omits the exponentially small on-shell pole.
    if ((kernel == 7 || kernel == 8) && abs(z) > 8.0 &&
@@ -1800,6 +1475,8 @@ long double hilbert_single_kernel(int kernel, long double x, long double y)
 
 } // namespace
 
+// J_mn(z) = integral Phi_m(epsilon) A_epsilon(z)^n d epsilon,
+// where A_epsilon(z) = -Im[1/(z-epsilon)]/pi.
 double J_builtin(int kernel, int power, complex<double> z)
 {
    if (kernel < 1 || kernel > 8 || power < 1 || power > 3 ||
@@ -1816,19 +1493,19 @@ double J_builtin(int kernel, int power, complex<double> z)
 
    long double value;
    if (power == 1) {
-      value = hilbert_single_kernel(kernel, x, y);
+      value = J_n1(kernel, x, y);
    } else if (kernel <= 6) {
       if (hypotl(x, y) >= 2.0L) {
-         value = finite_moment_series(kernel, power, x, y);
+         value = J_finite_band_series(kernel, power, x, y);
       } else if (kernel <= 2 && x > 1.0L && y < 0.75L*(x - 1.0L)) {
-         value = flat_exterior_kernel(kernel, power, x, y);
+         value = J_box_exterior(kernel, power, x, y);
       } else if (kernel <= 2) {
-         value = flat_kernel(kernel, power, x, y);
+         value = J_box_n2_n3(kernel, power, x, y);
       } else {
-         value = square_root_kernel(kernel, power, x, y);
+         value = J_sqrt_band_n2_n3(kernel, power, x, y);
       }
    } else {
-      value = gaussian_kernel(kernel, power, x, y);
+      value = J_gaussian_n2_n3(kernel, power, x, y);
    }
 
    if (!isfinite(value)) {
@@ -1846,7 +1523,7 @@ double J_builtin(int kernel, int power, complex<double> z)
 
 epsilon_interval restricted_epsilon_interval(int kernel)
 {
-   if (epsilon_window_limit == 0.0)
+   if (epsilon_window_half_width == 0.0)
       return epsilon_interval{0.0, 0.0, false, false};
 
    if (kernel == 7 || kernel == 8)
@@ -1924,7 +1601,7 @@ epsilon_integration_policy restricted_epsilon_policy()
 epsilon_integration_policy tabulated_epsilon_policy()
 {
    return epsilon_integration_policy{abs_error, rel_error, abs_error, rel_error,
-                                     key, true};
+                                     integration_rule, true};
 }
 
 epsilon_integration_policy divided_epsilon_policy(
@@ -2022,12 +1699,12 @@ void warn_restricted_roundoff(const char *description)
    }
 }
 
-long double restricted_phi_value(int kernel, long double epsilon)
+long double Phi_selected(int kernel, long double epsilon)
 {
    if (kernel == 0) {
       double point = static_cast<double>(epsilon);
       point = max(eps_min, min(eps_max, point));
-      return gsl_spline_eval(spline_Phi, point, acc_Phi);
+      return gsl_spline_eval(phi_spline, point, phi_accelerator);
    }
 
    if (kernel <= 6 && fabsl(epsilon) > 1.0L)
@@ -2057,12 +1734,12 @@ long double restricted_phi_value(int kernel, long double epsilon)
    }
 }
 
-long double restricted_phi_value_at_offset(int kernel, long double center,
+long double Phi_selected_at_offset(int kernel, long double center,
                                            long double offset)
 {
    const long double epsilon = center + offset;
    if (kernel < 3 || kernel > 6)
-      return restricted_phi_value(kernel, epsilon);
+      return Phi_selected(kernel, epsilon);
 
    // Keep distances from a finite-band edge before adding a sub-ULP offset
    // to a center near +/-1.
@@ -2118,7 +1795,7 @@ double restricted_single_integrand(double argument, void *raw_params)
       const long double distance = static_cast<long double>(argument)*argument;
       const long double offset = params.transformed_direction*
          params.width*distance;
-      return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+      return static_cast<double>(Phi_selected_at_offset(params.kernel,
          params.center, offset)*2.0L*argument/
          powl(1.0L + distance*distance, params.power)*params.integrand_scale);
    }
@@ -2132,20 +1809,20 @@ double restricted_single_integrand(double argument, void *raw_params)
            powl(1.0L + inverse*inverse, params.power);
       const long double offset = params.transformed_direction*
          params.width*distance;
-      return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+      return static_cast<double>(Phi_selected_at_offset(params.kernel,
          params.center, offset)*weight*params.integrand_scale);
    }
    if (params.transformed) {
       const long double theta = params.transformed_origin + argument;
       const long double cosine = cosl(theta);
       const long double offset = params.width*tanl(theta);
-      return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+      return static_cast<double>(Phi_selected_at_offset(params.kernel,
          params.center, offset)*
          powl(cosine, 2.0L*params.power - 2.0L)*params.integrand_scale);
    }
 
    const long double epsilon = argument;
-   long double value = restricted_phi_value(params.kernel, epsilon);
+   long double value = Phi_selected(params.kernel, epsilon);
    if (params.power != 0) {
       const long double difference = params.center - epsilon;
       const long double spectral = params.signed_imaginary/
@@ -2191,7 +1868,7 @@ double restricted_odd_pair_integrand(double argument, void *raw_params)
       power_sum = minus_value*minus_value + minus_value*plus_value +
                   plus_value*plus_value;
    const long double paired_spectral = difference*power_sum;
-   return static_cast<double>(restricted_phi_value(params.kernel, epsilon)*
+   return static_cast<double>(Phi_selected(params.kernel, epsilon)*
       paired_spectral/(cosine*cosine)*params.integrand_scale);
 }
 
@@ -2269,7 +1946,7 @@ double restricted_optical_direct_integrand(double epsilon, void *raw_params)
       *static_cast<restricted_optical_params *>(raw_params);
    const complex<double> g1 = 1.0/(params.z1 - epsilon);
    const complex<double> g2 = 1.0/(params.z2 - epsilon);
-   return static_cast<double>(restricted_phi_value(params.kernel, epsilon))
+   return static_cast<double>(Phi_selected(params.kernel, epsilon))
       *(-g1.imag()/M_PI)*(-g2.imag()/M_PI);
 }
 
@@ -2481,7 +2158,7 @@ double restricted_optical_transformed_integrand(double argument, void *raw_param
       - params.anchor_width/other_width*tangent;
    const long double normalized_other =
       1.0L/(normalized_difference*normalized_difference + 1.0L);
-   return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+   return static_cast<double>(Phi_selected_at_offset(params.kernel,
       params.anchor_center, offset)*normalized_other*params.integrand_scale);
 }
 
@@ -2511,7 +2188,7 @@ double restricted_optical_log_integrand(double argument, void *raw_params)
    const long double weight = distance <= 1.0L
       ? distance/(1.0L + distance*distance)
       : 1.0L/(distance + 1.0L/distance);
-   return static_cast<double>(restricted_phi_value_at_offset(params.kernel,
+   return static_cast<double>(Phi_selected_at_offset(params.kernel,
       params.anchor_center, offset)*normalized_other*weight*params.integrand_scale);
 }
 
@@ -2994,6 +2671,297 @@ double J_tabulated_optical(complex<double> z1, complex<double> z2,
                             tabulated_epsilon_policy());
 }
 
+namespace {
+
+const long double GAUSSIAN_CENTRAL_LIMIT = 10.0L;
+
+double gaussian_optical_theta_segment(int kernel,
+                                      complex<double> anchor,
+                                      complex<double> other,
+                                      long double lower,
+                                      long double upper,
+                                      const epsilon_integration_policy &policy,
+                                      double *estimated_error = NULL)
+{
+   const long double center = anchor.real();
+   const long double width = abs(anchor.imag());
+   const long double theta_lower = isinf(lower) && lower < 0.0L
+      ? -0.5L*PI_L : atan2l(lower - center, width);
+   const long double theta_upper = isinf(upper) && upper > 0.0L
+      ? 0.5L*PI_L : atan2l(upper - center, width);
+   const double span = static_cast<double>(theta_upper - theta_lower);
+   if (!(span > 0.0)) {
+      if (estimated_error != NULL)
+         *estimated_error = 0.0;
+      return 0.0;
+   }
+
+   const long double full_scale =
+      (anchor.imag() < 0.0 ? -1.0L : 1.0L)*
+      (other.imag() < 0.0 ? -1.0L : 1.0L)/
+      (PI_L*PI_L*static_cast<long double>(abs(other.imag())));
+   const long double integrand_scale = restricted_integrand_scale(full_scale);
+   const long double result_scale = full_scale/integrand_scale;
+   restricted_optical_transformed_params params = {
+      kernel, center, width, theta_lower, other, integrand_scale
+   };
+   gsl_function function;
+   function.function = &restricted_optical_transformed_integrand;
+   function.params = &params;
+
+   vector<double> points;
+   points.push_back(0.0);
+   points.push_back(span);
+   const long double landmarks[] = {
+      -12.0L, -11.0L, -10.5L, -10.25L, -10.0L,
+       10.0L,  10.25L,  10.5L,  11.0L,  12.0L
+   };
+   for (size_t i = 0; i < sizeof(landmarks)/sizeof(*landmarks); ++i) {
+      if (lower < landmarks[i] && landmarks[i] < upper) {
+         const long double theta = atan2l(landmarks[i] - center, width);
+         if (theta_lower < theta && theta < theta_upper)
+            points.push_back(static_cast<double>(theta - theta_lower));
+      }
+   }
+   const long double other_theta = atan2l(
+      static_cast<long double>(other.real()) - center, width);
+   if (theta_lower < other_theta && other_theta < theta_upper)
+      points.push_back(static_cast<double>(other_theta - theta_lower));
+   points = filter_integration_points(points, 0.0, span);
+
+   double normalized_error = 0.0;
+   const long double normalized = integrate_restricted_piecewise_qag(function,
+      points, "Full-domain Gaussian optical epsilon integration",
+      result_scale, policy, &normalized_error);
+   return checked_scaled_epsilon_result(
+      "Full-domain Gaussian optical epsilon integration", result_scale,
+      normalized, normalized_error, estimated_error);
+}
+
+bool center_in_interval(double center, long double lower, long double upper)
+{
+   return lower <= center && center <= upper;
+}
+
+long double center_distance_to_interval(double center,
+                                        long double lower,
+                                        long double upper)
+{
+   if (center < lower)
+      return lower - center;
+   if (center > upper)
+      return center - upper;
+   return 0.0L;
+}
+
+double gaussian_optical_range(int kernel,
+                              complex<double> z1,
+                              complex<double> z2,
+                              long double lower,
+                              long double upper,
+                              const epsilon_integration_policy &policy,
+                              double *estimated_error = NULL)
+{
+   const bool first_inside = center_in_interval(z1.real(), lower, upper);
+   const bool second_inside = center_in_interval(z2.real(), lower, upper);
+   if (first_inside && second_inside &&
+       abs(z1.real() - z2.real()) >
+          8.0*max(abs(z1.imag()), abs(z2.imag()))) {
+      const bool first_is_left = z1.real() <= z2.real();
+      const complex<double> left = first_is_left ? z1 : z2;
+      const complex<double> right = first_is_left ? z2 : z1;
+      const long double split = 0.5L*(static_cast<long double>(left.real()) +
+                                      static_cast<long double>(right.real()));
+      double left_error = 0.0;
+      double right_error = 0.0;
+      const epsilon_integration_policy split_policy =
+         divided_epsilon_policy(policy, 2);
+      const double left_result = gaussian_optical_theta_segment(kernel,
+         left, right, lower, split, split_policy, &left_error);
+      const double right_result = gaussian_optical_theta_segment(kernel,
+         right, left, split, upper, split_policy, &right_error);
+      if (estimated_error != NULL)
+         *estimated_error = left_error + right_error;
+      return left_result + right_result;
+   }
+
+   complex<double> anchor;
+   complex<double> other;
+   const bool first_much_narrower = abs(z1.imag()) < abs(z2.imag())/16.0;
+   const bool second_much_narrower = abs(z2.imag()) < abs(z1.imag())/16.0;
+   const long double first_distance = center_distance_to_interval(
+      z1.real(), lower, upper);
+   const long double second_distance = center_distance_to_interval(
+      z2.real(), lower, upper);
+   if ((first_inside && !second_inside) ||
+       (first_inside == second_inside &&
+        (first_much_narrower || (!second_much_narrower &&
+         (first_distance < second_distance ||
+          (first_distance == second_distance &&
+           abs(z1.imag()) <= abs(z2.imag()))))))) {
+      anchor = z1;
+      other = z2;
+   } else {
+      anchor = z2;
+      other = z1;
+   }
+   return gaussian_optical_theta_segment(kernel, anchor, other, lower, upper,
+                                          policy, estimated_error);
+}
+
+double gaussian_optical_central(int kernel,
+                                complex<double> z1,
+                                complex<double> z2,
+                                const epsilon_integration_policy &policy,
+                                double *estimated_error = NULL)
+{
+   vector<pair<double, double> > local_intervals;
+   const complex<double> peaks[] = {z1, z2};
+   for (size_t i = 0; i < sizeof(peaks)/sizeof(*peaks); ++i) {
+      if (-GAUSSIAN_CENTRAL_LIMIT <= peaks[i].real() &&
+          peaks[i].real() <= GAUSSIAN_CENTRAL_LIMIT) {
+         const long double radius = max(0.5L, min(2.0L,
+            1.0e8L*static_cast<long double>(abs(peaks[i].imag()))));
+         const double lower = static_cast<double>(max(-GAUSSIAN_CENTRAL_LIMIT,
+            static_cast<long double>(peaks[i].real()) - radius));
+         const double upper = static_cast<double>(min(GAUSSIAN_CENTRAL_LIMIT,
+            static_cast<long double>(peaks[i].real()) + radius));
+         local_intervals.push_back(make_pair(lower, upper));
+      }
+   }
+   sort(local_intervals.begin(), local_intervals.end());
+   vector<pair<double, double> > merged;
+   for (size_t i = 0; i < local_intervals.size(); ++i) {
+      if (merged.empty() || merged.back().second < local_intervals[i].first)
+         merged.push_back(local_intervals[i]);
+      else
+         merged.back().second = max(merged.back().second,
+                                    local_intervals[i].second);
+   }
+
+   long double result = 0.0L;
+   long double correction = 0.0L;
+   double error = 0.0;
+   double position = static_cast<double>(-GAUSSIAN_CENTRAL_LIMIT);
+   for (size_t i = 0; i < merged.size(); ++i) {
+      if (position < merged[i].first) {
+         double segment_error = 0.0;
+         const double segment = integrate_restricted_optical_direct(kernel,
+            z1, z2, position, merged[i].first, policy, &segment_error);
+         compensated_add(segment, result, correction);
+         error += segment_error;
+      }
+      const double local = J_bounded_optical(kernel, z1, z2,
+         merged[i].first, merged[i].second, policy);
+      compensated_add(local, result, correction);
+      position = merged[i].second;
+   }
+   if (position < GAUSSIAN_CENTRAL_LIMIT) {
+      double segment_error = 0.0;
+      const double segment = integrate_restricted_optical_direct(kernel,
+         z1, z2, position, static_cast<double>(GAUSSIAN_CENTRAL_LIMIT),
+         policy, &segment_error);
+      compensated_add(segment, result, correction);
+      error += segment_error;
+   }
+   if (estimated_error != NULL)
+      *estimated_error = error;
+   return static_cast<double>(result);
+}
+
+double J_gaussian_optical_full_domain(int kernel,
+                                      complex<double> z1,
+                                      complex<double> z2)
+{
+   const epsilon_integration_policy policy = divided_epsilon_policy(
+      restricted_epsilon_policy(), 3);
+   double left_error = 0.0;
+   double center_error = 0.0;
+   double right_error = 0.0;
+   const long double infinity = numeric_limits<long double>::infinity();
+   const double left = gaussian_optical_range(kernel, z1, z2, -infinity,
+      -GAUSSIAN_CENTRAL_LIMIT, policy, &left_error);
+   const double center = gaussian_optical_central(kernel, z1, z2, policy,
+                                                   &center_error);
+   const double right = gaussian_optical_range(kernel, z1, z2,
+      GAUSSIAN_CENTRAL_LIMIT, infinity, policy, &right_error);
+
+   long double result = 0.0L;
+   long double correction = 0.0L;
+   compensated_add(left, result, correction);
+   compensated_add(center, result, correction);
+   compensated_add(right, result, correction);
+   const double rounded = static_cast<double>(result);
+   if (!integration_result_acceptable("Full-domain Gaussian optical epsilon integration",
+                                      GSL_SUCCESS, rounded,
+                                      left_error + center_error + right_error))
+      exit(EXIT_FAILURE);
+   return rounded;
+}
+
+struct finite_optical_odd_pair_params {
+   int kernel;
+   long double x1;
+   long double y1;
+   long double x2;
+   long double y2;
+   long double integrand_scale;
+};
+
+double finite_optical_odd_pair_integrand(double argument, void *raw_params)
+{
+   const finite_optical_odd_pair_params &params =
+      *static_cast<finite_optical_odd_pair_params *>(raw_params);
+   const long double epsilon = argument;
+   const long double q1_minus = (params.x1 - epsilon)*(params.x1 - epsilon)
+      + params.y1*params.y1;
+   const long double q1_plus = (params.x1 + epsilon)*(params.x1 + epsilon)
+      + params.y1*params.y1;
+   const long double q2_minus = (params.x2 - epsilon)*(params.x2 - epsilon)
+      + params.y2*params.y2;
+   const long double q2_plus = (params.x2 + epsilon)*(params.x2 + epsilon)
+      + params.y2*params.y2;
+   const long double numerator = 4.0L*epsilon*
+      (params.x1*q2_plus + params.x2*q1_minus);
+   const long double paired_spectral = numerator/
+      (q1_minus*q1_plus*q2_minus*q2_plus);
+   return static_cast<double>(Phi_selected(params.kernel, epsilon)*
+      paired_spectral*params.integrand_scale);
+}
+
+double J_finite_optical_full_domain(int kernel,
+                                    complex<double> z1,
+                                    complex<double> z2)
+{
+   const long double distance1 = max(0.0L, fabsl(z1.real()) - 1.0L);
+   const long double distance2 = max(0.0L, fabsl(z2.real()) - 1.0L);
+   const bool smooth_exterior = distance1 > 16.0L*abs(z1.imag()) &&
+      distance2 > 16.0L*abs(z2.imag());
+   if (kernel % 2 == 1 || !smooth_exterior)
+      return J_bounded_optical(kernel, z1, z2, -1.0, 1.0,
+                               restricted_epsilon_policy());
+
+   const long double full_scale =
+      static_cast<long double>(z1.imag())*z2.imag()/(PI_L*PI_L);
+   const long double integrand_scale = restricted_integrand_scale(full_scale);
+   const long double result_scale = full_scale/integrand_scale;
+   finite_optical_odd_pair_params params = {
+      kernel, z1.real(), abs(z1.imag()), z2.real(), abs(z2.imag()),
+      integrand_scale
+   };
+   gsl_function function;
+   function.function = &finite_optical_odd_pair_integrand;
+   function.params = &params;
+   const long double normalized = integrate_restricted_qag(function, 0.0, 1.0,
+      "Symmetry-paired full-domain optical epsilon integration", result_scale,
+      restricted_epsilon_policy());
+   return checked_scaled_epsilon_result(
+      "Symmetry-paired full-domain optical epsilon integration", result_scale,
+      normalized);
+}
+
+} // namespace
+
 bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
 {
    if ((a.imag() > 0.0 && b.imag() > 0.0) ||
@@ -3007,12 +2975,13 @@ bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
    return false;
 }
 
-complex<double> hilbert_divided_difference(int kernel,
-					   complex<double> a,
-					   complex<double> b)
+// D_m(a,b)=[H_m(a)-H_m(b)]/(b-a), continued to -H'_m(a) at a=b.
+complex<double> D_builtin(int kernel,
+                          complex<double> a,
+                          complex<double> b)
 {
    if (a == b)
-      return -kernel_hilbert(kernel, a).derivative;
+      return -H_builtin(kernel, a).dH;
 
    if (3 <= kernel && kernel <= 6) {
       // Factor H(a)-H(b) in t=1/(z+sqrt(z-1)*sqrt(z+1)).
@@ -3049,18 +3018,63 @@ complex<double> hilbert_divided_difference(int kernel,
    if (same_analytic_region(kernel, a, b) &&
        abs(difference) <= threshold*local_scale) {
       const complex<double> offset = 0.5*sqrt(3.0/5.0)*difference;
-      return -(5.0/18.0)*(kernel_hilbert(kernel, center - offset).derivative +
-			  kernel_hilbert(kernel, center + offset).derivative)
-	     -(4.0/9.0)*kernel_hilbert(kernel, center).derivative;
+      return -(5.0/18.0)*(H_builtin(kernel, center - offset).dH +
+			  H_builtin(kernel, center + offset).dH)
+	     -(4.0/9.0)*H_builtin(kernel, center).dH;
    }
 
-   return (kernel_hilbert(kernel, a).value - kernel_hilbert(kernel, b).value)/difference;
+   return (H_builtin(kernel, a).H - H_builtin(kernel, b).H)/difference;
 }
 
-double J_m2_optical(complex<double> z1, complex<double> z2)
+// K_m(z1,z2) = integral Phi_m A_epsilon(z1) A_epsilon(z2) d epsilon
+//             = [Re D_m(conj(z1),z2)-Re D_m(z1,z2)]/(2*pi^2).
+double K_builtin(int kernel, complex<double> z1, complex<double> z2)
+{
+   if (kernel < 1 || kernel > 8 ||
+       !isfinite(z1.real()) || !isfinite(z1.imag()) ||
+       !isfinite(z2.real()) || !isfinite(z2.imag()) ||
+       z1.imag() == 0.0 || z2.imag() == 0.0) {
+      cerr << "Invalid built-in optical kernel request: m=" << kernel
+           << ", z1=" << z1 << ", z2=" << z2 << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (kernel % 2 == 0 && z1.real() == -z2.real() &&
+       abs(z1.imag()) == abs(z2.imag()))
+      return 0.0;
+   if (z1 == z2)
+      return J_builtin(kernel, 2, z1);
+
+   const complex<double> cross = D_builtin(kernel, conj(z1), z2);
+   const complex<double> same = D_builtin(kernel, z1, z2);
+   const double difference = cross.real() - same.real();
+   const double result = difference/(2.0*M_PI*M_PI);
+   const long double subtraction_scale =
+      static_cast<long double>(abs(cross.real())) + abs(same.real());
+   const long double estimated_relative_roundoff = difference == 0.0
+      ? numeric_limits<long double>::infinity()
+      : numeric_limits<double>::epsilon()*subtraction_scale/abs(difference);
+   const bool wrong_sign = kernel % 2 == 1 &&
+      result*z1.imag()*z2.imag() < 0.0;
+   const bool gaussian_pole_outside_asymptotic = kernel >= 7 && (
+      (abs(z1) > 8.0 && abs(z1.imag()) < abs(z1.real()) &&
+       abs(z1.real()*z1.imag()) <= 0.25) ||
+      (abs(z2) > 8.0 && abs(z2.imag()) < abs(z2.real()) &&
+       abs(z2.real()*z2.imag()) <= 0.25));
+   const bool use_numerical_integral = !isfinite(result) || wrong_sign ||
+      gaussian_pole_outside_asymptotic ||
+      estimated_relative_roundoff > 1.0e-10L;
+   if (!use_numerical_integral)
+      return result;
+
+   if (kernel <= 6)
+      return J_finite_optical_full_domain(kernel, z1, z2);
+   return J_gaussian_optical_full_domain(kernel, z1, z2);
+}
+
+double K_selected(complex<double> z1, complex<double> z2)
 {
    if (m == 0) {
-      const epsilon_interval interval = epsilon_window_limit > 0.0
+      const epsilon_interval interval = epsilon_window_half_width > 0.0
          ? restricted_epsilon_interval(0)
          : epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)};
       if (interval.empty)
@@ -3068,7 +3082,7 @@ double J_m2_optical(complex<double> z1, complex<double> z2)
       return J_tabulated_optical(z1, z2, interval.lower, interval.upper);
    }
 
-   if (epsilon_window_limit > 0.0) {
+   if (epsilon_window_half_width > 0.0) {
       const epsilon_interval interval = restricted_epsilon_interval(m);
       if (interval.empty)
 	 return 0.0;
@@ -3076,12 +3090,7 @@ double J_m2_optical(complex<double> z1, complex<double> z2)
 	 return J_restricted_optical(m, z1, z2, interval.lower, interval.upper);
    }
 
-   if (z1 == z2)
-      return J_builtin(m, 2, z1);
-
-   const complex<double> cross = hilbert_divided_difference(m, conj(z1), z2);
-   const complex<double> same = hilbert_divided_difference(m, z1, z2);
-   return (cross.real() - same.real())/(2.0*M_PI*M_PI);
+   return K_builtin(m, z1, z2);
 }
 
 struct sigma_coverage_requirement {
@@ -3094,7 +3103,7 @@ bool result_avoids_frequency_dependent_sigma()
 {
    if (n == 0)
       return true;
-   return epsilon_window_limit > 0.0 && restricted_epsilon_interval(m).empty;
+   return epsilon_window_half_width > 0.0 && restricted_epsilon_interval(m).empty;
 }
 
 sigma_coverage_requirement required_sigma_coverage()
@@ -3110,7 +3119,7 @@ sigma_coverage_requirement required_sigma_coverage()
       return sigma_coverage_requirement{-optical_bound, optical_bound, "optical"};
    }
 
-   if (f_type == f_f) {
+   if (selected_frequency_weight == FERMI_FUNCTION) {
       if (!(omega_min < thermal_bound))
          return sigma_coverage_requirement{omega_min, thermal_bound, "occupied"};
       if (!isfinite(thermal_bound - omega_min)) {
@@ -3129,12 +3138,12 @@ sigma_coverage_requirement required_sigma_coverage()
 
 void validate_self_energy_coverage()
 {
-   if (calcdos)
+   if (dos_mode)
       return;
 
    const sigma_coverage_requirement required = required_sigma_coverage();
    if (!(required.lower < required.upper))
-      return; // calc() reports the mode-specific invalid integration interval.
+      return; // calculate_dc() reports the mode-specific invalid integration interval.
    if (result_avoids_frequency_dependent_sigma())
       return;
    if (omega_min <= required.lower && required.upper <= omega_max)
@@ -3164,7 +3173,7 @@ void validate_self_energy_coverage()
 
 double clipped_im_sigma(double value)
 {
-   return value > -sigma_clip ? -sigma_clip : value;
+   return value > -sigma_clip_floor ? -sigma_clip_floor : value;
 }
 
 bool sigma_frequency_is_in_table(double omega)
@@ -3184,22 +3193,22 @@ void require_legacy_extrapolation(double omega)
    exit(EXIT_FAILURE);
 }
 
-complex<double> effective_frequency(double omega)
+complex<double> z_of_omega(double omega)
 {
    double sigma_re;
    double sigma_im;
    if (sigma_frequency_is_in_table(omega)) {
-      sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
+      sigma_re = gsl_spline_eval(real_sigma_spline, omega, real_sigma_accelerator);
       // Higher-order splines can overshoot causal input knots.
       sigma_im = clipped_im_sigma(
-         gsl_spline_eval(spline_imSigma, omega, acc_imSigma));
+         gsl_spline_eval(imaginary_sigma_spline, omega, imaginary_sigma_accelerator));
    } else {
       require_legacy_extrapolation(omega);
       sigma_im = -LEGACY_EXTERIOR_IM_SIGMA;
-      sigma_re = omega < omega_min ? reSigma_asymp_neg : reSigma_asymp_pos;
+      sigma_re = omega < omega_min ? real_sigma_left_endpoint : real_sigma_right_endpoint;
    }
 
-   return omega + mu - sigma_re - sigma_im*I;
+   return omega + mu - sigma_re - sigma_im*imaginary_unit;
 }
 
 void add_sigma_transition_points(vector<double> &points,
@@ -3230,47 +3239,47 @@ void add_sigma_transition_points(vector<double> &points,
 
 namespace {
 
-double real_effective_frequency(double omega)
+double x_of_omega(double omega)
 {
    double sigma_re;
    if (sigma_frequency_is_in_table(omega))
-      sigma_re = gsl_spline_eval(spline_reSigma, omega, acc_reSigma);
+      sigma_re = gsl_spline_eval(real_sigma_spline, omega, real_sigma_accelerator);
    else {
       require_legacy_extrapolation(omega);
-      sigma_re = omega < omega_min ? reSigma_asymp_neg : reSigma_asymp_pos;
+      sigma_re = omega < omega_min ? real_sigma_left_endpoint : real_sigma_right_endpoint;
    }
    return omega + mu - sigma_re;
 }
 
 double restricted_crossing_function(double omega, double shift, double edge)
 {
-   return real_effective_frequency(omega + shift) - edge;
+   return x_of_omega(omega + shift) - edge;
 }
 
-double real_effective_derivative(double omega)
+double dx_domega(double omega)
 {
    if (sigma_frequency_is_in_table(omega))
-      return 1.0 - gsl_spline_eval_deriv(spline_reSigma, omega, acc_reSigma);
+      return 1.0 - gsl_spline_eval_deriv(real_sigma_spline, omega, real_sigma_accelerator);
    require_legacy_extrapolation(omega);
    return 1.0;
 }
 
-double real_effective_second_derivative(double omega)
+double d2x_domega2(double omega)
 {
    if (sigma_frequency_is_in_table(omega))
-      return -gsl_spline_eval_deriv2(spline_reSigma, omega, acc_reSigma);
+      return -gsl_spline_eval_deriv2(real_sigma_spline, omega, real_sigma_accelerator);
    require_legacy_extrapolation(omega);
    return 0.0;
 }
 
-double bisect_effective_derivative(double lower, double upper)
+double bisect_dx_domega(double lower, double upper)
 {
-   double lower_value = real_effective_derivative(lower);
+   double lower_value = dx_domega(lower);
    for (int iteration = 0; iteration < 80; ++iteration) {
       const double middle = 0.5*(lower + upper);
       if (middle == lower || middle == upper)
          break;
-      const double middle_value = real_effective_derivative(middle);
+      const double middle_value = dx_domega(middle);
       if (middle_value == 0.0)
          return middle;
       if (signbit(lower_value) != signbit(middle_value)) {
@@ -3283,14 +3292,14 @@ double bisect_effective_derivative(double lower, double upper)
    return 0.5*(lower + upper);
 }
 
-double bisect_effective_second_derivative(double lower, double upper)
+double bisect_d2x_domega2(double lower, double upper)
 {
-   double lower_value = real_effective_second_derivative(lower);
+   double lower_value = d2x_domega2(lower);
    for (int iteration = 0; iteration < 80; ++iteration) {
       const double middle = 0.5*(lower + upper);
       if (middle == lower || middle == upper)
          break;
-      const double middle_value = real_effective_second_derivative(middle);
+      const double middle_value = d2x_domega2(middle);
       if (middle_value == 0.0)
          return middle;
       if (signbit(lower_value) != signbit(middle_value)) {
@@ -3303,7 +3312,7 @@ double bisect_effective_second_derivative(double lower, double upper)
    return 0.5*(lower + upper);
 }
 
-vector<double> add_effective_frequency_extrema(vector<double> &partitions, double shift)
+vector<double> add_x_extrema(vector<double> &partitions, double shift)
 {
    vector<double> extrema;
    for (size_t interval = 1; interval < partitions.size(); ++interval) {
@@ -3317,15 +3326,15 @@ vector<double> add_effective_frequency_extrema(vector<double> &partitions, doubl
       const double actual_upper = nextafter(outer_upper + shift, outer_lower + shift);
       vector<double> derivative_partitions;
       derivative_partitions.push_back(actual_lower);
-      const double second_lower = real_effective_second_derivative(actual_lower);
-      const double second_upper = real_effective_second_derivative(actual_upper);
+      const double second_lower = d2x_domega2(actual_lower);
+      const double second_upper = d2x_domega2(actual_upper);
       if (second_lower == 0.0) {
          derivative_partitions.push_back(actual_lower);
       } else if (second_upper == 0.0) {
          derivative_partitions.push_back(actual_upper);
       } else if (signbit(second_lower) != signbit(second_upper)) {
          derivative_partitions.push_back(
-            bisect_effective_second_derivative(actual_lower, actual_upper));
+            bisect_d2x_domega2(actual_lower, actual_upper));
       }
       derivative_partitions.push_back(actual_upper);
       sort(derivative_partitions.begin(), derivative_partitions.end());
@@ -3336,15 +3345,15 @@ vector<double> add_effective_frequency_extrema(vector<double> &partitions, doubl
       for (size_t part = 1; part < derivative_partitions.size(); ++part) {
          const double lower = derivative_partitions[part - 1];
          const double upper = derivative_partitions[part];
-         const double lower_value = real_effective_derivative(lower);
-         const double upper_value = real_effective_derivative(upper);
+         const double lower_value = dx_domega(lower);
+         const double upper_value = dx_domega(upper);
          if (lower_value == 0.0)
             extrema.push_back(lower - shift);
          if (upper_value == 0.0)
             extrema.push_back(upper - shift);
          if (lower_value != 0.0 && upper_value != 0.0 &&
              signbit(lower_value) != signbit(upper_value))
-            extrema.push_back(bisect_effective_derivative(lower, upper) - shift);
+            extrema.push_back(bisect_dx_domega(lower, upper) - shift);
       }
    }
    partitions.insert(partitions.end(), extrema.begin(), extrema.end());
@@ -3381,7 +3390,7 @@ void add_restricted_crossing_neighborhood(vector<double> &points,
 {
    points.push_back(crossing);
    const double frequency = crossing + shift;
-   const double linewidth = abs(effective_frequency(frequency).imag());
+   const double linewidth = abs(z_of_omega(frequency).imag());
    const double derivative_step = max(linewidth,
       1.0e-6*max(1.0, abs(frequency)));
    double slope = 1.0;
@@ -3389,17 +3398,17 @@ void add_restricted_crossing_neighborhood(vector<double> &points,
       const double derivative_lower = max(omega_min, frequency - derivative_step);
       const double derivative_upper = min(omega_max, frequency + derivative_step);
       if (derivative_lower < derivative_upper) {
-         slope = (real_effective_frequency(derivative_upper)
-            - real_effective_frequency(derivative_lower))
+         slope = (x_of_omega(derivative_upper)
+            - x_of_omega(derivative_lower))
             /(derivative_upper - derivative_lower);
       } else {
-         slope = real_effective_derivative(frequency);
+         slope = dx_domega(frequency);
       }
       if (frequency == omega_min || frequency == omega_max)
          slope = min(abs(slope), 1.0);
    }
    double crossing_width = linewidth/max(1.0e-3, abs(slope));
-   const double curvature = abs(real_effective_second_derivative(frequency));
+   const double curvature = abs(d2x_domega2(frequency));
    if (curvature > 0.0 &&
        abs(slope) < sqrt(2.0*linewidth*curvature))
       crossing_width = max(crossing_width, sqrt(2.0*linewidth/curvature));
@@ -3426,9 +3435,9 @@ void add_restricted_crossings(vector<double> &points,
       if (lower < shifted_knot && shifted_knot < upper) {
          partitions.push_back(shifted_knot);
          if (omega_min < *knot && *knot < omega_max) {
-            const double left_slope = real_effective_derivative(
+            const double left_slope = dx_domega(
                nextafter(*knot, -numeric_limits<double>::infinity()));
-            const double right_slope = real_effective_derivative(
+            const double right_slope = dx_domega(
                nextafter(*knot, numeric_limits<double>::infinity()));
             if (left_slope == 0.0 || right_slope == 0.0 ||
                 signbit(left_slope) != signbit(right_slope))
@@ -3439,7 +3448,7 @@ void add_restricted_crossings(vector<double> &points,
    }
    sort(partitions.begin(), partitions.end());
    partitions.erase(unique(partitions.begin(), partitions.end()), partitions.end());
-   const vector<double> extrema = add_effective_frequency_extrema(partitions, shift);
+   const vector<double> extrema = add_x_extrema(partitions, shift);
    for (vector<double>::const_iterator extremum = extrema.begin();
         extremum != extrema.end(); ++extremum)
       add_restricted_crossing_neighborhood(points, *extremum,
@@ -3497,7 +3506,7 @@ bool integrate_outer_piecewise_qag(gsl_function &function,
       double error = numeric_limits<double>::quiet_NaN();
       const int status = gsl_integration_qag(&function,
          points[segment - 1], points[segment], abs_error/segment_count,
-         rel_error, workspace_size, key, workspace, &result, &error);
+         rel_error, workspace_size, integration_rule, workspace, &result, &error);
       if (!integration_result_acceptable(description, status, result, error))
          return false;
 
@@ -3600,18 +3609,17 @@ double optical_fermi_factor(double omega)
       (optical_frequency*(1.0 + exp(x))*(1.0 + exp(-shifted_x)));
 }
 
-// Integrand of Imno integral
-double integrand (double omega, void * params)
+double frequency_integrand_dc(double omega, void *params)
 {
-   double T = *(double *) params;
+   const double temperature = *static_cast<double *>(params);
 
    double f_factor;
-   switch (f_type) {
-   case f_derivative:
-      f_factor = 1/(T*(2 + 2*cosh(omega/T)));
+   switch (selected_frequency_weight) {
+   case MINUS_FERMI_DERIVATIVE:
+      f_factor = 1/(temperature*(2 + 2*cosh(omega/temperature)));
       break;
-   case f_f:
-      f_factor = 1/(1+exp(omega/T));
+   case FERMI_FUNCTION:
+      f_factor = 1/(1+exp(omega/temperature));
       break;
    default:
       cerr << "Not implemented." << endl;
@@ -3619,22 +3627,21 @@ double integrand (double omega, void * params)
    }
 
    const double kernel = n == 0
-      ? J_mn(complex<double>(0.0, 0.0))
-      : J_mn(effective_frequency(omega));
-   return f_factor * kernel * pow(omega,o);
+       ? J_selected(complex<double>(0.0, 0.0))
+       : J_selected(z_of_omega(omega));
+   return f_factor*kernel*pow(omega, o);
 }
 
-double optical_integrand(double omega, void *)
+double frequency_integrand_optical(double omega, void *)
 {
-   const complex<double> z1 = effective_frequency(omega);
-   const complex<double> z2 = effective_frequency(omega + optical_frequency);
-   return optical_fermi_factor(omega)*J_m2_optical(z1, z2)*pow(omega, o);
+   const complex<double> z1 = z_of_omega(omega);
+   const complex<double> z2 = z_of_omega(omega + optical_frequency);
+   return optical_fermi_factor(omega)*K_selected(z1, z2)*pow(omega, o);
 }
 
-// Calculate the epsilon integral only. For m=0 case only.
-// For n=1 this is the density of states, which is the case of main
-// interest.
-void calc_DOS()
+// Tabulates the epsilon integral for m=0.  For n=1 this is a density of
+// states only when the supplied Phi is itself a noninteracting density.
+void write_dos_table()
 {
    assert(m == 0);
    gsl_set_error_handler_off();
@@ -3664,8 +3671,8 @@ void calc_DOS()
       }
       previous_omega = omega;
       const complex<double> z = sigma_independent
-         ? complex<double>(0.0, 0.0) : effective_frequency(omega);
-      const double result = J_mn(z); // Spectral normalization is included in J_mn().
+         ? complex<double>(0.0, 0.0) : z_of_omega(omega);
+      const double result = J_selected(z); // Spectral normalization is included in J.
       rows.push_back(make_pair(omega, result));
    }
 
@@ -3736,105 +3743,109 @@ void calc_DOS()
    }
 }
 
-void load_Sigma()
+void load_self_energy_tables()
 {
-   const vector<table_row> real_rows = read_two_column_table(fnReSigma, "ReSigma");
-   const vector<table_row> imaginary_rows = read_two_column_table(fnImSigma, "ImSigma");
-   require_strictly_increasing(real_rows, "ReSigma", fnReSigma);
-   require_strictly_increasing(imaginary_rows, "ImSigma", fnImSigma);
+   const vector<table_row> real_rows = read_two_column_table(real_sigma_filename, "ReSigma");
+   const vector<table_row> imaginary_rows = read_two_column_table(imaginary_sigma_filename, "ImSigma");
+   require_strictly_increasing(real_rows, "ReSigma", real_sigma_filename);
+   require_strictly_increasing(imaginary_rows, "ImSigma", imaginary_sigma_filename);
 
    if (real_rows.size() != imaginary_rows.size()) {
       ostringstream message;
       message << "row count " << imaginary_rows.size()
-              << " does not match ReSigma table " << fnReSigma
+              << " does not match ReSigma table " << real_sigma_filename
               << " (" << real_rows.size() << " rows)";
-      table_error("ImSigma", fnImSigma, 0, message.str());
+      table_error("ImSigma", imaginary_sigma_filename, 0, message.str());
    }
    for (size_t index = 0; index < real_rows.size(); ++index) {
       if (real_rows[index].x != imaginary_rows[index].x) {
          ostringstream message;
          message << "frequency " << format_table_value(imaginary_rows[index].x)
-                 << " does not match ReSigma table " << fnReSigma << ":"
+                 << " does not match ReSigma table " << real_sigma_filename << ":"
                  << real_rows[index].line << " frequency "
                  << format_table_value(real_rows[index].x);
-         table_error("ImSigma", fnImSigma, imaginary_rows[index].line,
+         table_error("ImSigma", imaginary_sigma_filename, imaginary_rows[index].line,
                      message.str());
       }
    }
 
-   const gsl_interp_type * Interp_type;
-   switch(b) {
+   const gsl_interp_type *interpolation_type;
+   switch (interpolation_selector) {
    case 1:
-      Interp_type = gsl_interp_linear;
+      interpolation_type = gsl_interp_linear;
       break;
    case 2:
-      Interp_type = gsl_interp_cspline;
+      interpolation_type = gsl_interp_cspline;
       break;
    case 3:
-      Interp_type = gsl_interp_akima;
+      interpolation_type = gsl_interp_akima;
       break;
    default:
-      cerr << "Interpolation " << b << " is not implemented." << endl;
+      cerr << "Interpolation " << interpolation_selector << " is not implemented." << endl;
       exit(EXIT_FAILURE);
    }
-   require_interpolation_size(real_rows, Interp_type, "ReSigma", fnReSigma);
-   require_interpolation_size(imaginary_rows, Interp_type, "ImSigma", fnImSigma);
+   require_interpolation_size(real_rows, interpolation_type, "ReSigma",
+                              real_sigma_filename);
+   require_interpolation_size(imaginary_rows, interpolation_type, "ImSigma",
+                              imaginary_sigma_filename);
 
-   vector<double> omega;
-   vector<double> reSigma;
-   vector<double> imSigma;
-   omega.reserve(real_rows.size());
-   reSigma.reserve(real_rows.size());
-   imSigma.reserve(real_rows.size());
+   vector<double> frequencies;
+   vector<double> real_sigma_values;
+   vector<double> imaginary_sigma_values;
+   frequencies.reserve(real_rows.size());
+   real_sigma_values.reserve(real_rows.size());
+   imaginary_sigma_values.reserve(real_rows.size());
    for (size_t index = 0; index < real_rows.size(); ++index) {
-      omega.push_back(real_rows[index].x);
-      reSigma.push_back(real_rows[index].y);
-      imSigma.push_back(clipped_im_sigma(imaginary_rows[index].y));
+      frequencies.push_back(real_rows[index].x);
+      real_sigma_values.push_back(real_rows[index].y);
+      imaginary_sigma_values.push_back(clipped_im_sigma(imaginary_rows[index].y));
    }
 
    interpolation_state real_candidate;
    interpolation_state imaginary_candidate;
    string error_message;
-   if (!create_interpolation_state(Interp_type, omega, reSigma, "ReSigma",
+   if (!create_interpolation_state(interpolation_type, frequencies,
+                                   real_sigma_values, "ReSigma",
                                    real_candidate, error_message))
       interpolation_error(error_message);
-   if (!create_interpolation_state(Interp_type, omega, imSigma, "ImSigma",
+   if (!create_interpolation_state(interpolation_type, frequencies,
+                                   imaginary_sigma_values, "ImSigma",
                                    imaginary_candidate, error_message)) {
       free_interpolation_state(real_candidate);
       interpolation_error(error_message);
    }
 
-   omega_min = omega.front();
-   omega_max = omega.back();
-   sigma_omega_knots = omega;
-   reSigma_asymp_neg = reSigma.front(); // use this for omega<omega_min
-   reSigma_asymp_pos = reSigma.back(); // use this for omega>omega_max
-   // imSigma is assumed to be zero outside the [omega_min:omega_max] interval.
+   omega_min = frequencies.front();
+   omega_max = frequencies.back();
+   sigma_omega_knots = frequencies;
+   real_sigma_left_endpoint = real_sigma_values.front();
+   real_sigma_right_endpoint = real_sigma_values.back();
+   // Legacy extrapolation holds ReSigma at these endpoints and uses ImSigma=-1e-10.
    particle_hole_symmetric_sigma = true;
-   for (size_t index = 0; index < omega.size(); ++index) {
-      const size_t mirrored = omega.size() - 1 - index;
-      if (omega[index] != -omega[mirrored] ||
-          reSigma[index] != -reSigma[mirrored] ||
-          imSigma[index] != imSigma[mirrored]) {
+   for (size_t index = 0; index < frequencies.size(); ++index) {
+      const size_t mirrored = frequencies.size() - 1 - index;
+      if (frequencies[index] != -frequencies[mirrored] ||
+          real_sigma_values[index] != -real_sigma_values[mirrored] ||
+          imaginary_sigma_values[index] != imaginary_sigma_values[mirrored]) {
          particle_hole_symmetric_sigma = false;
          break;
       }
    }
-   acc_reSigma = real_candidate.accelerator;
-   spline_reSigma = real_candidate.spline;
-   acc_imSigma = imaginary_candidate.accelerator;
-   spline_imSigma = imaginary_candidate.spline;
+   real_sigma_accelerator = real_candidate.accelerator;
+   real_sigma_spline = real_candidate.spline;
+   imaginary_sigma_accelerator = imaginary_candidate.accelerator;
+   imaginary_sigma_spline = imaginary_candidate.spline;
 
    if (verbose) {
       cout << "omega_min=" << omega_min << " omega_max=" << omega_max << endl;
-      cout << "reSigma asymptotic values neg=" << reSigma_asymp_neg
-           << " pos=" << reSigma_asymp_pos << endl;
+      cout << "reSigma asymptotic values neg=" << real_sigma_left_endpoint
+           << " pos=" << real_sigma_right_endpoint << endl;
    }
 }
 
 void initialize_epsilon_window()
 {
-   if (epsilon_window_limit == 0.0)
+   if (epsilon_window_half_width == 0.0)
       return;
 
    if (!(omega_min <= 0.0 && 0.0 <= omega_max)) {
@@ -3843,12 +3854,12 @@ void initialize_epsilon_window()
       exit(EXIT_FAILURE);
    }
 
-   const double re_sigma_zero = gsl_spline_eval(spline_reSigma, 0.0, acc_reSigma);
+   const double re_sigma_zero = gsl_spline_eval(real_sigma_spline, 0.0, real_sigma_accelerator);
    epsilon_window_center = mu - re_sigma_zero;
    const long double lower = static_cast<long double>(epsilon_window_center)
-      - epsilon_window_limit;
+      - epsilon_window_half_width;
    const long double upper = static_cast<long double>(epsilon_window_center)
-      + epsilon_window_limit;
+      + epsilon_window_half_width;
    const long double maximum = numeric_limits<double>::max();
    if (!isfinite(epsilon_window_center) || lower < -maximum || upper > maximum) {
       cerr << "The epsilon-window bounds are not representable." << endl;
@@ -3875,17 +3886,17 @@ void initialize_epsilon_window()
    }
 }
 
-void calc()
+void calculate_dc()
 {
    // GSL integration
    const size_t ws_size = 1000;
 
    double lower_limit;
-   switch (f_type) {
-   case f_derivative:
+   switch (selected_frequency_weight) {
+   case MINUS_FERMI_DERIVATIVE:
       lower_limit = -cutoff*T;
       break;
-   case f_f:
+   case FERMI_FUNCTION:
       lower_limit = omega_min;
       break;
    default:
@@ -3905,22 +3916,22 @@ void calc()
    double result = numeric_limits<double>::quiet_NaN();
    double error = numeric_limits<double>::quiet_NaN();
     
-   gsl_function My_function;
-   My_function.function = &integrand;
+   gsl_function function;
+   function.function = &frequency_integrand_dc;
    void *params_ptr = &T;
-   My_function.params = params_ptr;
+   function.params = params_ptr;
     
    gsl_set_error_handler_off();
-   const epsilon_interval interval = epsilon_window_limit > 0.0
+   const epsilon_interval interval = epsilon_window_half_width > 0.0
       ? restricted_epsilon_interval(m)
       : (m == 0
          ? epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)}
          : epsilon_interval{0.0, 0.0, false, false});
-   const bool parity_zero = epsilon_window_limit > 0.0 && interval.truncated &&
-      f_type == f_derivative && particle_hole_symmetric_sigma &&
+   const bool parity_zero = epsilon_window_half_width > 0.0 && interval.truncated &&
+      selected_frequency_weight == MINUS_FERMI_DERIVATIVE && particle_hole_symmetric_sigma &&
       epsilon_window_center == 0.0 && m != 0 && m % 2 == 0 && o % 2 == 0 &&
       interval.lower == -interval.upper;
-   if (parity_zero || (epsilon_window_limit > 0.0 && interval.empty)) {
+   if (parity_zero || (epsilon_window_half_width > 0.0 && interval.empty)) {
       result = 0.0;
       error = 0.0;
    } else if (m == 0) {
@@ -3929,25 +3940,25 @@ void calc()
       points.push_back(upper_limit);
       if (n != 0)
          points = restricted_outer_points(lower_limit, upper_limit, interval, false);
-      if (!integrate_outer_piecewise_qag(My_function, points, work_ptr, ws_size,
+      if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
                                          "Frequency integration", result, error)) {
 	 gsl_integration_workspace_free(work_ptr);
 	 exit(EXIT_FAILURE);
       }
-   } else if (epsilon_window_limit > 0.0 && interval.truncated) {
+   } else if (epsilon_window_half_width > 0.0 && interval.truncated) {
       vector<double> points;
       points.push_back(lower_limit);
       points.push_back(upper_limit);
       if (n != 0)
          points = restricted_outer_points(lower_limit, upper_limit, interval, false);
-      gsl_function *integration_function = &My_function;
+      gsl_function *integration_function = &function;
       symmetric_outer_params paired_params;
       gsl_function paired_function;
-      if (f_type == f_derivative && particle_hole_symmetric_sigma &&
+      if (selected_frequency_weight == MINUS_FERMI_DERIVATIVE && particle_hole_symmetric_sigma &&
           m != 0 && m % 2 == 0 && o % 2 == 0 &&
           lower_limit == -upper_limit && interval.lower == -interval.upper) {
-         paired_params.function = My_function.function;
-         paired_params.params = My_function.params;
+         paired_params.function = function.function;
+         paired_params.params = function.params;
          paired_function.function = &symmetric_outer_integrand;
          paired_function.params = &paired_params;
          integration_function = &paired_function;
@@ -3992,20 +4003,20 @@ void calc()
          add_sigma_transition_points(points, lower_limit, upper_limit, false);
       points = filter_integration_points(points, lower_limit, upper_limit);
       if (points.size() > 2) {
-         if (!integrate_outer_piecewise_qag(My_function, points, work_ptr, ws_size,
+         if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
                                             "Frequency integration", result, error)) {
             gsl_integration_workspace_free(work_ptr);
             exit(EXIT_FAILURE);
          }
       } else {
          const int status = gsl_integration_qag(
-	    &My_function,       // integrand function
+	    &function,       // frequency_integrand_dc function
 	    lower_limit,        // lower integration boundary
 	    upper_limit,        // upper integration boundary
 	    abs_error,          // preferred absolute error
 	    rel_error,          // preferred relative error
 	    ws_size,            // size of workspace
-	    key,                // Gauss-Kronrod rule
+	    integration_rule,   // Gauss-Kronrod rule
 	    work_ptr,           // integration workspace
 	    &result,            // final approximation
 	    &error);            // estimate of absolute error
@@ -4030,7 +4041,7 @@ void calc()
    }
 }
 
-void calc_optical()
+void calculate_optical()
 {
    assert(optical_mode && optical_frequency > 0.0);
 
@@ -4045,20 +4056,20 @@ void calc_optical()
    const double upper_limit = cutoff*T;
    const double boundaries[] = {lower_limit, -optical_frequency, 0.0, upper_limit};
 
-   gsl_function F;
-   F.function = &optical_integrand;
-   F.params = NULL;
+   gsl_function function;
+   function.function = &frequency_integrand_optical;
+   function.params = NULL;
 
    gsl_set_error_handler_off();
    double result = 0.0;
    double error = 0.0;
    bool independently_verified = false;
-   const epsilon_interval interval = epsilon_window_limit > 0.0
+   const epsilon_interval interval = epsilon_window_half_width > 0.0
       ? restricted_epsilon_interval(m)
       : (m == 0
          ? epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)}
          : epsilon_interval{0.0, 0.0, false, false});
-   if (epsilon_window_limit > 0.0 && interval.empty) {
+   if (epsilon_window_half_width > 0.0 && interval.empty) {
       result = 0.0;
       error = 0.0;
    } else if (m == 0) {
@@ -4067,13 +4078,13 @@ void calc_optical()
       points.push_back(-optical_frequency);
       points.push_back(0.0);
       points = filter_integration_points(points, lower_limit, upper_limit);
-      if (!integrate_outer_piecewise_qag(F, points, work, ws_size,
+       if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
                                          "Optical frequency integration",
                                          result, error)) {
 	 gsl_integration_workspace_free(work);
 	 exit(EXIT_FAILURE);
       }
-   } else if (epsilon_window_limit > 0.0 && interval.truncated) {
+   } else if (epsilon_window_half_width > 0.0 && interval.truncated) {
       vector<double> points = restricted_outer_points(lower_limit, upper_limit,
                                                       interval, true);
       points.push_back(-optical_frequency);
@@ -4088,14 +4099,14 @@ void calc_optical()
 	      << endl;
 	 exit(EXIT_FAILURE);
       }
-      const int status = gsl_integration_qagp(&F, &points[0], points.size(),
+       const int status = gsl_integration_qagp(&function, &points[0], points.size(),
 					     abs_error, rel_error, restricted_size,
 					     restricted_work, &result, &error);
       if (restricted_work != work)
 	 gsl_integration_workspace_free(restricted_work);
       double verified_error = error;
       const bool acceptable_failure = restricted_outer_failure_acceptable(
-         status, F, points, result, error, &verified_error);
+          status, function, points, result, error, &verified_error);
       const bool successful = status == GSL_SUCCESS && isfinite(result) &&
          isfinite(error) && error >= 0.0;
       if (!successful && !acceptable_failure &&
@@ -4111,7 +4122,7 @@ void calc_optical()
       vector<double> points(boundaries, boundaries + 4);
       add_sigma_transition_points(points, lower_limit, upper_limit, true);
       points = filter_integration_points(points, lower_limit, upper_limit);
-      if (!integrate_outer_piecewise_qag(F, points, work, ws_size,
+       if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
                                          "Optical frequency integration",
                                          result, error)) {
          gsl_integration_workspace_free(work);
@@ -4145,20 +4156,20 @@ void calc_optical()
 int main (int argc, char *argv[])
 {
    gsl_set_error_handler_off();
-   cmd_line(argc, argv);
+   parse_command_line(argc, argv);
 
-   load_Sigma();
+   load_self_energy_tables();
    if (m == 0)
-      load_Phi();
+      load_phi_table();
    initialize_epsilon_window();
    validate_self_energy_coverage();
    
-   if (calcdos)
-      calc_DOS();
+   if (dos_mode)
+      write_dos_table();
    else if (optical_mode && optical_frequency > 0.0)
-      calc_optical();
+      calculate_optical();
    else
-      calc();
+      calculate_dc();
     
    return 0;
 }
