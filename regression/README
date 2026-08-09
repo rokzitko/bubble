@@ -20,7 +20,9 @@ independent quadrature agreed on the nonzero values; all parity-forced zeros
 remain exact.
 
 Pointwise clean-limit tests are in `clean_kernel_references.dat`. Their optional
-100-decimal-digit mpmath generator is `generate_clean_kernel_references.py`.
+160-decimal-digit mpmath generator is `generate_clean_kernel_references.py`.
+They cover built-in powers `n=1,2,3`, exact spatial and linewidth parity,
+finite-band edges and tails, and Gaussian pole/tail transitions.
 
 Restricted epsilon-window references are in `restricted_kernel_references.dat`
 and `restricted_optical_references.dat`, with matching high-precision Python

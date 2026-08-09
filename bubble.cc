@@ -683,7 +683,7 @@ const complex<double> I(0,1);
 double J_builtin(int kernel, int power, complex<double> z);
 
 // Functions Jmn, for m = 1,...,8 and n = 0,1,2,3
-// The historical generated n=2,3 expressions are retained with a _generated
+// The historical generated n=1,2,3 expressions are retained with a _generated
 // suffix for provenance; production dispatch uses the stable functions below.
 double J_10(complex<double> OMEGA) {
    double x = OMEGA.real();
@@ -691,7 +691,7 @@ double J_10(complex<double> OMEGA) {
    return 2.0;
 }
 
-double J_11(complex<double> OMEGA) {
+double J_11_generated(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
    return (atan((1.0 - x)/y) + atan((1.0 + x)/y))/M_PI;
@@ -716,7 +716,7 @@ double J_20(complex<double> OMEGA) {
    return 0.0;
 }
 
-double J_21(complex<double> OMEGA) {
+double J_21_generated(complex<double> OMEGA) {
    double x = OMEGA.real();
    double y = OMEGA.imag();
    return (2 * x * atan((1 - x)/y) + 2 * x * atan((1 + x)/y) + y * log(1 - (4*x)/(pow(y,2) + pow(1 + x,2))))/(2.*M_PI);
@@ -741,7 +741,7 @@ double J_30(complex<double> OMEGA) {
    return M_PI/2;
 }
 
-double J_31(complex<double> OMEGA) {
+double J_31_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -773,7 +773,7 @@ double J_40(complex<double> OMEGA) {
    return 0.0;
 }
 
-double J_41(complex<double> OMEGA) {
+double J_41_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -806,7 +806,7 @@ double J_50(complex<double> OMEGA) {
    return 3*M_PI/8;
 }
 
-double J_51(complex<double> OMEGA) {
+double J_51_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -839,7 +839,7 @@ double J_60(complex<double> OMEGA) {
    return 0.0;
 }
 
-double J_61(complex<double> OMEGA) {
+double J_61_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -872,7 +872,7 @@ double J_70(complex<double> OMEGA) {
    return sqrt(M_PI/2);
 }
 
-double J_71(complex<double> OMEGA) {
+double J_71_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -904,7 +904,7 @@ double J_80(complex<double> OMEGA) {
    return 0.0;
 }
 
-double J_81(complex<double> OMEGA) {
+double J_81_generated(complex<double> OMEGA) {
    complex<double> x = OMEGA;
    complex<double> xbar = conj(OMEGA);
    double s = (OMEGA.imag() > 0.0 ? 1.0 : -1.0);
@@ -931,20 +931,28 @@ double J_83_generated(complex<double> OMEGA) {
    return z.real();
 }
 
+double J_11(complex<double> z) { return J_builtin(1, 1, z); }
 double J_12(complex<double> z) { return J_builtin(1, 2, z); }
 double J_13(complex<double> z) { return J_builtin(1, 3, z); }
+double J_21(complex<double> z) { return J_builtin(2, 1, z); }
 double J_22(complex<double> z) { return J_builtin(2, 2, z); }
 double J_23(complex<double> z) { return J_builtin(2, 3, z); }
+double J_31(complex<double> z) { return J_builtin(3, 1, z); }
 double J_32(complex<double> z) { return J_builtin(3, 2, z); }
 double J_33(complex<double> z) { return J_builtin(3, 3, z); }
+double J_41(complex<double> z) { return J_builtin(4, 1, z); }
 double J_42(complex<double> z) { return J_builtin(4, 2, z); }
 double J_43(complex<double> z) { return J_builtin(4, 3, z); }
+double J_51(complex<double> z) { return J_builtin(5, 1, z); }
 double J_52(complex<double> z) { return J_builtin(5, 2, z); }
 double J_53(complex<double> z) { return J_builtin(5, 3, z); }
+double J_61(complex<double> z) { return J_builtin(6, 1, z); }
 double J_62(complex<double> z) { return J_builtin(6, 2, z); }
 double J_63(complex<double> z) { return J_builtin(6, 3, z); }
+double J_71(complex<double> z) { return J_builtin(7, 1, z); }
 double J_72(complex<double> z) { return J_builtin(7, 2, z); }
 double J_73(complex<double> z) { return J_builtin(7, 3, z); }
+double J_81(complex<double> z) { return J_builtin(8, 1, z); }
 double J_82(complex<double> z) { return J_builtin(8, 2, z); }
 double J_83(complex<double> z) { return J_builtin(8, 3, z); }
 
@@ -1093,26 +1101,6 @@ double J_mn (complex<double> OMEGA)
 	 break;
 
    case 1:
-      switch (m) {
-      case 1:
-	 return J_11(OMEGA);
-      case 2:
-	 return J_21(OMEGA);
-      case 3:
-	 return J_31(OMEGA);
-      case 4:
-	 return J_41(OMEGA);
-      case 5:
-	 return J_51(OMEGA);
-      case 6:
-	 return J_61(OMEGA);
-      case 7:
-	 return J_71(OMEGA);
-      case 8:
-	 return J_81(OMEGA);
-      }
-	 break;
-            
    case 2:
    case 3:
       if (1 <= m && m <= 8)
@@ -1339,7 +1327,7 @@ long double finite_moment_series(int kernel, int power, long double x, long doub
       inverse_power *= inverse_radius;
    }
 
-   const long double scaled_y = y/(PI_L*radius);
+   const long double scaled_y = (y/radius)/PI_L;
    return powl(scaled_y, power)*sum/powl(radius, power);
 }
 
@@ -1751,11 +1739,70 @@ long double gaussian_kernel(int kernel, int power, long double x, long double y)
    exit(EXIT_FAILURE);
 }
 
+long double hilbert_single_kernel(int kernel, long double x, long double y)
+{
+   if (kernel <= 6 && hypotl(x, y) >= 2.0L)
+      return finite_moment_series(kernel, 1, x, y);
+
+   if (kernel == 1 || kernel == 2) {
+      const long double angle = atan2l(2.0L*y,
+         (x - 1.0L)*(x + 1.0L) + y*y);
+      const long double even_value = angle/PI_L;
+      if (kernel == 1)
+         return even_value;
+
+      const long double qplus = (1.0L + x)*(1.0L + x) + y*y;
+      const long double ratio = 4.0L*x/qplus;
+      const long double log_ratio = ratio <= 0.5L
+         ? log1pl(-ratio)
+         : 2.0L*(logl(hypotl(1.0L - x, y))
+                  - logl(hypotl(1.0L + x, y)));
+      return x*even_value + y*log_ratio/(2.0L*PI_L);
+   }
+
+   if (kernel <= 6) {
+      const complex<long double> z(x, y);
+      const complex<long double> discriminant(
+         (x - 1.0L)*(x + 1.0L) - y*y, 2.0L*x*y);
+      const complex<long double> root = sqrt(discriminant);
+      const complex<long double> denominator = z + root;
+      const complex<long double> t = 1.0L/denominator;
+      if (kernel == 3)
+         return -t.imag();
+      if (kernel == 4)
+         return -0.5L*(t*t).imag();
+      // Near t=1, factor the higher moments around the double polynomial root.
+      if (abs(t - 1.0L) < 0.5L) {
+         const complex<long double> edge_offset(x - 1.0L, y);
+         const complex<long double> delta = -(edge_offset + root)/denominator;
+         if (kernel == 5)
+            return 0.25L*(delta*delta*(t + 2.0L)).imag();
+         const complex<long double> square_difference = delta*(t + 1.0L);
+         return 0.125L*(square_difference*square_difference).imag();
+      }
+      if (kernel == 5)
+         return -0.25L*(t*(3.0L - t*t)).imag();
+      return -0.125L*(t*t*(2.0L - t*t)).imag();
+   }
+
+   const complex<double> z(static_cast<double>(x), static_cast<double>(y));
+   long double result = -kernel_hilbert(kernel, z).value.imag()/PI_L;
+
+   // The Gaussian moment asymptotic omits the exponentially small on-shell pole.
+   if ((kernel == 7 || kernel == 8) && abs(z) > 8.0 &&
+       y < x && x*y <= 0.25L) {
+      const complex<long double> z_long(x, y);
+      const complex<long double> gaussian = exp(-2.0L*z_long*z_long);
+      result += kernel == 7 ? gaussian.real() : (z_long*gaussian).real();
+   }
+   return result;
+}
+
 } // namespace
 
 double J_builtin(int kernel, int power, complex<double> z)
 {
-   if (kernel < 1 || kernel > 8 || (power != 2 && power != 3) ||
+   if (kernel < 1 || kernel > 8 || power < 1 || power > 3 ||
        !isfinite(z.real()) || !isfinite(z.imag()) || z.imag() == 0.0) {
       cerr << "Invalid built-in kernel request: m=" << kernel
            << ", n=" << power << ", z=" << z << endl;
@@ -1768,7 +1815,9 @@ double J_builtin(int kernel, int power, complex<double> z)
       return 0.0;
 
    long double value;
-   if (kernel <= 6) {
+   if (power == 1) {
+      value = hilbert_single_kernel(kernel, x, y);
+   } else if (kernel <= 6) {
       if (hypotl(x, y) >= 2.0L) {
          value = finite_moment_series(kernel, power, x, y);
       } else if (kernel <= 2 && x > 1.0L && y < 0.75L*(x - 1.0L)) {
@@ -1780,6 +1829,12 @@ double J_builtin(int kernel, int power, complex<double> z)
       }
    } else {
       value = gaussian_kernel(kernel, power, x, y);
+   }
+
+   if (!isfinite(value)) {
+      cerr << "Built-in kernel evaluation produced a non-finite result: m="
+           << kernel << ", n=" << power << ", z=" << z << endl;
+      exit(EXIT_FAILURE);
    }
 
    if (kernel % 2 == 0 && z.real() < 0.0)

@@ -777,11 +777,11 @@ check_result('quiet integration failure compatibility mode',
     "exit=$quiet_error_status stderr=$quiet_error_stderr");
 
 my ($nonfinite_status, $nonfinite_stdout, $nonfinite_stderr) = run_bubble(
-    '-E', 7, 1, 0, 0.1, 14, $resigma, $imsigma,
+    '-E', 1, 0, 1000, 0.1, 0, $resigma, $imsigma,
 );
 check_result('compatibility mode rejects non-finite results',
     $nonfinite_status == 1 && $nonfinite_stdout eq '' &&
-    $nonfinite_stderr =~ /Error: Frequency integration:.*result=.*nan/i,
+    $nonfinite_stderr =~ /Error: Frequency integration:.*result=inf/i,
     "exit=$nonfinite_status stderr=$nonfinite_stderr");
 
 my @incomplete_coverage = (

@@ -9,7 +9,7 @@ prints data suitable for clean_kernel_references.dat.
 import mpmath as mp
 
 
-mp.mp.dps = 100
+mp.mp.dps = 160
 
 
 def phi(kernel, epsilon):
@@ -43,6 +43,16 @@ def reference(kernel, power, x_text, y_text):
     x = mp.mpf(float(x_text))
     y = mp.mpf(float(y_text))
 
+    if y >= mp.mpf("1e10"):
+        def broad(epsilon):
+            spectral = y / (mp.pi * ((x - epsilon) ** 2 + y * y))
+            return phi(kernel, epsilon) * spectral**power
+
+        points = [-1, -mp.mpf("0.5"), 0, mp.mpf("0.5"), 1] if kernel <= 6 else [
+            -mp.inf, -5, -2, 0, 2, 5, mp.inf
+        ]
+        return mp.quad(broad, points)
+
     if kernel <= 6 and x > 1 + 32 * y:
         # There is no Lorentzian peak in the integration interval. Direct
         # energy quadrature avoids subtracting angles close to -pi/2.
@@ -72,14 +82,14 @@ def cases():
     result = []
 
     for kernel in range(1, 9):
-        for power in (2, 3):
+        for power in (1, 2, 3):
             result.extend(
                 (kernel, power, x, y)
                 for x, y in (("0.37", "0.2"), ("0.37", "1e-8"))
             )
 
     for kernel in range(1, 7):
-        for power in (2, 3):
+        for power in (1, 2, 3):
             result.extend(
                 (kernel, power, x, y)
                 for x, y in (
@@ -91,14 +101,14 @@ def cases():
             )
 
     for kernel in (1, 2):
-        for power in (2, 3):
+        for power in (1, 2, 3):
             result.extend(
                 (kernel, power, "1.001", y)
                 for y in ("0.000749", "0.000751")
             )
 
     for kernel in (7, 8):
-        for power in (2, 3):
+        for power in (1, 2, 3):
             result.extend(
                 (kernel, power, x, y)
                 for x, y in (
@@ -115,6 +125,35 @@ def cases():
                     ("1e-12", "1e-16"),
                 )
             )
+
+    for kernel in range(1, 7):
+        result.append((kernel, 1, "1e8", "0.1"))
+
+    for kernel in (1, 2):
+        result.append((kernel, 1, "1.0000000000000002", "1e-8"))
+
+    for kernel in (7, 8):
+        result.extend(
+            (kernel, 1, x, y)
+            for x, y in (("14", "0.01"), ("8.01", "0.01"), ("9", "1e-80"))
+        )
+
+    for kernel in range(1, 9):
+        result.append((kernel, 1, "0.37", "1e16"))
+
+    for kernel in (2, 4, 6, 8):
+        result.append((kernel, 1, "1e-20", "1"))
+
+    for kernel in (5, 6):
+        result.extend(
+            (kernel, 1, x, y)
+            for x, y in (
+                ("1", "1e-50"),
+                ("1", "1e-100"),
+                ("0.9999999999999999", "1e-20"),
+                ("1.0000000000000002", "1e-20"),
+            )
+        )
 
     return result
 

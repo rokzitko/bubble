@@ -11,6 +11,14 @@
 #include <vector>
 
 double J_builtin(int kernel, int power, std::complex<double> z);
+double J_11(std::complex<double> z);
+double J_21(std::complex<double> z);
+double J_31(std::complex<double> z);
+double J_41(std::complex<double> z);
+double J_51(std::complex<double> z);
+double J_61(std::complex<double> z);
+double J_71(std::complex<double> z);
+double J_81(std::complex<double> z);
 double J_restricted_single(int kernel, int power, std::complex<double> z,
                            double lower, double upper);
 double J_restricted_optical(int kernel, std::complex<double> z1,
@@ -23,6 +31,21 @@ extern bool allow_legacy_self_energy_extrapolation;
 extern double omega_min;
 extern double omega_max;
 extern double optical_frequency;
+
+double named_single_kernel(int kernel, std::complex<double> z)
+{
+   switch (kernel) {
+   case 1: return J_11(z);
+   case 2: return J_21(z);
+   case 3: return J_31(z);
+   case 4: return J_41(z);
+   case 5: return J_51(z);
+   case 6: return J_61(z);
+   case 7: return J_71(z);
+   case 8: return J_81(z);
+   default: return std::numeric_limits<double>::quiet_NaN();
+   }
+}
 
 int main(int argc, char **argv)
 {
@@ -85,6 +108,32 @@ int main(int argc, char **argv)
                    << " x=" << x << " positive=" << value
                    << " negative=" << mirrored << "\n";
       }
+
+      const double conjugate_side = J_builtin(kernel, power,
+         std::complex<double>(x, -y));
+      const double spectral_parity_value = power % 2 == 0 ? value : -value;
+      if (conjugate_side == spectral_parity_value) {
+         ++passed;
+      } else {
+         ++failed;
+         std::cerr << std::setprecision(17)
+                   << "FAILED linewidth sign: m=" << kernel << " n=" << power
+                   << " positive=" << value << " negative=" << conjugate_side
+                   << "\n";
+      }
+
+      if (power == 1) {
+         const double named = named_single_kernel(kernel,
+            std::complex<double>(x, y));
+         if (named == value) {
+            ++passed;
+         } else {
+            ++failed;
+            std::cerr << std::setprecision(17)
+                      << "FAILED named n=1 wrapper: m=" << kernel
+                      << " builtin=" << value << " named=" << named << "\n";
+         }
+      }
    }
 
    if (reference_rows == 0) {
@@ -93,7 +142,7 @@ int main(int argc, char **argv)
    }
 
    for (int kernel = 2; kernel <= 8; kernel += 2) {
-      for (int power = 2; power <= 3; ++power) {
+      for (int power = 1; power <= 3; ++power) {
          const double value = J_builtin(kernel, power, std::complex<double>(0.0, 1e-12));
          if (value == 0.0) {
             ++passed;
@@ -102,6 +151,26 @@ int main(int argc, char **argv)
             std::cerr << "FAILED exact odd-kernel zero: m=" << kernel
                       << " n=" << power << " value=" << value << "\n";
          }
+      }
+   }
+
+   const double extreme_linewidth = 1e308;
+   const double scaled_extreme_values[] = {
+      2.0/std::acos(-1.0), 0.5, 0.375, 1.0/std::sqrt(2.0*std::acos(-1.0))
+   };
+   for (int index = 0; index < 4; ++index) {
+      const int kernel = 2*index + 1;
+      const double value = J_builtin(kernel, 1,
+         std::complex<double>(0.37, extreme_linewidth));
+      const double scaled = value*extreme_linewidth;
+      const double expected = scaled_extreme_values[index];
+      if (std::isfinite(scaled) && std::abs(scaled - expected) <= 1e-12) {
+         ++passed;
+      } else {
+         ++failed;
+         std::cerr << std::setprecision(17)
+                   << "FAILED extreme linewidth: m=" << kernel
+                   << " scaled=" << scaled << " expected=" << expected << "\n";
       }
    }
 

@@ -561,8 +561,12 @@ self-energy spline.
 
 ## Numerical Method
 
-- The $n=0,1$ analytic $J_{mn}$ expressions originate from Mathematica
+- The $n=0$ analytic $J_{m0}$ expressions originate from Mathematica
   calculations documented under `notes/`.
+- Built-in $n=1$ kernels use $-\operatorname{Im} H_m(z)/\pi$, where $H_m$ is
+  the stable analytic Hilbert transform. Lower-half-plane arguments are
+  canonicalized by exact spectral parity, and Gaussian kernels include their
+  explicit on-shell pole contribution.
 - Built-in $n=2,3$ kernels use cancellation-free finite-band formulas,
   exterior moment expansions, and conditioned Faddeeva identities. Gaussian
   transition cases have a direct positive-quadrature fallback.
@@ -616,10 +620,10 @@ exactly.
 ### Clean-Kernel Regression
 
 `regression/clean_kernel_references.dat` contains pointwise values for all
-built-in kernels with `n=2,3`. It covers interior points, exact and nearby band
-edges, clean exterior points, Gaussian pole/tail transitions, broad
-linewidths, and exact parity. Most frozen values were generated at 100 decimal
-digits after the substitution
+built-in kernels with `n=1,2,3`. It covers interior points, exact and nearby band
+edges, clean exterior points, Gaussian pole/tail transitions, broad linewidths,
+and exact spatial and linewidth parity. Frozen values were generated at 160
+decimal digits after the substitution
 
 $$
 \epsilon=x+y\tan\theta,
