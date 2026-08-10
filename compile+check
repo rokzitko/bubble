@@ -3,6 +3,6 @@ module purge
 module load intel/2022a
 export CXX=icpc
 export CXXFLAGS='-O2 -std=c++11 -fp-model precise -no-ftz'
-icpc -c Faddeeva.cc
-icpc -c bubble.cc
-icpc -Wl,-rpath,$LD_LIBRARY_PATH -lgsl -lgslcblas bubble.o Faddeeva.o -o bubble
+make clean
+make
+make check

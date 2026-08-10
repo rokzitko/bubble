@@ -75,6 +75,11 @@ supplied build script can be used instead:
 
 The script purges the current module environment, loads `intel/2022a`, and
 builds the program with `icpc`. It is therefore site-specific.
+Note, with this compiler it is recommended to use the following coimpiler flags:
+
+```text
+CXXFLAGS='-O2 -std=c++11 -fp-model precise -no-ftz'
+```
 
 ### Bethe-Lattice Example
 
