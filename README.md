@@ -588,9 +588,8 @@ Define
 $$
 \chi_{M'}(\nu)=
 \begin{cases}
-1,&M'=0,\\
-1,&M'>0\ \text{and}\ |\nu|<M',\\
-0,&M'>0\ \text{and}\ |\nu|\ge M',
+1,& |\nu|<M',\\
+0,& |\nu|\ge M',
 \end{cases}
 $$
 
@@ -600,10 +599,8 @@ $$
 A^{(M')}_\epsilon(\nu)=\chi_{M'}(\nu)A_\epsilon(\nu).
 $$
 
-Thus omitted `-Mp` and explicit `-Mp 0` are exactly equivalent and leave the
-calculation unrestricted. For positive $M'$, the mask is strict: values at
-$\nu=\pm M'$ are zero. Endpoint values do not change continuous integrals, but
-the convention matters for frequency-resolved DOS rows. The active-range
+Omitted `-Mp` and `-Mp 0` are equivalent and leave the
+calculation unrestricted. The active-range
 formulas below apply only when $M'>0$; for $M'=0$, the unmasked ranges given in
 the preceding sections apply.
 
@@ -641,7 +638,7 @@ $$
 The frequency-window condition for a finite occupied contribution is
 
 $$
-L_{\mathrm{occ}}<U_{\mathrm{occ}}.
+L_{\mathrm{occ}} < U_{\mathrm{occ}}.
 $$
 
 At positive external optical frequency, the two spectral factors have
@@ -683,30 +680,15 @@ $$
 The frequency-window condition for a finite optical contribution is
 
 $$
-L_{\mathrm{opt}}<U_{\mathrm{opt}}.
+L_{\mathrm{opt}} < U_{\mathrm{opt}}.
 $$
 
 For positive $C$, $T$, and $M'$ and the supported $\Omega\ge0$, this is
 equivalent to
 
 $$
-0\le\Omega<2M'.
+\Omega<2M'.
 $$
-
-In particular, the response can remain nonzero for $M'<\Omega<2M'$; the
-external optical frequency is not itself multiplied by a mask.
-
-For self-energy validation, the closure $[L,U]$ of an active DC or occupied
-interval is required. Optical mode evaluates both active arguments, so it
-requires the closed hull
-
-$$
-[L_{\mathrm{opt}},U_{\mathrm{opt}}+\Omega].
-$$
-
-The outer $\omega$ quadrature uses $\pm M'$ as explicit boundaries; optical
-mode additionally accounts for $-\Omega\pm M'$. These boundaries avoid sampling
-across the discontinuities introduced by the Heaviside factors.
 
 The mask applies to every positive spectral power, including tabulated `m=0`
 kernels. It does not affect `n=0`, whose kernel mass contains no spectral
