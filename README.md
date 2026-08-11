@@ -151,6 +151,9 @@ I^{\mathrm{occ}}_{mno}=\int_{\omega_{\min}}^{CT}d\omega\thinspace{}
 f(\omega)\thinspace{}\omega^oJ_{mn}[z(\omega);\mathcal E].
 $$
 
+These are the unmasked ranges. A positive spectral-frequency window intersects
+them as described under [Spectral-Frequency Mask](#spectral-frequency-mask).
+
 The integration frequency $\omega$ is measured relative to the Fermi level;
 $\mu$ enters $z(\omega)$, not the Fermi function. The implementation has no
 bandwidth parameter and uses $D=1$ throughout, including for a tabulated
@@ -255,6 +258,10 @@ $$
 [-CT-\Omega,CT]\cup[-CT,CT+\Omega]
 =[-CT-\Omega,CT+\Omega].
 $$
+
+This is the unmasked range. A positive spectral-frequency window restricts both
+propagator arguments as described under
+[Spectral-Frequency Mask](#spectral-frequency-mask).
 
 Optical mode requires `n=2` and a finite `OMEGA >= 0`. It cannot be combined
 with `-f` or `-d`. At `OMEGA=0`, the exact DC `n=2` path is used, with
@@ -371,6 +378,7 @@ Options:
 | `-c C` | Positive frequency cutoff in units of temperature, default `30`; unused by `-d` |
 | `-s S` | Positive in-table clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
+| `-Mp MP` | Mask spectral functions outside the frequency half-width $M'$; default `0` is unrestricted |
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
 | `-e E` | Multiply a tabulated kernel by $\epsilon^E$ for nonnegative `E`, default `0` |
 | `-f` | Use the Fermi function instead of its derivative |
@@ -434,8 +442,8 @@ if a higher-order spline overshoots between causal knots. Because `-s` changes
 the linewidth, it can strongly affect clean-limit `n=2,3` moments.
 
 For `n>0`, the self-energy tables must cover every frequency used by the
-selected calculation. Coverage is checked as an exact closed interval before
-quadrature starts:
+selected calculation. With the spectral-frequency mask disabled, coverage is
+checked as the following exact closed interval before quadrature starts:
 
 | Mode | Required self-energy interval |
 |---|---|
@@ -445,14 +453,16 @@ quadrature starts:
 | DOS `-d` | The table interval used for the output mesh |
 
 An incomplete interval is fatal even with `-q` or `-E`. Extend both tables or
-reduce `-c` or `-O` as appropriate. Calculations with `n=0` do not evaluate the
-frequency-dependent self-energy and are exempt from this coverage check. The
-test is exact and includes both endpoints, so a table endpoint even one
+reduce `-c`, `-O`, or `-Mp` as appropriate. Calculations with `n=0` do not
+evaluate the frequency-dependent self-energy and are exempt from this coverage
+check. The test is exact and includes both endpoints, so a table endpoint even one
 binary64 step short is insufficient. Both files remain mandatory for `n=0` and
 are still parsed, grid-matched, and used to construct interpolants. A positive
 `-M` also evaluates $\mathrm{Re}\thinspace{}\Sigma(0)$ and therefore requires the table to
 contain zero; if the resulting epsilon intersection is empty, no additional
 frequency coverage is required.
+For positive $M'$, only the active frequencies described under
+[Spectral-Frequency Mask](#spectral-frequency-mask) require coverage.
 
 The following numerical policies are important when interpreting results:
 
@@ -486,6 +496,10 @@ post-interpolation imaginary-part floor preserves causality but can create
 continuous floor plateaus with derivative kinks.
 
 ## Restricted Epsilon Window
+
+The `-M M` option controls $M=M_\epsilon$, the epsilon-window half-width. It is
+distinct from the spectral-frequency half-width $M'=M_\omega$ selected by
+`-Mp MP`.
 
 Define the interacting Fermi-level band energy
 
@@ -561,6 +575,150 @@ roundoff-limited result is accepted only within the requested error bound or
 after agreement with independent 64- and 128-point rules, and emits a warning
 unless `-q` is active.
 
+## Spectral-Frequency Mask
+
+The `-Mp MP` option controls $M'=M_\omega$, a window in physical frequency.
+This is different from $M=M_\epsilon$: `-M` changes the epsilon integration
+domain, while `-Mp` leaves that domain unchanged and masks every spectral
+function according to its own frequency argument. Both quantities use the same
+energy units as temperature and the self-energy input.
+
+Define
+
+$$
+\chi_{M'}(\nu)=
+\begin{cases}
+1,&M'=0,\\
+1,&M'>0\ \text{and}\ |\nu|<M',\\
+0,&M'>0\ \text{and}\ |\nu|\ge M',
+\end{cases}
+$$
+
+and replace each spectral function by
+
+$$
+A^{(M')}_\epsilon(\nu)=\chi_{M'}(\nu)A_\epsilon(\nu).
+$$
+
+Thus omitted `-Mp` and explicit `-Mp 0` are exactly equivalent and leave the
+calculation unrestricted. For positive $M'$, the mask is strict: values at
+$\nu=\pm M'$ are zero. Endpoint values do not change continuous integrals, but
+the convention matters for frequency-resolved DOS rows. The active-range
+formulas below apply only when $M'>0$; for $M'=0$, the unmasked ranges given in
+the preceding sections apply.
+
+For positive $M'$, the mask intersects the existing thermal cutoff; it does not
+replace `-c`. For DC moments with `n>0`, the active integration interval is
+
+$$
+\mathcal W_{\mathrm{DC}}=[-CT,CT]\cap(-M',M'),
+$$
+
+or, in terms of its limiting endpoints,
+
+$$
+L_{\mathrm{DC}}=\max(-CT,-M'),\qquad
+U_{\mathrm{DC}}=\min(CT,M').
+$$
+
+For positive $C$, $T$, and $M'$, this interval is nonempty because it contains
+zero. At `-O 0`, the same DC rule applies.
+
+For an occupied moment selected by `-f`,
+
+$$
+\mathcal W_{\mathrm{occ}}
+=[\omega_{\min},CT]\cap(-M',M'),
+$$
+
+with
+
+$$
+L_{\mathrm{occ}}=\max(\omega_{\min},-M'),\qquad
+U_{\mathrm{occ}}=\min(CT,M').
+$$
+
+The frequency-window condition for a finite occupied contribution is
+
+$$
+L_{\mathrm{occ}}<U_{\mathrm{occ}}.
+$$
+
+At positive external optical frequency, the two spectral factors have
+arguments $\omega$ and $\omega+\Omega$. Both must be active, so
+
+$$
+\begin{aligned}
+\mathcal W_{\mathrm{opt}}
+={}&[-CT-\Omega,CT]
+\cap(-M',M')\\
+&\cap(-\Omega-M',-\Omega+M'),
+\end{aligned}
+$$
+
+The lower endpoint of an intersection is the maximum of its lower bounds, and
+the upper endpoint is the minimum of its upper bounds. Here the limiting
+endpoints are
+
+$$
+L_{\mathrm{opt}}
+=\max(-CT-\Omega,-M',-\Omega-M')
+=\max(-CT-\Omega,-M'),
+$$
+
+$$
+U_{\mathrm{opt}}
+=\min(CT,M',-\Omega+M')
+=\min(CT,-\Omega+M').
+$$
+
+Here the simplification uses the supported $\Omega\ge0$, for which the overlap
+of the two mask intervals is
+
+$$
+(-M',M')\cap(-\Omega-M',-\Omega+M')
+=(-M',-\Omega+M').
+$$
+
+The frequency-window condition for a finite optical contribution is
+
+$$
+L_{\mathrm{opt}}<U_{\mathrm{opt}}.
+$$
+
+For positive $C$, $T$, and $M'$ and the supported $\Omega\ge0$, this is
+equivalent to
+
+$$
+0\le\Omega<2M'.
+$$
+
+In particular, the response can remain nonzero for $M'<\Omega<2M'$; the
+external optical frequency is not itself multiplied by a mask.
+
+For self-energy validation, the closure $[L,U]$ of an active DC or occupied
+interval is required. Optical mode evaluates both active arguments, so it
+requires the closed hull
+
+$$
+[L_{\mathrm{opt}},U_{\mathrm{opt}}+\Omega].
+$$
+
+The outer $\omega$ quadrature uses $\pm M'$ as explicit boundaries; optical
+mode additionally accounts for $-\Omega\pm M'$. These boundaries avoid sampling
+across the discontinuities introduced by the Heaviside factors.
+
+The mask applies to every positive spectral power, including tabulated `m=0`
+kernels. It does not affect `n=0`, whose kernel mass contains no spectral
+function. In DOS mode, the output mesh and its 10,001 rows are unchanged, but
+values with `n>0` and $|\omega|\ge M'$ are written as exact zeros.
+
+When `-M` and `-Mp` are used together, their restrictions apply independently:
+$M=M_\epsilon$ first selects the epsilon domain and $M'=M_\omega$ selects the
+active frequencies. For `n>0`, a finite contribution requires both retained
+epsilon support and frequency limits satisfying $L<U$; for `n=0`, $M'$ has no
+effect.
+
 ## Custom Kernels and Special Modes
 
 ### Additional Energy Powers
@@ -599,9 +757,10 @@ $$
 $$
 
 This is useful for quantities such as occupied spectral moments and
-kinetic-energy checks. For `n>0`, the upper endpoint `CT` must lie in the
-self-energy table; the lower endpoint is the table's own `omega_min`. For
-example:
+kinetic-energy checks. Without a positive `-Mp`, the upper endpoint `CT` must
+lie in the self-energy table and the lower endpoint is the table's own
+`omega_min`. A positive spectral-frequency window applies the range and
+coverage rules stated above. For example:
 
 ```bash
 ./bubble -f 4 1 0 0.27 0 \
@@ -631,8 +790,9 @@ The output is a physical interacting DOS (lattice spectral function) only for
 `n=1` when the supplied kernel is itself a noninteracting DOS. The positional
 `T` and `o` arguments are still syntactically required but are not used in this
 mode, and neither is `-c`. They must be complete finite numeric values but may
-have either sign. `-d` overwrites `dos.dat` and cannot be combined with `-f`; it
-can be combined with `-e`. Rows are written with enough significant digits to
+have either sign. A positive `-Mp` still masks the spectral values as described
+above. `-d` overwrites `dos.dat` and cannot be combined with `-f`; it can be
+combined with `-e`. Rows are written with enough significant digits to
 round-trip `double` values. The complete result is first written to a checked
 temporary file in the same directory and then atomically replaces `dos.dat`, so
 an existing output is preserved if calculation or output fails. For `n=0`, the
@@ -694,7 +854,8 @@ The remaining frequency integral uses adaptive GSL `qag` quadrature, with a
 Restricted outer integrals add linewidth-aware crossings of energy-window
 boundaries and nearby extrema. Self-energy table boundaries, including shifted
 optical boundaries, are also explicit quadrature partitions when legacy
-extrapolation is enabled.
+extrapolation is enabled. A positive spectral-frequency window adds its
+unshifted and optical-shifted mask boundaries.
 
 The user options `-a`, `-r`, and `-k` govern the outer quadrature and applicable
 custom-kernel pieces. Built-in fallback paths use tighter internal policies, and
@@ -841,8 +1002,8 @@ the checked-in input/reference data are sufficient for the examples above.
 
 ## Precision
 
-For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, `-s`, `-M`, and the
-input grid, and confirm that the physical result is stable.
+For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, `-s`, `-M`, `-Mp`,
+and the input grid, and confirm that the physical result is stable.
 
 ## Method Notes
 
@@ -854,7 +1015,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.10.
+current executable is authoritative for version 1.11.
 
 ## References
 

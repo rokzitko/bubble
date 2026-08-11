@@ -23,10 +23,14 @@ double J_restricted_optical(int kernel, std::complex<double> z1,
 void add_sigma_transition_points(std::vector<double> &points,
                                  double lower, double upper,
                                  bool include_shifted);
+void add_spectral_frequency_transition_points(std::vector<double> &points,
+                                               double lower, double upper,
+                                               bool include_shifted);
 extern bool allow_legacy_self_energy_extrapolation;
 extern double omega_min;
 extern double omega_max;
 extern double optical_frequency;
+extern double spectral_frequency_window_half_width;
 
 int main(int argc, char **argv)
 {
@@ -400,6 +404,7 @@ int main(int argc, char **argv)
    const double saved_omega_min = omega_min;
    const double saved_omega_max = omega_max;
    const double saved_optical_frequency = optical_frequency;
+   const double saved_frequency_window = spectral_frequency_window_half_width;
    allow_legacy_self_energy_extrapolation = true;
    omega_min = -1.0;
    omega_max = 1.0;
@@ -443,10 +448,55 @@ int main(int argc, char **argv)
       std::cerr << "FAILED strict self-energy transition points\n";
    }
 
+   spectral_frequency_window_half_width = 0.4;
+   transition_points.clear();
+   add_spectral_frequency_transition_points(transition_points, -1.0, 1.0, true);
+   std::sort(transition_points.begin(), transition_points.end());
+   const double shifted_frequency_lower = static_cast<double>(
+      -static_cast<long double>(spectral_frequency_window_half_width)
+      - optical_frequency);
+   const double shifted_frequency_upper = static_cast<double>(
+      static_cast<long double>(spectral_frequency_window_half_width)
+      - optical_frequency);
+   const std::vector<double> expected_frequency_transitions = {
+      shifted_frequency_lower, -spectral_frequency_window_half_width,
+      shifted_frequency_upper, spectral_frequency_window_half_width
+   };
+   if (transition_points == expected_frequency_transitions) {
+      ++passed;
+   } else {
+      ++failed;
+      std::cerr << "FAILED optical spectral-frequency transition points\n";
+   }
+
+   transition_points.clear();
+   add_spectral_frequency_transition_points(transition_points, -1.0, 1.0, false);
+   std::sort(transition_points.begin(), transition_points.end());
+   const std::vector<double> expected_frequency_unshifted = {
+      -spectral_frequency_window_half_width, spectral_frequency_window_half_width
+   };
+   if (transition_points == expected_frequency_unshifted) {
+      ++passed;
+   } else {
+      ++failed;
+      std::cerr << "FAILED DC spectral-frequency transition points\n";
+   }
+
+   spectral_frequency_window_half_width = 0.0;
+   transition_points.clear();
+   add_spectral_frequency_transition_points(transition_points, -1.0, 1.0, true);
+   if (transition_points.empty()) {
+      ++passed;
+   } else {
+      ++failed;
+      std::cerr << "FAILED unrestricted spectral-frequency transition points\n";
+   }
+
    allow_legacy_self_energy_extrapolation = saved_legacy_extrapolation;
    omega_min = saved_omega_min;
    omega_max = saved_omega_max;
    optical_frequency = saved_optical_frequency;
+   spectral_frequency_window_half_width = saved_frequency_window;
 
    std::cout << "CLEAN KERNEL OK=" << passed << " FAILED=" << failed << "\n";
    return failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

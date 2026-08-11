@@ -39,6 +39,22 @@ my $exact_coverage_resigma = write_table('exact-coverage-resigma.dat',
     '-3 0', '3 0');
 my $exact_coverage_imsigma = write_table('exact-coverage-imsigma.dat',
     '-3 -0.1', '3 -0.1');
+my $frequency_window_coverage_resigma = write_table(
+    'frequency-window-coverage-resigma.dat', '-0.2 0', '0.2 0');
+my $frequency_window_coverage_imsigma = write_table(
+    'frequency-window-coverage-imsigma.dat', '-0.2 -0.1', '0.2 -0.1');
+my $frequency_window_short_lower_resigma = write_table(
+    'frequency-window-short-lower-resigma.dat',
+    '-0.19999999999999998 0', '0.2 0');
+my $frequency_window_short_lower_imsigma = write_table(
+    'frequency-window-short-lower-imsigma.dat',
+    '-0.19999999999999998 -0.1', '0.2 -0.1');
+my $frequency_window_short_upper_resigma = write_table(
+    'frequency-window-short-upper-resigma.dat',
+    '-0.2 0', '0.19999999999999998 0');
+my $frequency_window_short_upper_imsigma = write_table(
+    'frequency-window-short-upper-imsigma.dat',
+    '-0.2 -0.1', '0.19999999999999998 -0.1');
 my $short_lower_resigma = write_table('short-lower-resigma.dat',
     '-2.9999999999999996 0', '3 0');
 my $short_lower_imsigma = write_table('short-lower-imsigma.dat',
@@ -173,12 +189,51 @@ for my $case (@zero_limit_cases) {
         "base_exit=$base_status zero_exit=$zero_status");
 }
 
+for my $case (@zero_limit_cases) {
+    my ($base_status, $base_stdout, $base_stderr) = run_bubble(@$case);
+    my ($zero_status, $zero_stdout, $zero_stderr) =
+        run_bubble('-Mp', '0', @$case);
+    check_result("M'=0 exact pass-through",
+        $base_status == $zero_status && $base_stdout eq $zero_stdout &&
+        $base_stderr eq $zero_stderr,
+        "base_exit=$base_status zero_exit=$zero_status");
+}
+
 my @base = (1, 2, 0, 0.1, 0, $resigma, $imsigma);
 my ($full_status, $full_stdout, $full_stderr) = run_bubble('-M', '2', @base);
 my ($base_status, $base_stdout, $base_stderr) = run_bubble(@base);
 check_result('covered finite band uses full path',
     $full_status == 0 && $full_stdout eq $base_stdout && $full_stderr eq $base_stderr,
     "full=$full_stdout base=$base_stdout");
+
+my ($frequency_window_status, $frequency_window_stdout,
+    $frequency_window_stderr) = run_bubble('-Mp', '0.2', @base);
+my ($matching_cutoff_status, $matching_cutoff_stdout,
+    $matching_cutoff_stderr) = run_bubble('-c', '2', @base);
+check_result('spectral-frequency window matches DC integration range',
+    $frequency_window_status == 0 &&
+    $frequency_window_status == $matching_cutoff_status &&
+    $frequency_window_stdout eq $matching_cutoff_stdout &&
+    $frequency_window_stderr eq $matching_cutoff_stderr,
+    "window=$frequency_window_stdout cutoff=$matching_cutoff_stdout");
+
+my @mass_arguments = (1, 0, 0, 0.1, 0, $resigma, $imsigma);
+my ($unmasked_mass_status, $unmasked_mass_stdout, $unmasked_mass_stderr) =
+    run_bubble(@mass_arguments);
+my ($windowed_mass_status, $windowed_mass_stdout, $windowed_mass_stderr) =
+    run_bubble('-Mp', '0.2', @mass_arguments);
+check_result("spectral-frequency window does not affect n=0",
+    $unmasked_mass_status == 0 && $windowed_mass_status == 0 &&
+    $unmasked_mass_stdout eq $windowed_mass_stdout &&
+    $unmasked_mass_stderr eq $windowed_mass_stderr,
+    "full=$unmasked_mass_stdout windowed=$windowed_mass_stdout");
+
+my ($empty_occupied, $empty_occupied_error) = run_value(
+    '-Mp', '0.5', '-f', 1, 1, 0, 0.1, 0,
+    $outside_resigma, $outside_imsigma);
+check_result('empty occupied spectral-frequency interval',
+    defined $empty_occupied && $empty_occupied == 0.0,
+    defined $empty_occupied ? "value=$empty_occupied" : $empty_occupied_error);
 
 my ($empty, $empty_error) = run_value('-M', '0.25', 1, 2, 0, 0.1, 2,
     $resigma, $imsigma);
@@ -230,6 +285,19 @@ for my $power (0 .. 3) {
             ? "builtin=$builtin tabulated=$tabulated"
             : "$builtin_error $tabulated_error");
 }
+
+my ($combined_builtin, $combined_builtin_error) = run_value(
+    '-M', '0.5', '-Mp', '0.2',
+    1, 2, 0, 0.1, 0, $resigma, $imsigma);
+my ($combined_tabulated, $combined_tabulated_error) = run_value(
+    '-M', '0.5', '-Mp', '0.2', '-p', $phi,
+    0, 2, 0, 0.1, 0, $resigma, $imsigma);
+check_result('epsilon and spectral-frequency windows compose for tabulated kernels',
+    defined $combined_builtin && defined $combined_tabulated &&
+    close_enough($combined_tabulated, $combined_builtin, 2e-10, 2e-11),
+    defined $combined_builtin && defined $combined_tabulated
+        ? "builtin=$combined_builtin tabulated=$combined_tabulated"
+        : "$combined_builtin_error $combined_tabulated_error");
 
 for my $power (1 .. 3) {
     my @clean_arguments = ('-q', '-a', '1e-7', '-r', '1e-8',
@@ -339,6 +407,18 @@ check_result('tabulated restricted occupied moment',
     defined $occupied_builtin && defined $occupied_tabulated
         ? "builtin=$occupied_builtin tabulated=$occupied_tabulated"
         : "$occupied_builtin_error $occupied_tabulated_error");
+
+my ($windowed_occupied, $windowed_occupied_error) = run_value(
+    '-Mp', '0.2', '-f', 1, 1, 0, 0.1, 0, $resigma, $imsigma);
+my ($bounded_occupied, $bounded_occupied_error) = run_value(
+    '-c', '2', '-f', 1, 1, 0, 0.1, 0,
+    $frequency_window_coverage_resigma, $frequency_window_coverage_imsigma);
+check_result('occupied spectral-frequency range uses both boundaries',
+    defined $windowed_occupied && defined $bounded_occupied &&
+    close_enough($windowed_occupied, $bounded_occupied, 1e-12, 1e-12),
+    defined $windowed_occupied && defined $bounded_occupied
+        ? "windowed=$windowed_occupied bounded=$bounded_occupied"
+        : "$windowed_occupied_error $bounded_occupied_error");
 
 my ($powered_builtin, $powered_builtin_error) = run_value(
     '-M', '0.5', 2, 2, 0, 0.1, 0.1, $resigma, $imsigma);
@@ -521,6 +601,38 @@ check_result('restricted n=1 DOS output', $spectral_dos_ok,
     "exit=$spectral_dos_status stderr=$spectral_dos_stderr");
 
 chdir $directory or die "Cannot enter $directory: $!\n";
+my ($masked_dos_status, $masked_dos_stdout, $masked_dos_stderr) = run_bubble(
+    '-q', '-Mp', '0.5', '-d', '-p', $phi,
+    0, 1, 0, 0.1, 0, $resigma, $imsigma);
+my $masked_dos_ok = $masked_dos_status == 0 &&
+    $masked_dos_stdout eq '' && $masked_dos_stderr eq '';
+if ($masked_dos_ok) {
+    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    my ($rows, $boundary_rows, $inside_rows) = (0, 0, 0);
+    my $pi = 4*atan2(1, 1);
+    while (<$dos>) {
+        my ($omega, $value) = split;
+        if (abs($omega) >= 0.5) {
+            $masked_dos_ok = 0 unless defined $value && $value == 0.0;
+            ++$boundary_rows if abs($omega) == 0.5;
+        } else {
+            my $expected = (atan2(1 - $omega, 0.1) -
+                atan2(-1 - $omega, 0.1))/$pi;
+            $masked_dos_ok = 0 unless defined $value &&
+                abs($value - $expected) <= 2e-6;
+            ++$inside_rows;
+        }
+        ++$rows;
+    }
+    close $dos;
+    $masked_dos_ok = 0 unless $rows == 10001 &&
+        $boundary_rows == 2 && $inside_rows > 0;
+}
+chdir $original_directory or die "Cannot return to $original_directory: $!\n";
+check_result('spectral-frequency masked DOS output', $masked_dos_ok,
+    "exit=$masked_dos_status stderr=$masked_dos_stderr");
+
+chdir $directory or die "Cannot enter $directory: $!\n";
 my ($nonnegative_status, $nonnegative_stdout, $nonnegative_stderr) = run_bubble(
     '-q', '-v', '-d', '-p', $nonnegative_phi,
     0, 1, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
@@ -669,6 +781,15 @@ my @invalid_cases = (
     ['non-finite M', qr/Invalid epsilon-window limit/, '-M', 'nan', @base],
     ['infinite M', qr/Invalid epsilon-window limit/, '-M', 'inf', @base],
     ['malformed M', qr/Invalid epsilon-window limit/, '-M', 'bad', @base],
+    ["negative M'", qr/Invalid spectral-frequency window limit/,
+        '-Mp', '-1', @base],
+    ["non-finite M'", qr/Invalid spectral-frequency window limit/,
+        '-Mp', 'nan', @base],
+    ["infinite M'", qr/Invalid spectral-frequency window limit/,
+        '-Mp', 'inf', @base],
+    ["malformed M'", qr/Invalid spectral-frequency window limit/,
+        '-Mp', 'bad', @base],
+    ["missing M'", qr/Option -Mp requires a value/, '-Mp', @base],
     ['unrepresentable centered M', qr/positive epsilon-window limit is too small/,
         '-M', '1.1102230246251565e-16', 1, 2, 0, 0.1, 1, $resigma, $imsigma],
     ['unpreserved sub-ULP center', qr/bounds do not preserve the resolved center/,
@@ -808,6 +929,32 @@ check_result('exact closed Sigma coverage succeeds',
     $exact_coverage_stderr eq '',
     "exit=$exact_coverage_status stderr=$exact_coverage_stderr");
 
+my ($frequency_coverage_status, $frequency_coverage_stdout,
+    $frequency_coverage_stderr) = run_bubble(
+        '-Mp', '0.2', 1, 2, 0, 0.1, 0,
+        $frequency_window_coverage_resigma,
+        $frequency_window_coverage_imsigma);
+check_result('spectral-frequency exact closed Sigma coverage succeeds',
+    $frequency_coverage_status == 0 &&
+    $frequency_coverage_stdout =~ /^\s*$number\s*$/ &&
+    $frequency_coverage_stderr eq '',
+    "exit=$frequency_coverage_status stderr=$frequency_coverage_stderr");
+
+for my $case (
+    ['lower', $frequency_window_short_lower_resigma,
+        $frequency_window_short_lower_imsigma],
+    ['upper', $frequency_window_short_upper_resigma,
+        $frequency_window_short_upper_imsigma],
+) {
+    my ($side, $re_file, $im_file) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(
+        '-Mp', '0.2', 1, 2, 0, 0.1, 0, $re_file, $im_file);
+    check_result("spectral-frequency one-ULP-short $side coverage is fatal",
+        $status == 1 && $stdout eq '' &&
+        $stderr =~ /does not cover the required closed interval/,
+        "exit=$status stderr=$stderr");
+}
+
 for my $case (
     ['lower', $short_lower_resigma, $short_lower_imsigma],
     ['upper', $short_upper_resigma, $short_upper_imsigma],
@@ -901,9 +1048,11 @@ check_result('M=0 permits grid without zero', $outside_status == 0,
     "exit=$outside_status");
 
 my ($verbose_status, $verbose_stdout, $verbose_stderr) = run_bubble(
-    '-v', '-M', '0.5', 1, 2, 0, 0.1, 0, $resigma, $imsigma);
+    '-v', '-M', '0.5', '-Mp', '0.2',
+    1, 2, 0, 0.1, 0, $resigma, $imsigma);
 check_result('verbose resolved window', $verbose_status == 0 &&
     $verbose_stdout =~ /cutoff=30(?:\.0+)?(?:\s|$)/ &&
+    $verbose_stdout =~ /spectral-frequency window half-width M'=0\.2/ &&
     $verbose_stdout =~ /ReSigma\(0\)=/ &&
     $verbose_stdout =~ /epsilon window=\[-0\.5,0\.5\]/,
     "exit=$verbose_status stderr=$verbose_stderr");

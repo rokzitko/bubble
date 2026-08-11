@@ -92,6 +92,40 @@ for my $kernel (@even_kernels) {
         $ok ? "relative_error=" . relative_error($small, $dc) : "$small_error dc=$dc small=$small");
 }
 
+my @frequency_window_arguments = (1, 2, 0, 0.1, 0, $resigma, $imsigma);
+my ($windowed_dc, $windowed_dc_error) = run_value(
+    '-Mp', '0.2', @frequency_window_arguments);
+my ($windowed_zero, $windowed_zero_error) = run_value(
+    '-Mp', '0.2', '-O', '0', @frequency_window_arguments);
+check_result("spectral-frequency window exact Omega=0 limit",
+    defined $windowed_dc && defined $windowed_zero &&
+    $windowed_dc == $windowed_zero,
+    defined $windowed_dc && defined $windowed_zero
+        ? "value=$windowed_dc" : "$windowed_dc_error $windowed_zero_error");
+
+my ($windowed_optical, $windowed_optical_error) = run_value(
+    '-Mp', '0.2', '-O', '0.1', @frequency_window_arguments);
+my ($bounded_optical, $bounded_optical_error) = run_value(
+    '-c', '1', '-O', '0.1', @frequency_window_arguments);
+check_result('spectral-frequency optical overlap uses both masks',
+    defined $windowed_optical && defined $bounded_optical &&
+    $windowed_optical == $bounded_optical,
+    defined $windowed_optical && defined $bounded_optical
+        ? "value=$windowed_optical"
+        : "$windowed_optical_error $bounded_optical_error");
+
+my ($above_window, $above_window_error) = run_value(
+    '-Mp', '0.2', '-O', '0.3', @frequency_window_arguments);
+check_result("optical response can survive M'<Omega<2M'",
+    defined $above_window && $above_window > 0.0,
+    defined $above_window ? "value=$above_window" : $above_window_error);
+
+my ($empty_window, $empty_window_error) = run_value(
+    '-Mp', '0.2', '-O', '0.4', @frequency_window_arguments);
+check_result("optical response vanishes at Omega=2M'",
+    defined $empty_window && $empty_window == 0.0,
+    defined $empty_window ? "value=$empty_window" : $empty_window_error);
+
 # Independent direct epsilon/omega quadrature for constant Sigma=-0.1i.
 my %finite_reference = (
     1 => 0.4885903945334426,
@@ -154,6 +188,16 @@ my ($short_optical_upper_re, $short_optical_upper_im) =
     write_constant_sigma('short-optical-upper', '-4', '3.9999999999999996');
 my ($shifted_boundary_re, $shifted_boundary_im) =
     write_constant_sigma('shifted-boundary', '-1', '1');
+my ($frequency_window_exact_re, $frequency_window_exact_im) =
+    write_constant_sigma('frequency-window-exact', '-0.2', '0.2');
+my ($frequency_window_short_lower_re, $frequency_window_short_lower_im) =
+    write_constant_sigma('frequency-window-short-lower',
+        '-0.19999999999999998', '0.2');
+my ($frequency_window_short_upper_re, $frequency_window_short_upper_im) =
+    write_constant_sigma('frequency-window-short-upper',
+        '-0.2', '0.19999999999999998');
+my ($frequency_window_disjoint_re, $frequency_window_disjoint_im) =
+    write_constant_sigma('frequency-window-disjoint', '1', '2');
 my ($tabulated, $tabulated_error) = run_value(
     @tight_tolerances, '-E', '-q', '-O', '0.3', '-p', $phi_filename,
     0, 2, 0, 0.1, 0, $resigma, $imsigma,
@@ -171,6 +215,42 @@ check_result('positive optical exact closed Sigma coverage succeeds',
     $exact_optical_status == 0 && $exact_optical_stdout =~ /^\s*$number\s*$/ &&
     $exact_optical_stderr eq '',
     "exit=$exact_optical_status stderr=$exact_optical_stderr");
+
+my ($frequency_window_coverage_status, $frequency_window_coverage_stdout,
+    $frequency_window_coverage_stderr) = run_bubble(
+        '-Mp', '0.2', '-O', '0.1',
+        1, 2, 0, 0.1, 0,
+        $frequency_window_exact_re, $frequency_window_exact_im);
+check_result('optical spectral-frequency exact Sigma coverage succeeds',
+    $frequency_window_coverage_status == 0 &&
+    $frequency_window_coverage_stdout =~ /^\s*$number\s*$/ &&
+    $frequency_window_coverage_stderr eq '',
+    "exit=$frequency_window_coverage_status stderr=$frequency_window_coverage_stderr");
+
+for my $case (
+    ['lower', $frequency_window_short_lower_re,
+        $frequency_window_short_lower_im],
+    ['upper', $frequency_window_short_upper_re,
+        $frequency_window_short_upper_im],
+) {
+    my ($side, $re_file, $im_file) = @$case;
+    my ($status, $stdout, $stderr) = run_bubble(
+        '-Mp', '0.2', '-O', '0.1',
+        1, 2, 0, 0.1, 0, $re_file, $im_file);
+    check_result("optical spectral-frequency one-ULP-short $side coverage is fatal",
+        $status == 1 && $stdout eq '' &&
+        $stderr =~ /does not cover the required closed interval/,
+        "exit=$status stderr=$stderr");
+}
+
+my ($empty_coverage_status, $empty_coverage_stdout, $empty_coverage_stderr) =
+    run_bubble('-Mp', '0.2', '-O', '0.4',
+        1, 2, 0, 0.1, 0,
+        $frequency_window_disjoint_re, $frequency_window_disjoint_im);
+check_result('empty optical spectral-frequency interval needs no Sigma coverage',
+    $empty_coverage_status == 0 && $empty_coverage_stdout =~ /^\s*0\s*$/ &&
+    $empty_coverage_stderr eq '',
+    "exit=$empty_coverage_status stderr=$empty_coverage_stderr");
 
 for my $case (
     ['lower', $short_optical_lower_re, $short_optical_lower_im],

@@ -55,7 +55,7 @@ gsl_interp_accel *phi_accelerator;
 gsl_spline *phi_spline;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.10";
+const string VERSION = "1.11";
 
 // Mandatory parameters
 int m, n, o;
@@ -75,6 +75,7 @@ double rel_error = 1.0e-8;
 double cutoff = 30.0;
 double sigma_clip_floor = 1.0e-8;
 double epsilon_window_half_width = 0.0;
+double spectral_frequency_window_half_width = 0.0;
 double epsilon_window_center = 0.0;
 double epsilon_window_lower = 0.0;
 double epsilon_window_upper = 0.0;
@@ -114,6 +115,7 @@ void usage()
    cout << "-c C : positive frequency cutoff in units of T (default = 30)" << endl;
    cout << "-s FLOOR : positive in-table ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
+   cout << "-Mp LIMIT : spectral-frequency window half-width (default = 0, unrestricted)" << endl;
    cout << "-p FILE : filename for Phi tables (default = Phi.dat)" << endl;
    cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
    cout << "-e E : nonnegative power of epsilon when using the m=0 code (default=0)" << endl;
@@ -356,6 +358,16 @@ double parse_epsilon_window_half_width(const char *value)
    return result;
 }
 
+double parse_spectral_frequency_window_half_width(const char *value)
+{
+   const double result = parse_finite_double(value, "spectral-frequency window limit");
+
+   if (result < 0.0)
+      invalid_numeric_value("spectral-frequency window limit", value);
+
+   return result;
+}
+
 void parse_command_line(int argc, char *argv[])
 {
    const int positional_count = 7;
@@ -412,7 +424,18 @@ void parse_command_line(int argc, char *argv[])
 	 sigma_clip_floor = parse_sigma_clip_floor(optarg);
 	 break;
       case 'M':
-	 epsilon_window_half_width = parse_epsilon_window_half_width(optarg);
+	 // getopt reads the exact multi-character option -Mp as -M with argument "p".
+	 if (strcmp(option_argv[optind - 1], "-Mp") == 0 && strcmp(optarg, "p") == 0) {
+	    if (optind >= first_positional) {
+	       cerr << "Option -Mp requires a value." << endl;
+	       exit(EXIT_FAILURE);
+	    }
+	    spectral_frequency_window_half_width =
+	       parse_spectral_frequency_window_half_width(option_argv[optind]);
+	    ++optind;
+	 } else {
+	    epsilon_window_half_width = parse_epsilon_window_half_width(optarg);
+	 }
 	 break;
       case 'p':
 	 phi_filename = string(optarg);
@@ -566,6 +589,9 @@ void parse_command_line(int argc, char *argv[])
       cout << "ImSigma clipping floor=" << sigma_clip_floor << endl;
       if (epsilon_window_half_width > 0.0)
 	 cout << "epsilon-window half-width M=" << epsilon_window_half_width << endl;
+      if (spectral_frequency_window_half_width > 0.0)
+	 cout << "spectral-frequency window half-width M'="
+	      << spectral_frequency_window_half_width << endl;
       cout << "Phi=" << phi_filename << " e=" << epsilon_power << endl;
       if (optical_mode)
 	 cout << "external Omega=" << optical_frequency << endl;
@@ -3099,6 +3125,31 @@ struct sigma_coverage_requirement {
    const char *mode;
 };
 
+struct frequency_interval {
+   double lower;
+   double upper;
+};
+
+frequency_interval active_spectral_frequency_interval(double lower, double upper,
+                                                       bool include_shifted)
+{
+   if (!(lower < upper) || spectral_frequency_window_half_width == 0.0 || n == 0)
+      return frequency_interval{lower, upper};
+
+   const long double half_width = spectral_frequency_window_half_width;
+   long double active_lower = max(static_cast<long double>(lower), -half_width);
+   long double active_upper = min(static_cast<long double>(upper), half_width);
+   if (include_shifted) {
+      const long double shift = optical_frequency;
+      active_lower = max(active_lower, -half_width - shift);
+      active_upper = min(active_upper, half_width - shift);
+   }
+   if (!(active_lower < active_upper))
+      return frequency_interval{0.0, 0.0};
+   return frequency_interval{static_cast<double>(active_lower),
+                             static_cast<double>(active_upper)};
+}
+
 bool result_avoids_frequency_dependent_sigma()
 {
    if (n == 0)
@@ -3116,24 +3167,41 @@ sigma_coverage_requirement required_sigma_coverage()
          cerr << "The frequency integration bounds are not representable." << endl;
          exit(EXIT_FAILURE);
       }
-      return sigma_coverage_requirement{-optical_bound, optical_bound, "optical"};
+      const frequency_interval active = active_spectral_frequency_interval(
+         -optical_bound, thermal_bound, true);
+      if (!(active.lower < active.upper))
+         return sigma_coverage_requirement{0.0, 0.0, "optical"};
+      const double required_upper = active.upper + optical_frequency;
+      if (!isfinite(required_upper - active.lower)) {
+         cerr << "The frequency integration bounds are not representable." << endl;
+         exit(EXIT_FAILURE);
+      }
+      return sigma_coverage_requirement{active.lower, required_upper, "optical"};
    }
 
    if (selected_frequency_weight == FERMI_FUNCTION) {
       if (!(omega_min < thermal_bound))
          return sigma_coverage_requirement{omega_min, thermal_bound, "occupied"};
-      if (!isfinite(thermal_bound - omega_min)) {
+      const frequency_interval active = active_spectral_frequency_interval(
+         omega_min, thermal_bound, false);
+      if (!(active.lower < active.upper))
+         return sigma_coverage_requirement{0.0, 0.0, "occupied"};
+      if (!isfinite(active.upper - active.lower)) {
          cerr << "The frequency integration bounds are not representable." << endl;
          exit(EXIT_FAILURE);
       }
-      return sigma_coverage_requirement{omega_min, thermal_bound, "occupied"};
+      return sigma_coverage_requirement{active.lower, active.upper, "occupied"};
    }
 
-   if (!isfinite(thermal_bound - (-thermal_bound))) {
+   const frequency_interval active = active_spectral_frequency_interval(
+      -thermal_bound, thermal_bound, false);
+   if (!(active.lower < active.upper))
+      return sigma_coverage_requirement{0.0, 0.0, "DC"};
+   if (!isfinite(active.upper - active.lower)) {
       cerr << "The frequency integration bounds are not representable." << endl;
       exit(EXIT_FAILURE);
    }
-   return sigma_coverage_requirement{-thermal_bound, thermal_bound, "DC"};
+   return sigma_coverage_requirement{active.lower, active.upper, "DC"};
 }
 
 void validate_self_energy_coverage()
@@ -3143,7 +3211,7 @@ void validate_self_energy_coverage()
 
    const sigma_coverage_requirement required = required_sigma_coverage();
    if (!(required.lower < required.upper))
-      return; // calculate_dc() reports the mode-specific invalid integration interval.
+      return; // Empty masked ranges need no Sigma; invalid base ranges fail later.
    if (result_avoids_frequency_dependent_sigma())
       return;
    if (omega_min <= required.lower && required.upper <= omega_max)
@@ -3157,7 +3225,7 @@ void validate_self_energy_coverage()
       cerr << "Error: " << required.mode << " self-energy table interval "
            << available << " does not cover the required closed interval "
            << needed << "." << endl;
-      cerr << "Extend both self-energy tables, reduce -c or -O as applicable, or use "
+      cerr << "Extend both self-energy tables, reduce -c, -O, or -Mp as applicable, or use "
            << "--allow-legacy-self-energy-extrapolation explicitly." << endl;
       exit(EXIT_FAILURE);
    }
@@ -3209,6 +3277,33 @@ complex<double> z_of_omega(double omega)
    }
 
    return omega + mu - sigma_re - sigma_im*imaginary_unit;
+}
+
+bool spectral_frequency_is_active(double omega)
+{
+   return spectral_frequency_window_half_width == 0.0 ||
+      (-spectral_frequency_window_half_width < omega &&
+       omega < spectral_frequency_window_half_width);
+}
+
+void add_spectral_frequency_transition_points(vector<double> &points,
+                                               double lower, double upper,
+                                               bool include_shifted)
+{
+   if (spectral_frequency_window_half_width == 0.0)
+      return;
+
+   const long double half_width = spectral_frequency_window_half_width;
+   const long double shift = optical_frequency;
+   const long double transitions[] = {
+      -half_width, half_width, -half_width - shift, half_width - shift
+   };
+   const size_t count = include_shifted ? 4 : 2;
+   for (size_t index = 0; index < count; ++index) {
+      if (static_cast<long double>(lower) < transitions[index] &&
+          transitions[index] < static_cast<long double>(upper))
+         points.push_back(static_cast<double>(transitions[index]));
+   }
 }
 
 void add_sigma_transition_points(vector<double> &points,
@@ -3487,6 +3582,7 @@ vector<double> restricted_outer_points(double lower, double upper,
       add_restricted_crossings(points, lower, upper, optical_frequency, interval.upper);
    }
    add_sigma_transition_points(points, lower, upper, include_shifted);
+   add_spectral_frequency_transition_points(points, lower, upper, include_shifted);
    return filter_integration_points(points, lower, upper);
 }
 
@@ -3611,6 +3707,9 @@ double optical_fermi_factor(double omega)
 
 double frequency_integrand_dc(double omega, void *params)
 {
+   if (n != 0 && !spectral_frequency_is_active(omega))
+      return 0.0;
+
    const double temperature = *static_cast<double *>(params);
 
    double f_factor;
@@ -3634,8 +3733,13 @@ double frequency_integrand_dc(double omega, void *params)
 
 double frequency_integrand_optical(double omega, void *)
 {
+   const double shifted_omega = omega + optical_frequency;
+   if (!spectral_frequency_is_active(omega) ||
+       !spectral_frequency_is_active(shifted_omega))
+      return 0.0;
+
    const complex<double> z1 = z_of_omega(omega);
-   const complex<double> z2 = z_of_omega(omega + optical_frequency);
+   const complex<double> z2 = z_of_omega(shifted_omega);
    return optical_fermi_factor(omega)*K_selected(z1, z2)*pow(omega, o);
 }
 
@@ -3670,9 +3774,12 @@ void write_dos_table()
          exit(EXIT_FAILURE);
       }
       previous_omega = omega;
-      const complex<double> z = sigma_independent
-         ? complex<double>(0.0, 0.0) : z_of_omega(omega);
-      const double result = J_selected(z); // Spectral normalization is included in J.
+      double result = 0.0;
+      if (n == 0 || spectral_frequency_is_active(omega)) {
+         const complex<double> z = sigma_independent
+            ? complex<double>(0.0, 0.0) : z_of_omega(omega);
+         result = J_selected(z); // Spectral normalization is included in J.
+      }
       rows.push_back(make_pair(omega, result));
    }
 
@@ -3908,6 +4015,11 @@ void calculate_dc()
       cerr << "Invalid integration interval [" << lower_limit << ", " << upper_limit << "]." << endl;
       exit(EXIT_FAILURE);
    }
+   const frequency_interval active = active_spectral_frequency_interval(
+      lower_limit, upper_limit, false);
+   lower_limit = active.lower;
+   upper_limit = active.upper;
+   const bool frequency_interval_empty = !(lower_limit < upper_limit);
    gsl_integration_workspace *work_ptr = gsl_integration_workspace_alloc(ws_size);
    if (work_ptr == NULL) {
       cerr << "Unable to allocate frequency integration workspace." << endl;
@@ -3931,7 +4043,8 @@ void calculate_dc()
       selected_frequency_weight == MINUS_FERMI_DERIVATIVE && particle_hole_symmetric_sigma &&
       epsilon_window_center == 0.0 && m != 0 && m % 2 == 0 && o % 2 == 0 &&
       interval.lower == -interval.upper;
-   if (parity_zero || (epsilon_window_half_width > 0.0 && interval.empty)) {
+   if (frequency_interval_empty || parity_zero ||
+       (epsilon_window_half_width > 0.0 && interval.empty)) {
       result = 0.0;
       error = 0.0;
    } else if (m == 0) {
@@ -4001,6 +4114,9 @@ void calculate_dc()
       points.push_back(upper_limit);
       if (n != 0)
          add_sigma_transition_points(points, lower_limit, upper_limit, false);
+      if (n != 0)
+         add_spectral_frequency_transition_points(points, lower_limit,
+                                                  upper_limit, false);
       points = filter_integration_points(points, lower_limit, upper_limit);
       if (points.size() > 2) {
          if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
@@ -4052,8 +4168,11 @@ void calculate_optical()
       exit(EXIT_FAILURE);
    }
 
-   const double lower_limit = -cutoff*T - optical_frequency;
-   const double upper_limit = cutoff*T;
+   const frequency_interval active = active_spectral_frequency_interval(
+      -cutoff*T - optical_frequency, cutoff*T, true);
+   const double lower_limit = active.lower;
+   const double upper_limit = active.upper;
+   const bool frequency_interval_empty = !(lower_limit < upper_limit);
    const double boundaries[] = {lower_limit, -optical_frequency, 0.0, upper_limit};
 
    gsl_function function;
@@ -4069,7 +4188,8 @@ void calculate_optical()
       : (m == 0
          ? epsilon_interval{eps_min, eps_max, false, !(eps_min < eps_max)}
          : epsilon_interval{0.0, 0.0, false, false});
-   if (epsilon_window_half_width > 0.0 && interval.empty) {
+   if (frequency_interval_empty ||
+       (epsilon_window_half_width > 0.0 && interval.empty)) {
       result = 0.0;
       error = 0.0;
    } else if (m == 0) {
@@ -4078,7 +4198,7 @@ void calculate_optical()
       points.push_back(-optical_frequency);
       points.push_back(0.0);
       points = filter_integration_points(points, lower_limit, upper_limit);
-       if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
+      if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
                                          "Optical frequency integration",
                                          result, error)) {
 	 gsl_integration_workspace_free(work);
@@ -4099,7 +4219,7 @@ void calculate_optical()
 	      << endl;
 	 exit(EXIT_FAILURE);
       }
-       const int status = gsl_integration_qagp(&function, &points[0], points.size(),
+      const int status = gsl_integration_qagp(&function, &points[0], points.size(),
 					     abs_error, rel_error, restricted_size,
 					     restricted_work, &result, &error);
       if (restricted_work != work)
@@ -4121,8 +4241,9 @@ void calculate_optical()
    } else {
       vector<double> points(boundaries, boundaries + 4);
       add_sigma_transition_points(points, lower_limit, upper_limit, true);
+      add_spectral_frequency_transition_points(points, lower_limit, upper_limit, true);
       points = filter_integration_points(points, lower_limit, upper_limit);
-       if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
+      if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
                                          "Optical frequency integration",
                                          result, error)) {
          gsl_integration_workspace_free(work);
