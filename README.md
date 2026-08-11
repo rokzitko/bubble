@@ -583,16 +583,7 @@ domain, while `-Mp` leaves that domain unchanged and masks every spectral
 function according to its own frequency argument. Both quantities use the same
 energy units as temperature and the self-energy input.
 
-Define
-
-$$
-\chi_{M'}(\nu)=
-\begin{cases}
-1,& |\nu|<M',\\
-0,& |\nu|\ge M',
-\end{cases}
-$$
-
+Define $\chi_{M'}(\nu)=\theta(M'-|\nu|)$ as the filter function
 and replace each spectral function by
 
 $$
