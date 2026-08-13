@@ -1,5 +1,7 @@
 # DMFT Bubble Integrals
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21920816.svg)](https://doi.org/10.5281/zenodo.21920816)
+
 `bubble` is a compact C++ program for evaluating real-frequency bubble
 integrals from a local DMFT self-energy. For a set of commonly used band and
 transport kernels, the band-energy integral is evaluated with
@@ -1003,7 +1005,10 @@ current executable is authoritative for version 1.11.
 
 If this software contributes to published work, please cite the repository
 release together with the method reference most relevant to the calculation.
-A dedicated software DOI is not currently available.
+The archived version 1.11 is available at
+[doi:10.5281/zenodo.21920817](https://doi.org/10.5281/zenodo.21920817). The
+[concept DOI](https://doi.org/10.5281/zenodo.21920816) resolves to the latest
+archived release.
 
 ## Authors
 
