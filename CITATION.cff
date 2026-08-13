@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "DMFT Bubble Integrals"
+abstract: >-
+  A compact C++ program for evaluating real-frequency bubble integrals from a
+  local dynamical mean-field theory self-energy.
+authors:
+  - family-names: "Žitko"
+    given-names: "Rok"
+  - family-names: "Alić"
+    given-names: "Amina"
+type: software
+version: "1.11"
+date-released: 2026-08-13
+license: "GPL-3.0-or-later"
+repository-code: "https://github.com/rokzitko/bubble"
+keywords:
+  - "dynamical mean-field theory"
+  - "bubble integrals"
+  - "transport"
+  - "optical conductivity"
