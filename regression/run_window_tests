@@ -206,6 +206,16 @@ check_result('covered finite band uses full path',
     $full_status == 0 && $full_stdout eq $base_stdout && $full_stderr eq $base_stderr,
     "full=$full_stdout base=$base_stdout");
 
+my $ignored_output = "$directory/ignored-output.dat";
+my ($ignored_output_status, $ignored_output_stdout, $ignored_output_stderr) =
+    run_bubble('-o', $ignored_output, @base);
+check_result('output filename is ignored outside DOS mode',
+    $ignored_output_status == $base_status &&
+    $ignored_output_stdout eq $base_stdout &&
+    $ignored_output_stderr eq $base_stderr &&
+    !-e $ignored_output && !glob("$ignored_output.tmp.*"),
+    "exit=$ignored_output_status stderr=$ignored_output_stderr");
+
 my ($frequency_window_status, $frequency_window_stdout,
     $frequency_window_stderr) = run_bubble('-Mp', '0.2', @base);
 my ($matching_cutoff_status, $matching_cutoff_stdout,
@@ -556,6 +566,28 @@ if ($exact_mass_ok) {
 check_result('exact unrestricted n=0 spline mass', $exact_mass_ok,
     "exit=$exact_mass_status stderr=$exact_mass_stderr");
 
+my $named_output = "$directory/named-output.dat";
+my ($named_output_status, $named_output_stdout, $named_output_stderr) = run_bubble(
+    '-q', '-v', '-a', '0', '-r', '1e-20', '-d', '-o', $named_output,
+    '-p', $phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+my $named_output_ok = $named_output_status == 0 &&
+    $named_output_stdout =~ /epsilon integrals only \(\Q$named_output\E\)/ &&
+    $named_output_stderr eq '' && -f $named_output &&
+    !glob("$named_output.tmp.*");
+if ($named_output_ok) {
+    open my $default_dos, '<', "$directory/dos.dat"
+        or die "Cannot open default DOS output: $!\n";
+    open my $named_dos, '<', $named_output
+        or die "Cannot open named DOS output: $!\n";
+    my $default_contents = do { local $/; <$default_dos> } // '';
+    my $named_contents = do { local $/; <$named_dos> } // '';
+    close $default_dos or die "Cannot close default DOS output: $!\n";
+    close $named_dos or die "Cannot close named DOS output: $!\n";
+    $named_output_ok = 0 unless $named_contents eq $default_contents;
+}
+check_result('named DOS output', $named_output_ok,
+    "exit=$named_output_status stderr=$named_output_stderr");
+
 my ($dos_status, $dos_stdout, $dos_stderr) = run_bubble(
     '-q', '-M', '0.5', '-d', '-p', $phi,
     0, 0, 0, 0.1, 0, $resigma, $imsigma);
@@ -670,15 +702,21 @@ check_result('unrepresentable DOS mesh is fatal without assertions',
     $unresolved_grid_stderr =~ /DOS frequency grid cannot represent 10001 ordered points/,
     "exit=$unresolved_grid_status stderr=$unresolved_grid_stderr");
 
-chmod 0664, "$directory/dos.dat"
-    or die "Cannot set dos.dat test permissions: $!\n";
+my $precision_output = "$directory/precision-output.dat";
+open my $precision_seed, '>', $precision_output
+    or die "Cannot create precision DOS output: $!\n";
+print {$precision_seed} "old output\n";
+close $precision_seed or die "Cannot close precision DOS output: $!\n";
+chmod 0664, $precision_output
+    or die "Cannot set precision DOS output permissions: $!\n";
 my ($precision_status, $precision_stdout, $precision_stderr) = run_bubble(
-    '-q', '-d', '-p', $nonnegative_phi,
+    '-q', '-d', '-o', $precision_output, '-p', $nonnegative_phi,
     0, 0, 0, 0.1, 0, $precision_resigma, $precision_imsigma);
 my $precision_ok = $precision_status == 0 &&
     $precision_stdout eq '' && $precision_stderr eq '';
 if ($precision_ok) {
-    open my $dos, '<', "$directory/dos.dat" or die "Cannot open dos.dat: $!\n";
+    open my $dos, '<', $precision_output
+        or die "Cannot open precision DOS output: $!\n";
     my ($rows, $previous) = (0, undef);
     while (<$dos>) {
         my ($omega, $value) = split;
@@ -688,32 +726,33 @@ if ($precision_ok) {
         ++$rows;
     }
     close $dos;
-    my $output_mode = (stat "$directory/dos.dat")[2] & 07777;
+    my $output_mode = (stat $precision_output)[2] & 07777;
     $precision_ok = 0 unless $rows == 10001 &&
-        $output_mode == 0664 && !glob("$directory/dos.dat.tmp.*");
+        $output_mode == 0664 && !glob("$precision_output.tmp.*");
 }
-check_result('DOS output preserves doubles and permissions', $precision_ok,
+check_result('named DOS output preserves doubles and permissions', $precision_ok,
     "exit=$precision_status stderr=$precision_stderr");
 
-my $sentinel = "preserve existing dos.dat\n";
-open my $sentinel_file, '>', "$directory/dos.dat"
-    or die "Cannot create sentinel dos.dat: $!\n";
+my $failure_output = "$directory/preserved-output.dat";
+my $sentinel = "preserve existing output\n";
+open my $sentinel_file, '>', $failure_output
+    or die "Cannot create preserved DOS output: $!\n";
 print {$sentinel_file} $sentinel;
-close $sentinel_file or die "Cannot close sentinel dos.dat: $!\n";
+close $sentinel_file or die "Cannot close preserved DOS output: $!\n";
 my @custom_error_arguments = (
-    '-a', '0', '-r', '1e-20', '-d', '-p', $phi,
+    '-a', '0', '-r', '1e-20', '-d', '-o', $failure_output, '-p', $phi,
     0, 1, 0, 0.1, 0, $resigma, $imsigma,
 );
 my ($custom_error_status, $custom_error_stdout, $custom_error_stderr) =
     run_bubble(@custom_error_arguments);
-open my $preserved_file, '<', "$directory/dos.dat"
-    or die "Cannot read preserved dos.dat: $!\n";
+open my $preserved_file, '<', $failure_output
+    or die "Cannot read preserved DOS output: $!\n";
 my $preserved_output = do { local $/; <$preserved_file> } // '';
-close $preserved_file or die "Cannot close preserved dos.dat: $!\n";
+close $preserved_file or die "Cannot close preserved DOS output: $!\n";
 check_result('custom DOS integration failure is fatal',
     $custom_error_status == 1 && $custom_error_stdout eq '' &&
     $custom_error_stderr =~ /Error: Custom epsilon integration:/ &&
-    $preserved_output eq $sentinel && !glob("$directory/dos.dat.tmp.*"),
+    $preserved_output eq $sentinel && !glob("$failure_output.tmp.*"),
     "exit=$custom_error_status stderr=$custom_error_stderr");
 
 my ($custom_ignored_status, $custom_ignored_stdout, $custom_ignored_stderr) =
@@ -723,16 +762,16 @@ check_result('custom DOS integration failure compatibility mode',
     $custom_ignored_stderr eq '',
     "exit=$custom_ignored_status stderr=$custom_ignored_stderr");
 
-unlink "$directory/dos.dat" or die "Cannot remove dos.dat: $!\n";
-mkdir "$directory/dos.dat" or die "Cannot create dos.dat directory: $!\n";
+my $blocked_output = "$directory/blocked-output.dat";
+mkdir $blocked_output or die "Cannot create blocked DOS output directory: $!\n";
 my ($replace_status, $replace_stdout, $replace_stderr) = run_bubble(
-    '-q', '-d', '-p', $phi,
+    '-q', '-d', '-o', $blocked_output, '-p', $phi,
     0, 0, 0, 0.1, 0, $resigma, $imsigma);
 my $replace_ok = $replace_status == 1 && $replace_stdout eq '' &&
-    $replace_stderr =~ /Error replacing dos\.dat:/ &&
-    -d "$directory/dos.dat" && !glob("$directory/dos.dat.tmp.*");
-rmdir "$directory/dos.dat" or die "Cannot remove dos.dat directory: $!\n";
-check_result('DOS atomic replacement failure is fatal', $replace_ok,
+    $replace_stderr =~ /Error replacing \Q$blocked_output\E:/ &&
+    -d $blocked_output && !glob("$blocked_output.tmp.*");
+rmdir $blocked_output or die "Cannot remove blocked DOS output directory: $!\n";
+check_result('named DOS atomic replacement failure is fatal', $replace_ok,
     "exit=$replace_status stderr=$replace_stderr");
 
 my ($overflow_status, $overflow_stdout, $overflow_stderr) = run_bubble(
@@ -790,6 +829,8 @@ my @invalid_cases = (
     ["malformed M'", qr/Invalid spectral-frequency window limit/,
         '-Mp', 'bad', @base],
     ["missing M'", qr/Option -Mp requires a value/, '-Mp', @base],
+    ['missing output filename', qr/Invalid or incomplete command-line option/,
+        '-o', @base],
     ['unrepresentable centered M', qr/positive epsilon-window limit is too small/,
         '-M', '1.1102230246251565e-16', 1, 2, 0, 0.1, 1, $resigma, $imsigma],
     ['unpreserved sub-ULP center', qr/bounds do not preserve the resolved center/,

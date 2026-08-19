@@ -55,7 +55,7 @@ gsl_interp_accel *phi_accelerator;
 gsl_spline *phi_spline;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.11";
+const string VERSION = "1.12";
 
 // Mandatory parameters
 int m, n, o;
@@ -81,6 +81,7 @@ double epsilon_window_lower = 0.0;
 double epsilon_window_upper = 0.0;
 string phi_filename = "Phi.dat";
 bool dos_mode = false;
+string dos_output_filename = "dos.dat";
 enum frequency_weight { FERMI_FUNCTION, MINUS_FERMI_DERIVATIVE };
 frequency_weight selected_frequency_weight = MINUS_FERMI_DERIVATIVE;
 int epsilon_power = 0;
@@ -117,7 +118,8 @@ void usage()
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
    cout << "-Mp LIMIT : spectral-frequency window half-width (default = 0, unrestricted)" << endl;
    cout << "-p FILE : filename for Phi tables (default = Phi.dat)" << endl;
-   cout << "-d : compute the epsilon integrals only, for m=0 (output = dos.dat)" << endl;
+   cout << "-d : compute the epsilon integrals only, for m=0" << endl;
+   cout << "-o FILE : DOS output filename (default = dos.dat; ignored without -d)" << endl;
    cout << "-e E : nonnegative power of epsilon when using the m=0 code (default=0)" << endl;
    cout << "-f : switch (-df/dw) to f in the w integration (incompatible with -d)" << endl;
    cout << "-O OMEGA : external optical frequency (requires OMEGA>=0 and n=2)" << endl;
@@ -390,7 +392,7 @@ void parse_command_line(int argc, char *argv[])
 
    optind = 1;
    while ((c = getopt_long(first_positional, &option_argv[0],
-                           "+vqEi:k:a:r:c:s:M:p:dfe:O:",
+                           "+vqEi:k:a:r:c:s:M:p:o:dfe:O:",
                            long_options, NULL)) != -1) {
       switch (c) {
       case 'v':
@@ -439,6 +441,9 @@ void parse_command_line(int argc, char *argv[])
 	 break;
       case 'p':
 	 phi_filename = string(optarg);
+	 break;
+      case 'o':
+	 dos_output_filename = string(optarg);
 	 break;
       case 'd':
          dos_mode = true;
@@ -596,7 +601,7 @@ void parse_command_line(int argc, char *argv[])
       if (optical_mode)
 	 cout << "external Omega=" << optical_frequency << endl;
       if (dos_mode) {
-	 cout << "epsilon integrals only (dos.dat)" << endl;
+	 cout << "epsilon integrals only (" << dos_output_filename << ")" << endl;
       } else if (optical_mode && optical_frequency > 0.0) {
 	 cout << "[f(omega)-f(omega+Omega)]/Omega" << endl;
       } else {
@@ -3783,7 +3788,7 @@ void write_dos_table()
       rows.push_back(make_pair(omega, result));
    }
 
-   const string output_name = "dos.dat";
+   const string &output_name = dos_output_filename;
    mode_t output_mode;
    struct stat existing_output;
    if (lstat(output_name.c_str(), &existing_output) == 0 &&

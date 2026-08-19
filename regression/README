@@ -70,8 +70,8 @@ validation, interpolation-size checks, and controlled malformed-input failures.
 
 `run_window_tests` covers all `-M` modes, the `-Mp` spectral-frequency mask,
 exact zero-window behavior, full and empty domain intersections, tabulated
-kernels, DOS output, occupied moments, narrow outer crossings, self-energy
-coverage, and explicit legacy extrapolation.
+kernels, default and named DOS output with atomic replacement, occupied moments,
+narrow outer crossings, self-energy coverage, and explicit legacy extrapolation.
 
 `run_optical_tests` covers the exact Omega=0 DC path, small positive Omega,
 spectral-frequency overlap, frozen finite-frequency values, shifted integration

@@ -384,7 +384,8 @@ Options:
 | `-p FILE` | Kernel table for `m=0`, default `Phi.dat` |
 | `-e E` | Multiply a tabulated kernel by $\epsilon^E$ for nonnegative `E`, default `0` |
 | `-f` | Use the Fermi function instead of its derivative |
-| `-d` | Skip the frequency integral and write `dos.dat`; requires `m=0` |
+| `-d` | Skip the frequency integral and write a DOS table; requires `m=0` |
+| `-o FILE` | DOS output filename, default `dos.dat`; ignored without `-d` |
 | `-O OMEGA` | External optical frequency; requires `OMEGA >= 0` and `n=2` |
 
 ### Output and Exit Status
@@ -395,10 +396,11 @@ parameters followed by `Result` and the outer quadrature's `Error` estimate.
 This makes the executable convenient to call from shell, Python, Julia, or
 other DMFT post-processing workflows.
 
-DOS mode `-d` writes `dos.dat` and normally prints no scalar result. If `n!=1`,
-its nonfatal warning is currently written to standard output unless `-q` is
-used. The executable has no `-h` or `--help` option; invoking it without all
-seven positional arguments prints its usage and exits unsuccessfully.
+DOS mode `-d` writes the file selected by `-o`, or `dos.dat` by default, and
+normally prints no scalar result. If `n!=1`, its nonfatal warning is currently
+written to standard output unless `-q` is used. The executable has no `-h` or
+`--help` option; invoking it without all seven positional arguments prints its
+usage and exits unsuccessfully.
 
 Fatal diagnostics are written to standard error and return a nonzero status.
 `-q` suppresses only nonfatal warnings; it does not hide numerical results,
@@ -752,10 +754,11 @@ $$
 \lbrace\omega_i,J_{0n}(\omega_i)\rbrace
 $$
 
-over the self-energy input interval to lowercase `dos.dat`:
+over the self-energy input interval to the file selected by `-o`, or lowercase
+`dos.dat` by default:
 
 ```bash
-./bubble -d -p DOS.dat \
+./bubble -d -o interacting-dos.dat -p DOS.dat \
   0 1 0 0.27 0 \
   Bethe_lattice_test/resigma.dat \
   Bethe_lattice_test/imsigma.dat
@@ -766,13 +769,14 @@ The output is a physical interacting DOS (lattice spectral function) only for
 `T` and `o` arguments are still syntactically required but are not used in this
 mode, and neither is `-c`. They must be complete finite numeric values but may
 have either sign. A positive `-Mp` still masks the spectral values as described
-above. `-d` overwrites `dos.dat` and cannot be combined with `-f`; it can be
-combined with `-e`. Rows are written with enough significant digits to
-round-trip `double` values. The complete result is first written to a checked
-temporary file in the same directory and then atomically replaces `dos.dat`, so
-an existing output is preserved if calculation or output fails. For `n=0`, the
-kernel mass is independent of Sigma and the output loop does not evaluate the
-self-energy spline.
+above. `-d` overwrites the selected output and cannot be combined with `-f`; it
+can be combined with `-e`. `-o` is accepted but ignored outside `-d` mode. Rows
+are written with enough significant digits to round-trip `double` values. The
+complete result is first written to a checked temporary file in the same
+directory and then atomically replaces the selected output, so an existing file
+is preserved if calculation or output fails. Existing regular-file permissions
+are retained. For `n=0`, the kernel mass is independent of Sigma and the output
+loop does not evaluate the self-energy spline.
 
 ## Numerical Method
 
@@ -990,7 +994,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.11.
+current executable is authoritative for version 1.12.
 
 ## References
 
