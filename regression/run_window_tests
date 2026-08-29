@@ -172,6 +172,38 @@ sub close_enough {
     return abs($value - $expected) <= $absolute + $relative*abs($expected);
 }
 
+for my $help_option ('-h', '--help') {
+    my ($help_status, $help_stdout, $help_stderr) = run_bubble($help_option);
+    check_result("$help_option succeeds without positional arguments",
+        $help_status == 0 && $help_stderr eq '' &&
+        $help_stdout =~ /bubble version 1\.13/ &&
+        $help_stdout =~ /--phi-interpolation METHOD/ &&
+        $help_stdout =~ /--workspace-limit N/ &&
+        $help_stdout =~ /--gsl-error-policy POLICY/,
+        "exit=$help_status stderr=$help_stderr");
+}
+
+my ($option_help_status, $option_help_stdout, $option_help_stderr) = run_bubble(
+    '--workspace-limit', '10', '--gsl-error-policy', 'fail',
+    '--phi-interpolation', 'linear', '-h');
+check_result('help succeeds after preceding options without positionals',
+    $option_help_status == 0 && $option_help_stderr eq '' &&
+    $option_help_stdout =~ /Usage: bubble/,
+    "exit=$option_help_status stderr=$option_help_stderr");
+
+my ($window_help_status, $window_help_stdout, $window_help_stderr) =
+    run_bubble('-Mp', '0.2', '-h');
+check_result('help succeeds after the legacy -Mp option',
+    $window_help_status == 0 && $window_help_stderr eq '' &&
+    $window_help_stdout =~ /Usage: bubble/,
+    "exit=$window_help_status stderr=$window_help_stderr");
+
+my ($consumed_help_status, undef, $consumed_help_stderr) =
+    run_bubble('--workspace-limit', '--help');
+check_result('help token consumed as a missing option value is not activated',
+    $consumed_help_status == 1 && $consumed_help_stderr eq '',
+    "exit=$consumed_help_status stderr=$consumed_help_stderr");
+
 my @zero_limit_cases = (
     [1, 2, 0, 0.1, 0, $resigma, $imsigma],
     [7, 3, 0, 0.1, 0, $resigma, $imsigma],
@@ -205,6 +237,30 @@ my ($base_status, $base_stdout, $base_stderr) = run_bubble(@base);
 check_result('covered finite band uses full path',
     $full_status == 0 && $full_stdout eq $base_stdout && $full_stderr eq $base_stderr,
     "full=$full_stdout base=$base_stdout");
+
+my ($default_workspace_status, $default_workspace_stdout,
+    $default_workspace_stderr) = run_bubble('--workspace-limit', '1000', @base);
+check_result('explicit default workspace is an exact pass-through',
+    $default_workspace_status == $base_status &&
+    $default_workspace_stdout eq $base_stdout &&
+    $default_workspace_stderr eq $base_stderr,
+    "exit=$default_workspace_status stderr=$default_workspace_stderr");
+
+my @restricted_gaussian_arguments = (
+    '-M', '0.5', 7, 0, 0, 0.1, 0, $resigma, $imsigma,
+);
+my ($minimum_qagp_value, $minimum_qagp_error) = run_value(
+    '--workspace-limit', '1', '--gsl-error-policy', 'ignore',
+    @restricted_gaussian_arguments);
+my ($control_qagp_value, $control_qagp_error) = run_value(
+    '--workspace-limit', '3', '--gsl-error-policy', 'ignore',
+    @restricted_gaussian_arguments);
+check_result('QAGP workspace accommodates its breakpoint array',
+    defined $minimum_qagp_value && defined $control_qagp_value &&
+    $minimum_qagp_value == $control_qagp_value,
+    defined $minimum_qagp_value && defined $control_qagp_value
+        ? "value=$minimum_qagp_value"
+        : "$minimum_qagp_error $control_qagp_error");
 
 my $ignored_output = "$directory/ignored-output.dat";
 my ($ignored_output_status, $ignored_output_stdout, $ignored_output_stderr) =
@@ -548,7 +604,7 @@ check_result('smooth tangent curvature neighborhood',
 my $original_directory = getcwd();
 chdir $directory or die "Cannot enter $directory: $!\n";
 my ($exact_mass_status, $exact_mass_stdout, $exact_mass_stderr) = run_bubble(
-    '-q', '-a', '0', '-r', '1e-20', '-d', '-p', $phi,
+    '-q', '-a', '0', '-r', '1e-12', '-d', '-p', $phi,
     0, 0, 0, 0.1, 0, $resigma, $imsigma);
 my $exact_mass_ok = $exact_mass_status == 0 &&
     $exact_mass_stdout eq '' && $exact_mass_stderr eq '';
@@ -568,7 +624,7 @@ check_result('exact unrestricted n=0 spline mass', $exact_mass_ok,
 
 my $named_output = "$directory/named-output.dat";
 my ($named_output_status, $named_output_stdout, $named_output_stderr) = run_bubble(
-    '-q', '-v', '-a', '0', '-r', '1e-20', '-d', '-o', $named_output,
+    '-q', '-v', '-a', '0', '-r', '1e-12', '-d', '-o', $named_output,
     '-p', $phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
 my $named_output_ok = $named_output_status == 0 &&
     $named_output_stdout =~ /epsilon integrals only \(\Q$named_output\E\)/ &&
@@ -665,6 +721,54 @@ check_result('spectral-frequency masked DOS output', $masked_dos_ok,
     "exit=$masked_dos_status stderr=$masked_dos_stderr");
 
 chdir $directory or die "Cannot enter $directory: $!\n";
+for my $method (qw(linear cspline akima steffen)) {
+    my ($method_status, $method_stdout, $method_stderr) = run_bubble(
+        '-q', '-v', '--phi-interpolation', $method, '-p', $nonnegative_phi,
+        0, 0, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
+    check_result("explicit $method Phi interpolation",
+        $method_status == 0 && $method_stdout =~ /Phi interpolation=\Q$method\E/ &&
+        $method_stderr eq '',
+        "exit=$method_status stderr=$method_stderr");
+}
+
+my ($automatic_nonnegative_status, $automatic_nonnegative_stdout,
+    $automatic_nonnegative_stderr) = run_bubble(
+        '-q', '-p', $nonnegative_phi,
+        0, 0, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
+my ($forced_steffen_status, $forced_steffen_stdout, $forced_steffen_stderr) =
+    run_bubble('-q', '--phi-interpolation=steffen', '-p', $nonnegative_phi,
+        0, 0, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
+check_result('automatic nonnegative Phi exactly matches Steffen',
+    $automatic_nonnegative_status == 0 && $forced_steffen_status == 0 &&
+    $automatic_nonnegative_stdout eq $forced_steffen_stdout &&
+    $automatic_nonnegative_stderr eq $forced_steffen_stderr,
+    "auto=$automatic_nonnegative_stdout steffen=$forced_steffen_stdout");
+
+my ($automatic_signed_status, $automatic_signed_stdout, $automatic_signed_stderr) =
+    run_bubble('-q', '-e', '1', '-p', $phi,
+        0, 0, 0, 0.1, 0, $resigma, $imsigma);
+my ($forced_akima_status, $forced_akima_stdout, $forced_akima_stderr) =
+    run_bubble('-q', '--phi-interpolation', 'akima', '-e', '1', '-p', $phi,
+        0, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_result('automatic signed Phi exactly matches Akima',
+    $automatic_signed_status == 0 && $forced_akima_status == 0 &&
+    $automatic_signed_stdout eq $forced_akima_stdout &&
+    $automatic_signed_stderr eq $forced_akima_stderr,
+    "auto=$automatic_signed_stdout akima=$forced_akima_stdout");
+
+my ($linear_phi_value, $linear_phi_error) = run_value(
+    '-q', '--phi-interpolation', 'linear', '-p', $nonnegative_phi,
+    0, 0, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
+my ($steffen_phi_value, $steffen_phi_error) = run_value(
+    '-q', '--phi-interpolation', 'steffen', '-p', $nonnegative_phi,
+    0, 0, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
+check_result('explicit Phi methods affect the interpolated mass',
+    defined $linear_phi_value && defined $steffen_phi_value &&
+    abs($linear_phi_value - $steffen_phi_value) > 1e-12,
+    defined $linear_phi_value && defined $steffen_phi_value
+        ? "linear=$linear_phi_value steffen=$steffen_phi_value"
+        : "$linear_phi_error $steffen_phi_error");
+
 my ($nonnegative_status, $nonnegative_stdout, $nonnegative_stderr) = run_bubble(
     '-q', '-v', '-d', '-p', $nonnegative_phi,
     0, 1, 0, 0.1, 0, $nonnegative_resigma, $nonnegative_imsigma);
@@ -740,8 +844,9 @@ open my $sentinel_file, '>', $failure_output
 print {$sentinel_file} $sentinel;
 close $sentinel_file or die "Cannot close preserved DOS output: $!\n";
 my @custom_error_arguments = (
-    '-a', '0', '-r', '1e-20', '-d', '-o', $failure_output, '-p', $phi,
-    0, 1, 0, 0.1, 0, $resigma, $imsigma,
+    '--workspace-limit', '1', '-d', '-o', $failure_output,
+    '-p', $nonnegative_phi, 0, 1, 0, 0.1, 0,
+    $nonnegative_resigma, $nonnegative_imsigma,
 );
 my ($custom_error_status, $custom_error_stdout, $custom_error_stderr) =
     run_bubble(@custom_error_arguments);
@@ -757,9 +862,15 @@ check_result('custom DOS integration failure is fatal',
 
 my ($custom_ignored_status, $custom_ignored_stdout, $custom_ignored_stderr) =
     run_bubble('--ignore-integration-errors', '-q', @custom_error_arguments);
+open my $replacement_file, '<', $failure_output
+    or die "Cannot read replacement DOS output: $!\n";
+my $replacement_rows = 0;
+++$replacement_rows while <$replacement_file>;
+close $replacement_file or die "Cannot close replacement DOS output: $!\n";
 check_result('custom DOS integration failure compatibility mode',
     $custom_ignored_status == 0 && $custom_ignored_stdout eq '' &&
-    $custom_ignored_stderr eq '',
+    $custom_ignored_stderr eq '' && -f $failure_output &&
+    $replacement_rows == 10001 && !glob("$failure_output.tmp.*"),
     "exit=$custom_ignored_status stderr=$custom_ignored_stderr");
 
 my $blocked_output = "$directory/blocked-output.dat";
@@ -831,6 +942,17 @@ my @invalid_cases = (
     ["missing M'", qr/Option -Mp requires a value/, '-Mp', @base],
     ['missing output filename', qr/Invalid or incomplete command-line option/,
         '-o', @base],
+    ['missing Phi interpolation', qr/Invalid or incomplete command-line option/,
+        '--phi-interpolation', @base],
+    ['missing workspace limit', qr/Invalid or incomplete command-line option/,
+        '--workspace-limit', @base],
+    ['missing GSL error policy', qr/Invalid or incomplete command-line option/,
+        '--gsl-error-policy', @base],
+    ['unknown clustered short option', qr/Invalid or incomplete command-line option/,
+        '-xv', @base],
+    ["help token is consumed as the M' value",
+        qr/Invalid spectral-frequency window limit/,
+        '-Mp', '-h', @base],
     ['unrepresentable centered M', qr/positive epsilon-window limit is too small/,
         '-M', '1.1102230246251565e-16', 1, 2, 0, 0.1, 1, $resigma, $imsigma],
     ['unpreserved sub-ULP center', qr/bounds do not preserve the resolved center/,
@@ -866,9 +988,13 @@ my @invalid_cases = (
         '-c', '1e-300', 1, 0, 0, '1e-300', 0, $resigma, $imsigma],
     ['option after positional argument', qr/Options must precede the seven positional arguments/,
         1, '-q', 0, 0, 0.1, 0, $resigma, $imsigma],
-    ['unattainable outer tolerance', qr/frequency integration failed/i,
+    ['invalid zero-absolute tolerance pair',
+        qr/Relative integration tolerance is too small when absolute tolerance is zero/,
         '-M', '0.5', '-a', '0', '-r', '1e-20',
         1, 0, 0, 0.1, 0, $resigma, $imsigma],
+    ['ignore policy cannot bypass invalid tolerances',
+        qr/Relative integration tolerance is too small when absolute tolerance is zero/,
+        '--gsl-error-policy', 'ignore', '-a', '0', '-r', '1e-20', @base],
 );
 for my $case (@invalid_cases) {
     my ($name, $diagnostic, @arguments) = @$case;
@@ -913,15 +1039,22 @@ for my $case (@invalid_numeric_cases) {
 }
 
 my @integration_error_arguments = (
-    '-a', '0', '-r', '1e-20',
-    1, 0, 0, 0.1, 0, $resigma, $imsigma,
+    '--workspace-limit', '1', @base,
 );
 my ($strict_error_status, $strict_error_stdout, $strict_error_stderr) =
     run_bubble(@integration_error_arguments);
 check_result('unrestricted integration failure is fatal by default',
     $strict_error_status == 1 && $strict_error_stdout eq '' &&
-    $strict_error_stderr =~ /Error: Frequency integration:/,
+    $strict_error_stderr =~ /Error: Frequency integration: exceeded max number of iterations/,
     "exit=$strict_error_status stderr=$strict_error_stderr");
+
+my ($explicit_fail_status, $explicit_fail_stdout, $explicit_fail_stderr) =
+    run_bubble('--gsl-error-policy', 'fail', @integration_error_arguments);
+check_result('explicit fail policy matches the strict default',
+    $explicit_fail_status == $strict_error_status &&
+    $explicit_fail_stdout eq $strict_error_stdout &&
+    $explicit_fail_stderr eq $strict_error_stderr,
+    "exit=$explicit_fail_status stderr=$explicit_fail_stderr");
 
 my ($ignored_error_status, $ignored_error_stdout, $ignored_error_stderr) =
     run_bubble('-E', @integration_error_arguments);
@@ -931,12 +1064,44 @@ my $ignored_error_ok = $ignored_error_status == 0 &&
 check_result('integration failure compatibility warning', $ignored_error_ok,
     "exit=$ignored_error_status stderr=$ignored_error_stderr");
 
+my ($warn_error_status, $warn_error_stdout, $warn_error_stderr) =
+    run_bubble('--gsl-error-policy=warn', @integration_error_arguments);
+check_result('warn policy matches legacy -E',
+    $warn_error_status == $ignored_error_status &&
+    $warn_error_stdout eq $ignored_error_stdout &&
+    $warn_error_stderr eq $ignored_error_stderr,
+    "exit=$warn_error_status stderr=$warn_error_stderr");
+
+my ($ignore_error_status, $ignore_error_stdout, $ignore_error_stderr) =
+    run_bubble('--gsl-error-policy', 'ignore', @integration_error_arguments);
+check_result('ignore policy silently accepts a finite partial result',
+    $ignore_error_status == 0 &&
+    $ignore_error_stdout eq $ignored_error_stdout &&
+    $ignore_error_stderr eq '',
+    "exit=$ignore_error_status stderr=$ignore_error_stderr");
+
 my ($quiet_error_status, $quiet_error_stdout, $quiet_error_stderr) =
     run_bubble('--ignore-integration-errors', '-q', @integration_error_arguments);
 check_result('quiet integration failure compatibility mode',
     $quiet_error_status == 0 && $quiet_error_stdout eq $ignored_error_stdout &&
     $quiet_error_stderr eq '',
     "exit=$quiet_error_status stderr=$quiet_error_stderr");
+
+my ($override_fail_status, $override_fail_stdout, $override_fail_stderr) =
+    run_bubble('-E', '--gsl-error-policy', 'fail', @integration_error_arguments);
+check_result('explicit fail policy overrides preceding -E',
+    $override_fail_status == $strict_error_status &&
+    $override_fail_stdout eq $strict_error_stdout &&
+    $override_fail_stderr eq $strict_error_stderr,
+    "exit=$override_fail_status stderr=$override_fail_stderr");
+
+my ($override_warn_status, $override_warn_stdout, $override_warn_stderr) =
+    run_bubble('--gsl-error-policy', 'fail', '-E', @integration_error_arguments);
+check_result('legacy -E overrides a preceding explicit policy',
+    $override_warn_status == $ignored_error_status &&
+    $override_warn_stdout eq $ignored_error_stdout &&
+    $override_warn_stderr eq $ignored_error_stderr,
+    "exit=$override_warn_status stderr=$override_warn_stderr");
 
 my ($nonfinite_status, $nonfinite_stdout, $nonfinite_stderr) = run_bubble(
     '-E', 1, 0, 1000, 0.1, 0, $resigma, $imsigma,
@@ -946,6 +1111,26 @@ check_result('compatibility mode rejects non-finite results',
     $nonfinite_stderr =~ /Error: Frequency integration:.*result=inf/i,
     "exit=$nonfinite_status stderr=$nonfinite_stderr");
 
+my ($ignored_nonfinite_status, $ignored_nonfinite_stdout,
+    $ignored_nonfinite_stderr) = run_bubble(
+        '--gsl-error-policy', 'ignore',
+        1, 0, 1000, 0.1, 0, $resigma, $imsigma);
+check_result('ignore policy rejects non-finite results',
+    $ignored_nonfinite_status == 1 && $ignored_nonfinite_stdout eq '' &&
+    $ignored_nonfinite_stderr =~ /Error: Frequency integration:.*result=inf/i,
+    "exit=$ignored_nonfinite_status stderr=$ignored_nonfinite_stderr");
+
+my ($precondition_status, $precondition_stdout, $precondition_stderr) =
+    run_bubble('--gsl-error-policy', 'ignore',
+        '-a', '1e-300', '-r', '0', '-s', '1e-300',
+        '-p', "$Bin/interp_im.dat", 0, 2, 0, 0.01, 0,
+        "$Bin/interp_re.dat", "$Bin/interp_im.dat");
+check_result('ignore policy rejects GSL precondition failures',
+    $precondition_status == 1 && $precondition_stdout eq '' &&
+    $precondition_stderr =~
+        /Error: Custom epsilon integration: specified tolerance .*status=13/,
+    "exit=$precondition_status stderr=$precondition_stderr");
+
 my @incomplete_coverage = (
     1, 2, 0, 0.1, 0, $narrow_sigma_resigma, $narrow_sigma_imsigma,
 );
@@ -953,6 +1138,7 @@ for my $case (
     ['default', []],
     ['quiet', ['-q']],
     ['integration compatibility', ['-E']],
+    ['GSL ignore policy', ['--gsl-error-policy', 'ignore']],
 ) {
     my ($name, $options) = @$case;
     my ($status, $stdout, $stderr) = run_bubble(@$options, @incomplete_coverage);
@@ -1089,10 +1275,14 @@ check_result('M=0 permits grid without zero', $outside_status == 0,
     "exit=$outside_status");
 
 my ($verbose_status, $verbose_stdout, $verbose_stderr) = run_bubble(
-    '-v', '-M', '0.5', '-Mp', '0.2',
+    '-v', '--workspace-limit', '17', '--gsl-error-policy', 'ignore',
+    '-M', '0.5', '-Mp', '0.2',
     1, 2, 0, 0.1, 0, $resigma, $imsigma);
 check_result('verbose resolved window', $verbose_status == 0 &&
     $verbose_stdout =~ /cutoff=30(?:\.0+)?(?:\s|$)/ &&
+    $verbose_stdout =~ /workspace_limit=17/ &&
+    $verbose_stdout =~ /GSL error policy=ignore/ &&
+    $verbose_stdout =~ /Phi=.* interpolation=auto/ &&
     $verbose_stdout =~ /spectral-frequency window half-width M'=0\.2/ &&
     $verbose_stdout =~ /ReSigma\(0\)=/ &&
     $verbose_stdout =~ /epsilon window=\[-0\.5,0\.5\]/,

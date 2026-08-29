@@ -332,14 +332,18 @@ epsilon_1  Phi(epsilon_1)
 
 The energy grid must be strictly increasing. The `-e E` transformation is
 applied to the knots first, producing $\epsilon_i^E\Phi_i$, and that effective
-table is then interpolated. Every effective value must remain finite. Tables
-whose effective values are all
-nonnegative use GSL Steffen interpolation and require at least three rows. This
-monotonic cubic method cannot undershoot below the supplied values. Signed
-effective kernels retain Akima interpolation and require at least five rows.
-The self-energy option `-i 2` uses GSL's natural cubic spline. The energy
-integration is restricted to the table interval. Use `-p FILE` to select the
-table.
+table is then interpolated. Every effective value must remain finite.
+
+`--phi-interpolation METHOD` accepts `auto`, `linear`, `cspline`, `akima`, or
+`steffen`. The default `auto` preserves the sign-based selection: nonnegative
+effective values use Steffen, while signed effective values use Akima. Explicit
+selection overrides that rule. Linear interpolation requires at least two rows,
+natural cubic (`cspline`) and Steffen require three, and Akima requires five.
+Steffen stays within each interval's endpoint range and therefore preserves
+positivity for nonnegative samples. Natural cubic and Akima can overshoot.
+
+The self-energy option `-i` remains separate and numeric. The energy integration
+is restricted to the Phi table interval. Use `-p FILE` to select the table.
 
 ## Command Line
 
@@ -352,6 +356,11 @@ always interpreted positionally, so a negative finite chemical potential such
 as `mu=-0.25` does not require a preceding `--`. Numeric arguments must be
 complete finite values; malformed suffixes, overflow, and underflow are
 rejected.
+
+Integration tolerances must also form a combination accepted by GSL. In
+particular, when `-a 0` is used, `-r` must be at least
+$\max(50\epsilon_{\mathrm{double}},5\times10^{-29})$, approximately
+$1.11\times10^{-14}$ for binary64.
 
 The positional arguments are:
 
@@ -369,14 +378,18 @@ Options:
 
 | Option | Meaning |
 |---|---|
+| `-h`, `--help` | Print usage and exit successfully without requiring positional arguments |
 | `-v` | Print parameters, numerical result, and outer integration error estimate |
 | `-q` | Suppress non-fatal warnings without suppressing results or errors |
-| `-E`, `--ignore-integration-errors` | Continue after an integration failure when a finite partial result is available |
+| `-E`, `--ignore-integration-errors` | Legacy alias for `--gsl-error-policy warn` |
+| `--gsl-error-policy POLICY` | Handle unverified integration failures with `ignore`, `warn`, or `fail`; default `fail` |
 | `--allow-legacy-self-energy-extrapolation` | Explicitly permit the historical out-of-table self-energy model |
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
+| `--phi-interpolation METHOD` | Phi interpolation: `auto`, `linear`, `cspline`, `akima`, or `steffen`; default `auto` |
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points; also used by transformed tabulated-kernel quadrature |
 | `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
 | `-r R` | Nonnegative relative integration tolerance, default `1e-8` |
+| `--workspace-limit N` | Positive base capacity for frequency and restricted/tabulated epsilon workspaces; default `1000` |
 | `-c C` | Positive frequency cutoff in units of temperature, default `30`; unused by `-d` |
 | `-s S` | Positive in-table clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
@@ -398,9 +411,9 @@ other DMFT post-processing workflows.
 
 DOS mode `-d` writes the file selected by `-o`, or `dos.dat` by default, and
 normally prints no scalar result. If `n!=1`, its nonfatal warning is currently
-written to standard output unless `-q` is used. The executable has no `-h` or
-`--help` option; invoking it without all seven positional arguments prints its
-usage and exits unsuccessfully.
+written to standard output unless `-q` is used. `-h` and `--help` print usage
+and exit successfully. Invoking the executable without all seven positional
+arguments and without a help option prints usage and exits unsuccessfully.
 
 Fatal diagnostics are written to standard error and return a nonzero status.
 `-q` suppresses only nonfatal warnings; it does not hide numerical results,
@@ -409,11 +422,20 @@ fatal diagnostics, or output requested by `-v`.
 By default, an adaptive integration failure is fatal and no numerical result is
 printed. A restricted evaluator may accept a roundoff or singularity status
 only after an independent quadrature check agrees within the requested bound.
-`-E` downgrades other integration failures or invalid error estimates to a
-warning when GSL supplied a finite partial result. Combining `-E -q` reproduces
-the historical silent best-effort behavior. This is not an accuracy guarantee:
-allocation failures and non-finite results remain fatal, and `-E` cannot detect
-an inaccurate calculation for which GSL returned success.
+For convergence failures, invalid error estimates, or failed aggregate
+integration error-bound checks with a finite partial result,
+`--gsl-error-policy fail` stops, `warn` reports the failure and continues, and
+`ignore` continues silently. GSL argument and precondition failures do not
+contain a computed partial result and remain fatal. The default is `fail`; `-E`
+and `--ignore-integration-errors` are legacy aliases for `warn`. `-q` remains
+independent and suppresses all nonfatal warnings, not only integration
+diagnostics. Repeated policy options are processed in order, so the last one
+wins.
+
+Best-effort continuation is not an accuracy guarantee. Allocation failures,
+non-finite results, malformed inputs, and subsequent validity checks remain
+fatal under every policy. A policy also cannot detect an inaccurate calculation
+for which GSL returned success.
 
 ## Self-Energy Input
 
@@ -456,8 +478,8 @@ checked as the following exact closed interval before quadrature starts:
 | Occupied `-f` | $[\omega_{\min},CT]$ |
 | DOS `-d` | The table interval used for the output mesh |
 
-An incomplete interval is fatal even with `-q` or `-E`. Extend both tables or
-reduce `-c`, `-O`, or `-Mp` as appropriate. Calculations with `n=0` do not
+An incomplete interval is fatal under every GSL error policy. Extend both tables
+or reduce `-c`, `-O`, or `-Mp` as appropriate. Calculations with `n=0` do not
 evaluate the frequency-dependent self-energy and are exempt from this coverage
 check. The test is exact and includes both endpoints, so a table endpoint even one
 binary64 step short is insufficient. Both files remain mandatory for `n=0` and
@@ -829,7 +851,14 @@ sub-ULP geometries. A custom `m=0`, `n=0` kernel instead integrates its
 interpolation spline once and caches the mass.
 
 The remaining frequency integral uses adaptive GSL `qag` quadrature, with a
-15-point Gauss-Kronrod rule and a workspace of 1,000 intervals by default.
+15-point Gauss-Kronrod rule and a base workspace limit of 1,000 intervals by
+default. `--workspace-limit N` sets that base for both frequency quadrature and
+the adaptive restricted/tabulated epsilon paths. Breakpoint-heavy restricted
+outer integrations preserve their robustness safeguard by raising the actual
+capacity to at least 32 times the generated breakpoint count. Every QAGP
+workspace is also large enough to hold its breakpoint array, as required by
+GSL. The specialized Gaussian fallback retains its internal 300-interval
+workspace, and independent 64/128-point checks are also unaffected.
 Restricted outer integrals add linewidth-aware crossings of energy-window
 boundaries and nearby extrema. Self-energy table boundaries, including shifted
 optical boundaries, are also explicit quadrature partitions when legacy
@@ -841,9 +870,9 @@ custom-kernel pieces. Built-in fallback paths use tighter internal policies, and
 restricted breakpoint integrations use fixed internal rules. Every adaptive
 status and result is checked; route-specific roundoff or singularity failures
 are accepted only after a stated error bound or independent fixed-rule check.
-Unverified failures are fatal unless `-E` explicitly permits a finite partial
-result. In verbose mode, `Error` is only the outer frequency-quadrature estimate;
-nested epsilon uncertainty is checked separately and is not folded into it.
+Other finite partial results follow `--gsl-error-policy`. In verbose mode,
+`Error` is only the outer frequency-quadrature estimate; nested epsilon
+uncertainty is checked separately and is not folded into it.
 
 ## Validation
 
@@ -982,7 +1011,8 @@ the checked-in input/reference data are sufficient for the examples above.
 ## Precision
 
 For precision-sensitive work, vary `-a`, `-r`, `-c`, `-k`, `-s`, `-M`, `-Mp`,
-and the input grid, and confirm that the physical result is stable.
+`--workspace-limit`, the applicable interpolation method, and the input grid,
+and confirm that the physical result is stable.
 
 ## Method Notes
 
@@ -994,7 +1024,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.12.
+current executable is authoritative for version 1.13.
 
 ## References
 

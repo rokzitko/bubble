@@ -170,11 +170,40 @@ check_failure('undersized Phi table is rejected',
     qr/interpolation 'steffen' requires at least 3 rows; found 1/,
     '-p', $one_row_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
 
+my $two_row_phi = write_table('two-row-phi.dat', '-1 -1', '1 1');
+my ($linear_phi_status, undef, $linear_phi_stderr) = run_bubble(
+    '--phi-interpolation', 'linear', '-p', $two_row_phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_result('two-row linear Phi interpolation succeeds',
+    $linear_phi_status == 0 && $linear_phi_stderr eq '',
+    "exit=$linear_phi_status stderr=$linear_phi_stderr");
+check_failure('undersized cspline Phi table is rejected',
+    qr/interpolation 'cspline' requires at least 3 rows; found 2/,
+    '--phi-interpolation', 'cspline', '-p', $two_row_phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_failure('undersized Steffen Phi table is rejected',
+    qr/interpolation 'steffen' requires at least 3 rows; found 2/,
+    '--phi-interpolation', 'steffen', '-p', $two_row_phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+my $three_row_signed_phi = write_table('three-row-signed-phi.dat',
+    '-1 -1', '0 0.5', '1 1');
+my ($steffen_phi_status, undef, $steffen_phi_stderr) = run_bubble(
+    '--phi-interpolation=steffen', '-p', $three_row_signed_phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_result('explicit Steffen accepts signed Phi',
+    $steffen_phi_status == 0 && $steffen_phi_stderr eq '',
+    "exit=$steffen_phi_status stderr=$steffen_phi_stderr");
+
 my $four_row_signed_phi = write_table('four-row-signed-phi.dat',
     '-2 1', '-1 1', '0 -1', '1 1');
 check_failure('undersized signed Phi table is rejected',
     qr/interpolation 'akima' requires at least 5 rows; found 4/,
     '-p', $four_row_signed_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_failure('explicit undersized Akima Phi table is rejected',
+    qr/interpolation 'akima' requires at least 5 rows; found 4/,
+    '--phi-interpolation', 'akima', '-p', $four_row_signed_phi,
+    0, 0, 0, 0.1, 0, $resigma, $imsigma);
 
 my $malformed_phi = write_table('malformed-phi.dat',
     '-2 1', '-1 1', '0 1 extra', '1 1', '2 1');
@@ -190,6 +219,30 @@ check_failure('non-finite transformed Phi is rejected',
 my $empty_phi = write_table('empty-phi.dat', '# no Phi data');
 check_failure('empty Phi table is rejected', qr/contains no data rows/,
     '-p', $empty_phi, 0, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+check_failure('invalid Phi interpolation is rejected',
+    qr/Phi interpolation method must be one of/,
+    '--phi-interpolation', 'nearest', 1, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_failure('case-mismatched Phi interpolation is rejected',
+    qr/Phi interpolation method must be one of/,
+    '--phi-interpolation', 'Steffen', 1, 0, 0, 0.1, 0, $resigma, $imsigma);
+check_failure('invalid GSL error policy is rejected',
+    qr/GSL error policy must be one of/,
+    '--gsl-error-policy', 'abort', 1, 0, 0, 0.1, 0, $resigma, $imsigma);
+
+for my $case (
+    ['zero', '0', qr/must be a positive integer/],
+    ['negative', '-1', qr/must be a positive integer/],
+    ['signed', '+1', qr/must be a positive integer/],
+    ['fractional', '1.5', qr/must be a positive integer/],
+    ['suffix', '1x', qr/must be a positive integer/],
+    ['overflowing', '9999999999999999999999999999999999', qr/is too large/],
+) {
+    my ($name, $value, $diagnostic) = @$case;
+    check_failure("$name workspace limit is rejected", $diagnostic,
+        '--workspace-limit', $value,
+        1, 0, 0, 0.1, 0, $resigma, $imsigma);
+}
 
 print "INPUT OK=$passed FAILED=$failed\n";
 exit($failed == 0 ? 0 : 1);

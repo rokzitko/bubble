@@ -55,7 +55,7 @@ gsl_interp_accel *phi_accelerator;
 gsl_spline *phi_spline;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.12";
+const string VERSION = "1.13";
 
 // Mandatory parameters
 int m, n, o;
@@ -67,11 +67,13 @@ string real_sigma_filename, imaginary_sigma_filename;
 int interpolation_selector = 1;
 bool verbose = false;
 bool quiet_warnings = false;
-bool ignore_integration_errors = false;
+enum gsl_error_policy { GSL_ERRORS_IGNORE, GSL_ERRORS_WARN, GSL_ERRORS_FAIL };
+gsl_error_policy selected_gsl_error_policy = GSL_ERRORS_FAIL;
 bool allow_legacy_self_energy_extrapolation = false;
 int integration_rule = GSL_INTEG_GAUSS15;
 double abs_error = 1.0e-7;
 double rel_error = 1.0e-8;
+size_t integration_workspace_limit = 1000;
 double cutoff = 30.0;
 double sigma_clip_floor = 1.0e-8;
 double epsilon_window_half_width = 0.0;
@@ -85,13 +87,24 @@ string dos_output_filename = "dos.dat";
 enum frequency_weight { FERMI_FUNCTION, MINUS_FERMI_DERIVATIVE };
 frequency_weight selected_frequency_weight = MINUS_FERMI_DERIVATIVE;
 int epsilon_power = 0;
+enum phi_interpolation_method {
+   PHI_INTERPOLATION_AUTO,
+   PHI_INTERPOLATION_LINEAR,
+   PHI_INTERPOLATION_CSPLINE,
+   PHI_INTERPOLATION_AKIMA,
+   PHI_INTERPOLATION_STEFFEN
+};
+phi_interpolation_method selected_phi_interpolation = PHI_INTERPOLATION_AUTO;
 bool optical_mode = false;
 double optical_frequency = 0.0;
 
 const double LEGACY_EXTERIOR_IM_SIGMA = 1e-10;
 
 enum long_option_code {
-   ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION = 1000
+   ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION = 1000,
+   PHI_INTERPOLATION,
+   WORKSPACE_LIMIT,
+   GSL_ERROR_POLICY
 };
 
 void about()
@@ -105,14 +118,18 @@ void usage()
    cout << "Usage: bubble [options] <m> <n> <o> <T> <mu> <resigma> <imsigma>" << endl;
    cout << "Options must precede the positional arguments." << endl;
    cout << "Options:" << endl;
+   cout << "-h, --help : show this help" << endl;
    cout << "-v : increase verbosity" << endl;
    cout << "-q : suppress non-fatal warnings" << endl;
-   cout << "-E, --ignore-integration-errors : continue with finite partial integration results" << endl;
+   cout << "-E, --ignore-integration-errors : legacy alias for --gsl-error-policy warn" << endl;
    cout << "--allow-legacy-self-energy-extrapolation : permit the historical exterior Sigma model" << endl;
-   cout << "-i I : interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
+   cout << "-i I : self-energy interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
+   cout << "--phi-interpolation METHOD : auto, linear, cspline, akima, or steffen (default = auto)" << endl;
    cout << "-k K : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
    cout << "-a A : nonnegative absolute error (default = 1e-7)" << endl;
    cout << "-r R : nonnegative relative error (default = 1e-8)" << endl;
+   cout << "--workspace-limit N : positive base GSL workspace limit (default = 1000)" << endl;
+   cout << "--gsl-error-policy POLICY : ignore, warn, or fail (default = fail)" << endl;
    cout << "-c C : positive frequency cutoff in units of T (default = 30)" << endl;
    cout << "-s FLOOR : positive in-table ImSigma clipping floor (default = 1e-8)" << endl;
    cout << "-M LIMIT : epsilon-window half-width around the Fermi level (default = 0, unrestricted)" << endl;
@@ -153,6 +170,107 @@ double parse_finite_double(const char *value, const char *description)
    if (errno == ERANGE || end == value || *end != '\0' || !isfinite(result))
       invalid_numeric_value(description, value);
 
+   return result;
+}
+
+const char *phi_interpolation_method_name(phi_interpolation_method method)
+{
+   switch (method) {
+   case PHI_INTERPOLATION_AUTO: return "auto";
+   case PHI_INTERPOLATION_LINEAR: return "linear";
+   case PHI_INTERPOLATION_CSPLINE: return "cspline";
+   case PHI_INTERPOLATION_AKIMA: return "akima";
+   case PHI_INTERPOLATION_STEFFEN: return "steffen";
+   }
+   cerr << "Unknown Phi interpolation method." << endl;
+   exit(EXIT_FAILURE);
+}
+
+phi_interpolation_method parse_phi_interpolation_method(const char *value)
+{
+   if (strcmp(value, "auto") == 0)
+      return PHI_INTERPOLATION_AUTO;
+   if (strcmp(value, "linear") == 0)
+      return PHI_INTERPOLATION_LINEAR;
+   if (strcmp(value, "cspline") == 0)
+      return PHI_INTERPOLATION_CSPLINE;
+   if (strcmp(value, "akima") == 0)
+      return PHI_INTERPOLATION_AKIMA;
+   if (strcmp(value, "steffen") == 0)
+      return PHI_INTERPOLATION_STEFFEN;
+   cerr << "Phi interpolation method must be one of: auto, linear, cspline, akima, steffen."
+        << endl;
+   exit(EXIT_FAILURE);
+}
+
+const char *gsl_error_policy_name(gsl_error_policy policy)
+{
+   switch (policy) {
+   case GSL_ERRORS_IGNORE: return "ignore";
+   case GSL_ERRORS_WARN: return "warn";
+   case GSL_ERRORS_FAIL: return "fail";
+   }
+   cerr << "Unknown GSL error policy." << endl;
+   exit(EXIT_FAILURE);
+}
+
+gsl_error_policy parse_gsl_error_policy(const char *value)
+{
+   if (strcmp(value, "ignore") == 0)
+      return GSL_ERRORS_IGNORE;
+   if (strcmp(value, "warn") == 0)
+      return GSL_ERRORS_WARN;
+   if (strcmp(value, "fail") == 0)
+      return GSL_ERRORS_FAIL;
+   cerr << "GSL error policy must be one of: ignore, warn, fail." << endl;
+   exit(EXIT_FAILURE);
+}
+
+size_t maximum_workspace_limit()
+{
+   const size_t element_size = max(sizeof(double), sizeof(size_t));
+   return numeric_limits<size_t>::max()/element_size;
+}
+
+size_t qagp_workspace_limit(size_t point_count)
+{
+   if (point_count > maximum_workspace_limit()) {
+      cerr << "The integration breakpoint count is too large." << endl;
+      exit(EXIT_FAILURE);
+   }
+   return max(integration_workspace_limit, point_count);
+}
+
+size_t parse_workspace_limit(const char *value)
+{
+   if (*value == '\0') {
+      cerr << "Integration workspace limit must be a positive integer: " << value << endl;
+      exit(EXIT_FAILURE);
+   }
+
+   size_t result = 0;
+   for (const char *digit = value; *digit != '\0'; ++digit) {
+      if (*digit < '0' || *digit > '9') {
+         cerr << "Integration workspace limit must be a positive integer: "
+              << value << endl;
+         exit(EXIT_FAILURE);
+      }
+      const size_t parsed_digit = static_cast<size_t>(*digit - '0');
+      if (result > (numeric_limits<size_t>::max() - parsed_digit)/10) {
+         cerr << "Integration workspace limit is too large: " << value << endl;
+         exit(EXIT_FAILURE);
+      }
+      result = 10*result + parsed_digit;
+   }
+
+   if (result == 0) {
+      cerr << "Integration workspace limit must be a positive integer: " << value << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (result > maximum_workspace_limit()) {
+      cerr << "Integration workspace limit is too large: " << value << endl;
+      exit(EXIT_FAILURE);
+   }
    return result;
 }
 
@@ -373,6 +491,41 @@ double parse_spectral_frequency_window_half_width(const char *value)
 void parse_command_line(int argc, char *argv[])
 {
    const int positional_count = 7;
+   static const struct option long_options[] = {
+      {"help", no_argument, NULL, 'h'},
+      {"ignore-integration-errors", no_argument, NULL, 'E'},
+      {"allow-legacy-self-energy-extrapolation", no_argument, NULL,
+       ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION},
+      {"phi-interpolation", required_argument, NULL, PHI_INTERPOLATION},
+      {"workspace-limit", required_argument, NULL, WORKSPACE_LIMIT},
+      {"gsl-error-policy", required_argument, NULL, GSL_ERROR_POLICY},
+      {NULL, 0, NULL, 0}
+   };
+   static const char short_options[] = "+hvqEi:k:a:r:c:s:M:p:o:dfe:O:";
+
+   {
+      const int saved_opterr = opterr;
+      opterr = 0;
+      optind = 0;
+      int preliminary_option;
+      while ((preliminary_option = getopt_long(argc, argv, short_options,
+                                                long_options, NULL)) != -1) {
+         if (preliminary_option == 'h') {
+            opterr = saved_opterr;
+            usage();
+            exit(EXIT_SUCCESS);
+         }
+         if (preliminary_option == 'M' &&
+             strcmp(argv[optind - 1], "-Mp") == 0 &&
+             strcmp(optarg, "p") == 0 && optind < argc)
+            ++optind;
+         if (preliminary_option == '?')
+            break;
+      }
+      opterr = saved_opterr;
+      optind = 0;
+   }
+
    if (argc < positional_count + 1) {
       usage();
       exit(EXIT_FAILURE);
@@ -383,18 +536,14 @@ void parse_command_line(int argc, char *argv[])
    option_argv.push_back(NULL);
 
    int c;
-   static const struct option long_options[] = {
-      {"ignore-integration-errors", no_argument, NULL, 'E'},
-      {"allow-legacy-self-energy-extrapolation", no_argument, NULL,
-       ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION},
-      {NULL, 0, NULL, 0}
-   };
-
-   optind = 1;
+   optind = 0;
    while ((c = getopt_long(first_positional, &option_argv[0],
-                           "+vqEi:k:a:r:c:s:M:p:o:dfe:O:",
+                           short_options,
                            long_options, NULL)) != -1) {
       switch (c) {
+      case 'h':
+         usage();
+         exit(EXIT_SUCCESS);
       case 'v':
 	 verbose = true;
 	 break;
@@ -402,10 +551,19 @@ void parse_command_line(int argc, char *argv[])
 	 quiet_warnings = true;
 	 break;
       case 'E':
-	 ignore_integration_errors = true;
+	 selected_gsl_error_policy = GSL_ERRORS_WARN;
 	 break;
       case ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION:
          allow_legacy_self_energy_extrapolation = true;
+         break;
+      case PHI_INTERPOLATION:
+         selected_phi_interpolation = parse_phi_interpolation_method(optarg);
+         break;
+      case WORKSPACE_LIMIT:
+         integration_workspace_limit = parse_workspace_limit(optarg);
+         break;
+      case GSL_ERROR_POLICY:
+         selected_gsl_error_policy = parse_gsl_error_policy(optarg);
          break;
       case 'i':
 	 interpolation_selector = parse_integer(optarg, "interpolation selector");
@@ -503,6 +661,13 @@ void parse_command_line(int argc, char *argv[])
       cerr << "Relative integration tolerance must be nonnegative." << endl;
       exit(EXIT_FAILURE);
    }
+   const double minimum_relative_tolerance = max(
+      50.0*numeric_limits<double>::epsilon(), 0.5e-28);
+   if (abs_error == 0.0 && rel_error < minimum_relative_tolerance) {
+      cerr << "Relative integration tolerance is too small when absolute "
+              "tolerance is zero." << endl;
+      exit(EXIT_FAILURE);
+   }
    if (m == 0 && epsilon_power < 0) {
       cerr << "Tabulated epsilon power e must be nonnegative." << endl;
       exit(EXIT_FAILURE);
@@ -587,8 +752,9 @@ void parse_command_line(int argc, char *argv[])
       cout << " Sigma: re=" << real_sigma_filename << ",im=" << imaginary_sigma_filename << endl;
       cout << "i=" << interpolation_selector << " key=" << integration_rule << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
-      if (ignore_integration_errors)
-	 cout << "finite partial integration results are accepted" << endl;
+      cout << "workspace_limit=" << integration_workspace_limit << endl;
+      cout << "GSL error policy=" << gsl_error_policy_name(selected_gsl_error_policy)
+           << endl;
       if (allow_legacy_self_energy_extrapolation)
          cout << "legacy self-energy extrapolation is permitted" << endl;
       cout << "ImSigma clipping floor=" << sigma_clip_floor << endl;
@@ -597,7 +763,9 @@ void parse_command_line(int argc, char *argv[])
       if (spectral_frequency_window_half_width > 0.0)
 	 cout << "spectral-frequency window half-width M'="
 	      << spectral_frequency_window_half_width << endl;
-      cout << "Phi=" << phi_filename << " e=" << epsilon_power << endl;
+      cout << "Phi=" << phi_filename << " e=" << epsilon_power
+           << " interpolation="
+           << phi_interpolation_method_name(selected_phi_interpolation) << endl;
       if (optical_mode)
 	 cout << "external Omega=" << optical_frequency << endl;
       if (dos_mode) {
@@ -620,6 +788,22 @@ void parse_command_line(int argc, char *argv[])
    }
 }
 
+bool integration_status_has_partial_result(int status)
+{
+   switch (status) {
+   case GSL_SUCCESS:
+   case GSL_EFAILED:
+   case GSL_EMAXITER:
+   case GSL_ETOL:
+   case GSL_EROUND:
+   case GSL_ESING:
+   case GSL_EDIVERGE:
+      return true;
+   default:
+      return false;
+   }
+}
+
 bool integration_result_acceptable(const string &operation,
                                    int status, double result, double error)
 {
@@ -638,13 +822,13 @@ bool integration_result_acceptable(const string &operation,
       message << ": invalid error estimate";
    message << ", result=" << result << ", error=" << error;
 
-   if (!finite_result) {
+   if (!finite_result || !integration_status_has_partial_result(status)) {
       cerr << "Error: " << message.str() << endl;
       return false;
    }
 
-   if (ignore_integration_errors) {
-      if (!quiet_warnings) {
+   if (selected_gsl_error_policy != GSL_ERRORS_FAIL) {
+      if (selected_gsl_error_policy == GSL_ERRORS_WARN && !quiet_warnings) {
          static set<string> warned_operations;
          if (warned_operations.insert(operation).second)
             cerr << "Warning: ignoring integration error: " << message.str() << endl;
@@ -688,6 +872,24 @@ double J_builtin_mass(int kernel)
    }
 }
 
+const gsl_interp_type *phi_interpolation_type(bool nonnegative_phi)
+{
+   switch (selected_phi_interpolation) {
+   case PHI_INTERPOLATION_AUTO:
+      return nonnegative_phi ? gsl_interp_steffen : gsl_interp_akima;
+   case PHI_INTERPOLATION_LINEAR:
+      return gsl_interp_linear;
+   case PHI_INTERPOLATION_CSPLINE:
+      return gsl_interp_cspline;
+   case PHI_INTERPOLATION_AKIMA:
+      return gsl_interp_akima;
+   case PHI_INTERPOLATION_STEFFEN:
+      return gsl_interp_steffen;
+   }
+   cerr << "Unknown Phi interpolation method." << endl;
+   exit(EXIT_FAILURE);
+}
+
 void load_phi_table()
 {
    const vector<table_row> rows = read_two_column_table(phi_filename, "Phi");
@@ -713,8 +915,8 @@ void load_phi_table()
 
    const bool nonnegative_phi = all_of(phi.begin(), phi.end(),
       [](double value) { return value >= 0.0; });
-   const gsl_interp_type * interpolation_type = nonnegative_phi
-      ? gsl_interp_steffen : gsl_interp_akima;
+   const gsl_interp_type * interpolation_type =
+      phi_interpolation_type(nonnegative_phi);
    require_interpolation_size(rows, interpolation_type, "Phi", phi_filename);
 
    interpolation_state candidate;
@@ -1584,13 +1786,11 @@ epsilon_interval restricted_epsilon_interval(int kernel)
 
 namespace {
 
-const size_t RESTRICTED_WORKSPACE_SIZE = 1000;
-
 gsl_integration_workspace *restricted_workspace()
 {
    gsl_set_error_handler_off();
    static gsl_integration_workspace *workspace =
-      gsl_integration_workspace_alloc(RESTRICTED_WORKSPACE_SIZE);
+      gsl_integration_workspace_alloc(integration_workspace_limit);
    if (workspace == NULL) {
       cerr << "Unable to allocate restricted epsilon integration workspace." << endl;
       exit(EXIT_FAILURE);
@@ -1935,7 +2135,7 @@ double integrate_restricted_qag(gsl_function &function, double lower, double upp
    double error = numeric_limits<double>::quiet_NaN();
    const int status = gsl_integration_qag(&function, lower, upper,
       normalized_absolute_error(policy, result_scale), policy.relative_error,
-      RESTRICTED_WORKSPACE_SIZE, policy.rule,
+      integration_workspace_limit, policy.rule,
       restricted_workspace(), &result, &error);
    double verified_error = error;
    if (status == GSL_EROUND) {
@@ -2031,10 +2231,19 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
 {
    double result = numeric_limits<double>::quiet_NaN();
    double error = numeric_limits<double>::quiet_NaN();
+   const size_t workspace_limit = qagp_workspace_limit(points.size());
+   gsl_integration_workspace *workspace =
+      workspace_limit == integration_workspace_limit
+      ? restricted_workspace() : gsl_integration_workspace_alloc(workspace_limit);
+   if (workspace == NULL) {
+      cerr << "Unable to allocate restricted epsilon integration workspace." << endl;
+      exit(EXIT_FAILURE);
+   }
    const int status = gsl_integration_qagp(&function, &points[0], points.size(),
       normalized_absolute_error(policy, result_scale), policy.relative_error,
-      RESTRICTED_WORKSPACE_SIZE,
-      restricted_workspace(), &result, &error);
+      workspace_limit, workspace, &result, &error);
+   if (workspace_limit != integration_workspace_limit)
+      gsl_integration_workspace_free(workspace);
    double verified_error = error;
    if (status == GSL_EROUND) {
       double fine = 0.0;
@@ -2087,7 +2296,7 @@ double integrate_restricted_piecewise_qag(gsl_function &function,
       double error = numeric_limits<double>::quiet_NaN();
       const int status = gsl_integration_qag(&function, points[interval - 1],
          points[interval], normalized_absolute_error(segment_policy, result_scale),
-         segment_policy.relative_error, RESTRICTED_WORKSPACE_SIZE,
+         segment_policy.relative_error, integration_workspace_limit,
          segment_policy.rule,
          restricted_workspace(), &result, &error);
       const bool valid_output = isfinite(result) && isfinite(error) && error >= 0.0;
@@ -3998,10 +4207,24 @@ void initialize_epsilon_window()
    }
 }
 
+size_t breakpoint_workspace_limit(size_t point_count)
+{
+   if (point_count > numeric_limits<size_t>::max()/32) {
+      cerr << "The generated integration breakpoint count is too large." << endl;
+      exit(EXIT_FAILURE);
+   }
+   const size_t generated_limit = 32*point_count;
+   if (generated_limit > maximum_workspace_limit()) {
+      cerr << "The generated integration workspace limit is too large." << endl;
+      exit(EXIT_FAILURE);
+   }
+   return max(integration_workspace_limit, generated_limit);
+}
+
 void calculate_dc()
 {
    // GSL integration
-   const size_t ws_size = 1000;
+   const size_t ws_size = integration_workspace_limit;
 
    double lower_limit;
    switch (selected_frequency_weight) {
@@ -4082,7 +4305,7 @@ void calculate_dc()
          integration_function = &paired_function;
          points = symmetric_outer_points(points, upper_limit);
       }
-      const size_t restricted_size = max(ws_size, 32*points.size());
+      const size_t restricted_size = breakpoint_workspace_limit(points.size());
       gsl_integration_workspace *restricted_work = restricted_size == ws_size
          ? work_ptr : gsl_integration_workspace_alloc(restricted_size);
       if (restricted_work == NULL) {
@@ -4166,7 +4389,7 @@ void calculate_optical()
 {
    assert(optical_mode && optical_frequency > 0.0);
 
-   const size_t ws_size = 1000;
+   const size_t ws_size = integration_workspace_limit;
    gsl_integration_workspace *work = gsl_integration_workspace_alloc(ws_size);
    if (work == NULL) {
       cerr << "Unable to allocate optical frequency integration workspace." << endl;
@@ -4215,7 +4438,7 @@ void calculate_optical()
       points.push_back(-optical_frequency);
       points.push_back(0.0);
       points = filter_integration_points(points, lower_limit, upper_limit);
-      const size_t restricted_size = max(ws_size, 32*points.size());
+      const size_t restricted_size = breakpoint_workspace_limit(points.size());
       gsl_integration_workspace *restricted_work = restricted_size == ws_size
          ? work : gsl_integration_workspace_alloc(restricted_size);
       if (restricted_work == NULL) {

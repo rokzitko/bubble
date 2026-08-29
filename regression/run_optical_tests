@@ -92,6 +92,30 @@ for my $kernel (@even_kernels) {
         $ok ? "relative_error=" . relative_error($small, $dc) : "$small_error dc=$dc small=$small");
 }
 
+my @workspace_optical_arguments = ('-O', '0.3', 1, 2, 0, 0.1, 0,
+    $resigma, $imsigma);
+my ($default_workspace_optical, $default_workspace_optical_error) =
+    run_value(@workspace_optical_arguments);
+my ($explicit_workspace_optical, $explicit_workspace_optical_error) =
+    run_value('--workspace-limit', '1000', @workspace_optical_arguments);
+check_result('explicit default optical workspace is an exact pass-through',
+    defined $default_workspace_optical && defined $explicit_workspace_optical &&
+    $default_workspace_optical == $explicit_workspace_optical,
+    defined $default_workspace_optical && defined $explicit_workspace_optical
+        ? "value=$default_workspace_optical"
+        : "$default_workspace_optical_error $explicit_workspace_optical_error");
+
+my ($constrained_workspace_optical_status, $constrained_workspace_optical_stdout,
+    $constrained_workspace_optical_stderr) = run_bubble(
+        '--workspace-limit', '1', @workspace_optical_arguments);
+check_result('workspace limit controls optical integration',
+    $constrained_workspace_optical_status == 1 &&
+    $constrained_workspace_optical_stdout eq '' &&
+    $constrained_workspace_optical_stderr =~
+        /Error: Optical frequency integration: exceeded max number of iterations/,
+    "exit=$constrained_workspace_optical_status " .
+        "stderr=$constrained_workspace_optical_stderr");
+
 my @frequency_window_arguments = (1, 2, 0, 0.1, 0, $resigma, $imsigma);
 my ($windowed_dc, $windowed_dc_error) = run_value(
     '-Mp', '0.2', @frequency_window_arguments);
@@ -366,6 +390,19 @@ my $roundoff_ok = $roundoff_status == 0 && $roundoff_quiet_status == 0 &&
     $roundoff_quiet_stdout eq $roundoff_stdout;
 check_result('optical roundoff compatibility mode', $roundoff_ok,
     "exit=$roundoff_quiet_status stderr=$roundoff_quiet_stderr");
+
+my ($roundoff_warn_status, $roundoff_warn_stdout, $roundoff_warn_stderr) =
+    run_bubble('--gsl-error-policy', 'warn', @roundoff_arguments);
+my ($roundoff_ignore_status, $roundoff_ignore_stdout, $roundoff_ignore_stderr) =
+    run_bubble('--gsl-error-policy', 'ignore', @roundoff_arguments);
+check_result('optical roundoff follows canonical GSL policies',
+    $roundoff_warn_status == $roundoff_status &&
+    $roundoff_warn_stdout eq $roundoff_stdout &&
+    $roundoff_warn_stderr eq $roundoff_stderr &&
+    $roundoff_ignore_status == 0 &&
+    $roundoff_ignore_stdout eq $roundoff_stdout &&
+    $roundoff_ignore_stderr eq '',
+    "warn_exit=$roundoff_warn_status ignore_exit=$roundoff_ignore_status");
 
 my @invalid_cases = (
     ['negative Omega', qr/Invalid optical frequency/, '-O', '-0.1', 5, 2, 0, 0.1, 0, $resigma, $imsigma],
