@@ -2,10 +2,14 @@
 
 use strict;
 use warnings;
+use Errno qw(ERANGE);
 use File::Temp qw(tempfile);
 use FindBin qw($Bin);
+use IO::Select;
 use IPC::Open3;
+use POSIX qw(isfinite strtod WNOHANG);
 use Symbol qw(gensym);
+use Time::HiRes qw(time);
 
 my $bubble = "$Bin/../bubble";
 my $resigma = "$Bin/resigma_1.dat";
@@ -19,6 +23,8 @@ my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
 my $passed = 0;
 my $failed = 0;
 my @tight_tolerances = ('-a', '1e-12', '-r', '1e-12', '-c', '15');
+my $command_timeout = $ENV{BUBBLE_TEST_TIMEOUT} // 120;
+my $output_limit = 1024*1024;
 
 sub run_bubble {
     my (@arguments) = @_;
@@ -26,21 +32,96 @@ sub run_bubble {
     my $stderr = gensym;
     my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
 
-    my $stdout_text = do { local $/; <$stdout> } // '';
-    my $stderr_text = do { local $/; <$stderr> } // '';
-    $stderr_text =~ s/\s+$//;
-    waitpid $pid, 0;
-    my $wait_status = $?;
+    my %captured = (stdout => '', stderr => '');
+    my %stream_name = (
+        fileno($stdout) => 'stdout',
+        fileno($stderr) => 'stderr',
+    );
+    my $selector = IO::Select->new($stdout, $stderr);
+    my $deadline = time + $command_timeout;
+    my $capture_error;
+    while ($selector->count) {
+        my $remaining = $deadline - time;
+        if ($remaining <= 0) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        my @ready = $selector->can_read($remaining);
+        if (!@ready) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        for my $handle (@ready) {
+            my $fd = fileno($handle);
+            my $bytes = sysread($handle, my $chunk, 8192);
+            if (!defined $bytes) {
+                $capture_error = "unable to read $stream_name{$fd}: $!";
+                last;
+            }
+            if ($bytes == 0) {
+                $selector->remove($handle);
+                close $handle;
+                next;
+            }
+            $captured{$stream_name{$fd}} .= $chunk;
+            if (length($captured{stdout}) + length($captured{stderr}) > $output_limit) {
+                $capture_error = "command output exceeded $output_limit bytes";
+                last;
+            }
+        }
+        last if defined $capture_error;
+    }
+    my $wait_status;
+    unless (defined $capture_error) {
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $wait_status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $capture_error = "unable to wait for command: $!";
+                last;
+            }
+            my $remaining = $deadline - time;
+            if ($remaining <= 0) {
+                $capture_error = "command timed out after $command_timeout seconds";
+                last;
+            }
+            my $pause = $remaining < 0.05 ? $remaining : 0.05;
+            select undef, undef, undef, $pause;
+        }
+    }
+    if (defined $capture_error) {
+        kill 'KILL', $pid;
+        waitpid $pid, 0;
+        return (124, $captured{stdout}, "Test harness error: $capture_error");
+    }
+
+    my $stdout_text = $captured{stdout};
+    my $stderr_text = $captured{stderr};
     my $status = ($wait_status & 127) ? 128 + ($wait_status & 127) : $wait_status >> 8;
     return ($status, $stdout_text, $stderr_text);
+}
+
+sub parse_finite_number {
+    my ($token) = @_;
+    return undef unless defined $token && $token =~ /\A$number\z/;
+    local $! = 0;
+    my ($value, $unparsed) = strtod($token);
+    return undef if $! == ERANGE || $unparsed != 0 || !isfinite($value);
+    return $value;
 }
 
 sub run_value {
     my (@arguments) = @_;
     my ($status, $stdout, $stderr) = run_bubble(@arguments);
     return (undef, "exit=$status stderr=$stderr") if $status != 0;
+    return (undef, "unexpected stderr=$stderr") if $stderr ne '';
     return (undef, "unexpected output=$stdout") unless $stdout =~ /^\s*($number)\s*$/;
-    return ($1 + 0.0, '');
+    my $value = parse_finite_number($1);
+    return (undef, "unrepresentable output=$stdout") unless defined $value;
+    return ($value, '');
 }
 
 sub check_result {
@@ -339,7 +420,7 @@ my $verbose_ok = $verbose_warning_status == 0 && $verbose_status == 0 &&
     $verbose_warning_stderr =~ /Warning:/ && $verbose_stderr eq '' &&
     $verbose_stdout eq $verbose_warning_stdout &&
     $verbose_stdout =~ /bubble version/ && $verbose_stdout =~ /Result\s*=/ &&
-    $verbose_stdout =~ /Error\s*=/;
+    $verbose_stdout =~ /Outer quadrature error estimate\s*=/;
 check_result('quiet mode preserves verbose legacy output', $verbose_ok,
     "exit=$verbose_status stderr=$verbose_stderr");
 
@@ -372,6 +453,14 @@ for my $case (@shifted_boundary_cases) {
 my @roundoff_arguments = (
     '-O', '0.1', 5, 2, 0, 0.27, 0, $bethe_resigma, $bethe_imsigma,
 );
+my ($documented_status, $documented_stdout, $documented_stderr) =
+    run_bubble('-k', '6', @roundoff_arguments);
+check_result('documented Bethe optical command succeeds strictly',
+    $documented_status == 0 && $documented_stderr eq '' &&
+    defined parse_finite_number(
+        $documented_stdout =~ /^\s*($number)\s*$/ ? $1 : undef),
+    "exit=$documented_status stderr=$documented_stderr");
+
 my ($roundoff_strict_status, $roundoff_strict_stdout, $roundoff_strict_stderr) =
     run_bubble(@roundoff_arguments);
 my $roundoff_strict_ok = $roundoff_strict_status == 1 &&

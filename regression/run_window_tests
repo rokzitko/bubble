@@ -3,16 +3,22 @@
 use strict;
 use warnings;
 use Cwd qw(getcwd);
+use Errno qw(ERANGE);
 use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
+use IO::Select;
 use IPC::Open3;
+use POSIX qw(isfinite strtod WNOHANG);
 use Symbol qw(gensym);
+use Time::HiRes qw(time);
 
 my $bubble = "$Bin/../bubble";
 my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
 my $passed = 0;
 my $failed = 0;
 my $directory = tempdir(CLEANUP => 1);
+my $command_timeout = $ENV{BUBBLE_TEST_TIMEOUT} // 120;
+my $output_limit = 1024*1024;
 
 sub write_table {
     my ($name, @rows) = @_;
@@ -136,21 +142,97 @@ sub run_bubble {
     my $stdout = gensym;
     my $stderr = gensym;
     my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
-    my $stdout_text = do { local $/; <$stdout> } // '';
-    my $stderr_text = do { local $/; <$stderr> } // '';
-    $stderr_text =~ s/\s+$//;
-    waitpid $pid, 0;
-    my $wait_status = $?;
+
+    my %captured = (stdout => '', stderr => '');
+    my %stream_name = (
+        fileno($stdout) => 'stdout',
+        fileno($stderr) => 'stderr',
+    );
+    my $selector = IO::Select->new($stdout, $stderr);
+    my $deadline = time + $command_timeout;
+    my $capture_error;
+    while ($selector->count) {
+        my $remaining = $deadline - time;
+        if ($remaining <= 0) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        my @ready = $selector->can_read($remaining);
+        if (!@ready) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        for my $handle (@ready) {
+            my $fd = fileno($handle);
+            my $bytes = sysread($handle, my $chunk, 8192);
+            if (!defined $bytes) {
+                $capture_error = "unable to read $stream_name{$fd}: $!";
+                last;
+            }
+            if ($bytes == 0) {
+                $selector->remove($handle);
+                close $handle;
+                next;
+            }
+            $captured{$stream_name{$fd}} .= $chunk;
+            if (length($captured{stdout}) + length($captured{stderr}) > $output_limit) {
+                $capture_error = "command output exceeded $output_limit bytes";
+                last;
+            }
+        }
+        last if defined $capture_error;
+    }
+    my $wait_status;
+    unless (defined $capture_error) {
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $wait_status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $capture_error = "unable to wait for command: $!";
+                last;
+            }
+            my $remaining = $deadline - time;
+            if ($remaining <= 0) {
+                $capture_error = "command timed out after $command_timeout seconds";
+                last;
+            }
+            my $pause = $remaining < 0.05 ? $remaining : 0.05;
+            select undef, undef, undef, $pause;
+        }
+    }
+    if (defined $capture_error) {
+        kill 'KILL', $pid;
+        waitpid $pid, 0;
+        return (124, $captured{stdout}, "Test harness error: $capture_error");
+    }
+
+    my $stdout_text = $captured{stdout};
+    my $stderr_text = $captured{stderr};
     my $status = ($wait_status & 127) ? 128 + ($wait_status & 127) : $wait_status >> 8;
     return ($status, $stdout_text, $stderr_text);
+}
+
+sub parse_finite_number {
+    my ($token) = @_;
+    return undef unless defined $token && $token =~ /\A$number\z/;
+    local $! = 0;
+    my ($value, $unparsed) = strtod($token);
+    return undef if $! == ERANGE || $unparsed != 0 || !isfinite($value);
+    return $value;
 }
 
 sub run_value {
     my (@arguments) = @_;
     my ($status, $stdout, $stderr) = run_bubble(@arguments);
     return (undef, "exit=$status stderr=$stderr") if $status != 0;
+    return (undef, "unexpected stderr=$stderr") if $stderr ne '';
     return (undef, "unexpected output=$stdout") unless $stdout =~ /^\s*($number)\s*$/;
-    return ($1 + 0.0, '');
+    my $value = parse_finite_number($1);
+    return (undef, "unrepresentable output=$stdout") unless defined $value;
+    return ($value, '');
 }
 
 sub check_result {
@@ -487,9 +569,9 @@ check_result('occupied spectral-frequency range uses both boundaries',
         : "$windowed_occupied_error $bounded_occupied_error");
 
 my ($powered_builtin, $powered_builtin_error) = run_value(
-    '-M', '0.5', 2, 2, 0, 0.1, 0.1, $resigma, $imsigma);
+    '-q', '-M', '0.5', 2, 2, 0, 0.1, 0.1, $resigma, $imsigma);
 my ($powered_tabulated, $powered_tabulated_error) = run_value(
-    '-M', '0.5', '-e', '1', '-p', $phi,
+    '-q', '-M', '0.5', '-e', '1', '-p', $phi,
     0, 2, 0, 0.1, 0.1, $resigma, $imsigma);
 check_result('restricted tabulated -e',
     defined $powered_builtin && defined $powered_tabulated &&
@@ -513,7 +595,7 @@ check_result('narrow window outer breakpoints',
     defined $narrow ? "value=$narrow" : $narrow_error);
 
 my ($many_crossings, $many_crossings_error) = run_value(
-    '-M', '0.05', '-a', '1e-6', '-r', '1e-8',
+    '-q', '-M', '0.05', '-a', '1e-6', '-r', '1e-8',
     1, 2, 0, 0.1, 0, $oscillating_resigma, $oscillating_imsigma);
 check_result('many window crossings', defined $many_crossings && $many_crossings > 0.0,
     defined $many_crossings ? "value=$many_crossings" : $many_crossings_error);

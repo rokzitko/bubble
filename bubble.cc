@@ -126,8 +126,8 @@ void usage()
    cout << "-i I : self-energy interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
    cout << "--phi-interpolation METHOD : auto, linear, cspline, akima, or steffen (default = auto)" << endl;
    cout << "-k K : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
-   cout << "-a A : nonnegative absolute error (default = 1e-7)" << endl;
-   cout << "-r R : nonnegative relative error (default = 1e-8)" << endl;
+   cout << "-a A : nonnegative outer/custom absolute error (default = 1e-7)" << endl;
+   cout << "-r R : nonnegative outer/custom relative error (default = 1e-8)" << endl;
    cout << "--workspace-limit N : positive base GSL workspace limit (default = 1000)" << endl;
    cout << "--gsl-error-policy POLICY : ignore, warn, or fail (default = fail)" << endl;
    cout << "-c C : positive frequency cutoff in units of T (default = 30)" << endl;
@@ -140,6 +140,16 @@ void usage()
    cout << "-e E : nonnegative power of epsilon when using the m=0 code (default=0)" << endl;
    cout << "-f : switch (-df/dw) to f in the w integration (incompatible with -d)" << endl;
    cout << "-O OMEGA : external optical frequency (requires OMEGA>=0 and n=2)" << endl;
+}
+
+int finish_standard_output()
+{
+   cout.flush();
+   if (!cout) {
+      cerr << "Error: failed to write standard output." << endl;
+      return EXIT_FAILURE;
+   }
+   return EXIT_SUCCESS;
 }
 
 void invalid_numeric_value(const char *description, const char *value)
@@ -513,7 +523,7 @@ void parse_command_line(int argc, char *argv[])
          if (preliminary_option == 'h') {
             opterr = saved_opterr;
             usage();
-            exit(EXIT_SUCCESS);
+            exit(finish_standard_output());
          }
          if (preliminary_option == 'M' &&
              strcmp(argv[optind - 1], "-Mp") == 0 &&
@@ -543,7 +553,7 @@ void parse_command_line(int argc, char *argv[])
       switch (c) {
       case 'h':
          usage();
-         exit(EXIT_SUCCESS);
+         exit(finish_standard_output());
       case 'v':
 	 verbose = true;
 	 break;
@@ -4379,7 +4389,8 @@ void calculate_dc()
    
    if (verbose) {
       cout << "Result = " << setprecision(precision_result) << setw(width) << result << endl;
-      cout << "Error  = " << setprecision(precision_error) << setw(width) << error << endl;
+      cout << "Outer quadrature error estimate = "
+           << setprecision(precision_error) << setw(width) << error << endl;
    } else {
       cout << setprecision(precision_result) << result << endl;
    }
@@ -4495,7 +4506,8 @@ void calculate_optical()
    const int precision_error = 4;
    if (verbose) {
       cout << "Result = " << setprecision(precision_result) << setw(width) << result << endl;
-      cout << "Error  = " << setprecision(precision_error) << setw(width) << error << endl;
+      cout << "Outer quadrature error estimate = "
+           << setprecision(precision_error) << setw(width) << error << endl;
    } else {
       cout << setprecision(precision_result) << result << endl;
    }
@@ -4519,7 +4531,7 @@ int main (int argc, char *argv[])
       calculate_optical();
    else
       calculate_dc();
-    
-   return 0;
+
+   return finish_standard_output();
 }
 #endif

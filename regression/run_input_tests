@@ -2,15 +2,20 @@
 
 use strict;
 use warnings;
-use File::Temp qw(tempdir);
+use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
+use IO::Select;
 use IPC::Open3;
+use POSIX qw(WNOHANG);
 use Symbol qw(gensym);
+use Time::HiRes qw(time);
 
 my $bubble = "$Bin/../bubble";
 my $directory = tempdir(CLEANUP => 1);
 my $passed = 0;
 my $failed = 0;
+my $command_timeout = $ENV{BUBBLE_TEST_TIMEOUT} // 120;
+my $output_limit = 1024*1024;
 
 sub write_table {
     my ($name, @rows) = @_;
@@ -26,11 +31,75 @@ sub run_bubble {
     my $stdout = gensym;
     my $stderr = gensym;
     my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
-    my $stdout_text = do { local $/; <$stdout> } // '';
-    my $stderr_text = do { local $/; <$stderr> } // '';
-    $stderr_text =~ s/\s+$//;
-    waitpid $pid, 0;
-    my $wait_status = $?;
+
+    my %captured = (stdout => '', stderr => '');
+    my %stream_name = (
+        fileno($stdout) => 'stdout',
+        fileno($stderr) => 'stderr',
+    );
+    my $selector = IO::Select->new($stdout, $stderr);
+    my $deadline = time + $command_timeout;
+    my $capture_error;
+    while ($selector->count) {
+        my $remaining = $deadline - time;
+        if ($remaining <= 0) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        my @ready = $selector->can_read($remaining);
+        if (!@ready) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        for my $handle (@ready) {
+            my $fd = fileno($handle);
+            my $bytes = sysread($handle, my $chunk, 8192);
+            if (!defined $bytes) {
+                $capture_error = "unable to read $stream_name{$fd}: $!";
+                last;
+            }
+            if ($bytes == 0) {
+                $selector->remove($handle);
+                close $handle;
+                next;
+            }
+            $captured{$stream_name{$fd}} .= $chunk;
+            if (length($captured{stdout}) + length($captured{stderr}) > $output_limit) {
+                $capture_error = "command output exceeded $output_limit bytes";
+                last;
+            }
+        }
+        last if defined $capture_error;
+    }
+    my $wait_status;
+    unless (defined $capture_error) {
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $wait_status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $capture_error = "unable to wait for command: $!";
+                last;
+            }
+            my $remaining = $deadline - time;
+            if ($remaining <= 0) {
+                $capture_error = "command timed out after $command_timeout seconds";
+                last;
+            }
+            my $pause = $remaining < 0.05 ? $remaining : 0.05;
+            select undef, undef, undef, $pause;
+        }
+    }
+    if (defined $capture_error) {
+        kill 'KILL', $pid;
+        waitpid $pid, 0;
+        return (124, $captured{stdout}, "Test harness error: $capture_error");
+    }
+
+    my $stdout_text = $captured{stdout};
+    my $stderr_text = $captured{stderr};
     my $status = ($wait_status & 127)
         ? 128 + ($wait_status & 127)
         : $wait_status >> 8;
@@ -53,13 +122,79 @@ sub check_result {
 sub check_failure {
     my ($name, $pattern, @arguments) = @_;
     my ($status, $stdout, $stderr) = run_bubble(@arguments);
-    my $ok = $status > 0 && $status < 128 && $stderr =~ $pattern;
-    check_result($name, $ok, "exit=$status stderr=$stderr");
+    my $ok = $status > 0 && $status < 128 && $stdout eq '' &&
+        $stderr =~ $pattern;
+    check_result($name, $ok, "exit=$status stdout=$stdout stderr=$stderr");
 }
 
 my @frequencies = (-10, -5, 0, 5, 10);
 my $resigma = write_table('resigma.dat', map { "$_ 0" } @frequencies);
 my $imsigma = write_table('imsigma.dat', map { "$_ -0.1" } @frequencies);
+
+if (-e '/dev/full') {
+    my @stdout_failure_cases = (
+        ['calculation standard-output write failure is fatal',
+            [1, 0, 0, 0.1, 0, $resigma, $imsigma]],
+        ['help standard-output write failure is fatal', ['--help']],
+    );
+    for my $case (@stdout_failure_cases) {
+        my ($name, $arguments) = @$case;
+        my ($error_file) = tempfile(DIR => $directory);
+        my $pid = fork();
+        defined $pid or die "Cannot fork stdout failure test: $!\n";
+        if ($pid == 0) {
+            open STDOUT, '>', '/dev/full'
+                or die "Cannot open /dev/full: $!\n";
+            open STDERR, '>&', $error_file
+                or die "Cannot redirect stderr: $!\n";
+            exec { $bubble } $bubble, @$arguments;
+            die "Cannot execute $bubble: $!\n";
+        }
+        my $deadline = time + $command_timeout;
+        my ($wait_status, $capture_error);
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $wait_status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $capture_error = "unable to wait for command: $!";
+                last;
+            }
+            my $error_size = -s $error_file;
+            if (defined $error_size && $error_size > $output_limit) {
+                $capture_error = "command output exceeded $output_limit bytes";
+                last;
+            }
+            if (time >= $deadline) {
+                $capture_error =
+                    "command timed out after $command_timeout seconds";
+                last;
+            }
+            select undef, undef, undef, 0.05;
+        }
+        if (defined $capture_error) {
+            kill 'KILL', $pid;
+            waitpid $pid, 0;
+            die "Test harness error: $capture_error\n";
+        }
+        seek $error_file, 0, 0
+            or die "Cannot rewind stdout failure stderr: $!\n";
+        my $stderr = do { local $/; <$error_file> } // '';
+        my $status = ($wait_status & 127)
+            ? 128 + ($wait_status & 127)
+            : $wait_status >> 8;
+        check_result($name,
+            $status == 1 && $stderr =~ /Error: failed to write standard output/,
+            "exit=$status stderr=$stderr");
+    }
+} else {
+    for my $name ('calculation standard-output write failure is fatal',
+        'help standard-output write failure is fatal') {
+        check_result($name, 1, '/dev/full unavailable; test skipped');
+    }
+}
 
 my $comment_resigma = write_table('comment-resigma.dat',
     '# ReSigma header', '', '-10 0 # left edge', '-5 0',
@@ -73,7 +208,7 @@ my ($comment_status, undef, $comment_stderr) = run_bubble(
     '-q', '-p', $comment_phi, 0, 0, 0, 0.1, 0,
     $comment_resigma, $comment_imsigma);
 check_result('blank lines and comments are accepted',
-    $comment_status == 0,
+    $comment_status == 0 && $comment_stderr eq '',
     "exit=$comment_status stderr=$comment_stderr");
 
 my $missing_column = write_table('missing-column.dat', '-10 0', '-5', '0 0');

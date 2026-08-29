@@ -8,19 +8,19 @@ Legacy outer-integral suites
 4  - linear ImSigma and ReSigma
 5  - small constant ImSigma, linear ReSigma
 11 - ImSigma = -0.01, ReSigma = 0, including n = 0,1,2,3
-21 - small ImSigma = -0.01
 22 - small ImSigma = -0.001
 
 The optional suffix selects another reference table while retaining the base
 self-energy files. For example, `./run_tests 22 b` reads
 `reference_data_22b.dat`, `resigma_22.dat`, and `imsigma_22.dat`.
 
-`./run_tests --all` executes an explicit 20-table manifest containing all 384
-legacy rows and verifies each table's row count. The runner invokes `bubble`
-without a shell and requires a successful child exit, empty stderr, no warning,
-and exactly one finite `Result` line for every row. It accepts
+`./run_tests --all` executes an explicit 17-table manifest containing 348
+unique legacy rows and verifies each table's row count. The runner invokes
+`bubble` without a shell and requires a successful child exit, empty stderr,
+no warning, and exactly one finite `Result` line for every row. It accepts
 
-    |value-reference| < 1e-4                    if |reference| < 1e-6,
+    |value| <= 1e-12                            if reference = 0,
+    |value-reference| < 1e-4                    if 0 < |reference| < 1e-6,
     |value-reference|/|reference| < 1e-4        otherwise.
 
 Any protocol or numerical failure produces a nonzero runner exit.

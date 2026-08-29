@@ -1,0 +1,192 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use Errno qw(ERANGE);
+use FindBin qw($Bin);
+use IO::Select;
+use IPC::Open3;
+use Math::Trig qw(pi);
+use POSIX qw(isfinite strtod WNOHANG);
+use Symbol qw(gensym);
+use Time::HiRes qw(time);
+
+my $bubble = "$Bin/../bubble";
+my $resigma = "$Bin/resigma.dat";
+my $imsigma = "$Bin/imsigma.dat";
+my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+my $command_timeout = $ENV{BUBBLE_TEST_TIMEOUT} // 120;
+my $output_limit = 1024*1024;
+my $absolute_tolerance = 1e-10;
+my $relative_tolerance = 2e-6;
+
+sub parse_finite_number {
+    my ($token) = @_;
+    return undef unless defined $token && $token =~ /\A$number\z/;
+    local $! = 0;
+    my ($value, $unparsed) = strtod($token);
+    return undef if $! == ERANGE || $unparsed != 0 || !isfinite($value);
+    return $value;
+}
+
+sub capture_bubble {
+    my (@arguments) = @_;
+    my $stdout = gensym;
+    my $stderr = gensym;
+    my $pid = open3(undef, $stdout, $stderr, $bubble, @arguments);
+    my %captured = (stdout => '', stderr => '');
+    my %stream_name = (
+        fileno($stdout) => 'stdout',
+        fileno($stderr) => 'stderr',
+    );
+    my $selector = IO::Select->new($stdout, $stderr);
+    my $deadline = time + $command_timeout;
+    my $capture_error;
+    while ($selector->count) {
+        my $remaining = $deadline - time;
+        if ($remaining <= 0) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        my @ready = $selector->can_read($remaining);
+        if (!@ready) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        for my $handle (@ready) {
+            my $fd = fileno($handle);
+            my $bytes = sysread($handle, my $chunk, 8192);
+            if (!defined $bytes) {
+                $capture_error = "unable to read $stream_name{$fd}: $!";
+                last;
+            }
+            if ($bytes == 0) {
+                $selector->remove($handle);
+                close $handle;
+                next;
+            }
+            $captured{$stream_name{$fd}} .= $chunk;
+            if (length($captured{stdout}) + length($captured{stderr}) >
+                $output_limit) {
+                $capture_error = "command output exceeded $output_limit bytes";
+                last;
+            }
+        }
+        last if defined $capture_error;
+    }
+    my $wait_status;
+    unless (defined $capture_error) {
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $wait_status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $capture_error = "unable to wait for command: $!";
+                last;
+            }
+            my $remaining = $deadline - time;
+            if ($remaining <= 0) {
+                $capture_error = "command timed out after $command_timeout seconds";
+                last;
+            }
+            my $pause = $remaining < 0.05 ? $remaining : 0.05;
+            select undef, undef, undef, $pause;
+        }
+    }
+    if (defined $capture_error) {
+        kill 'KILL', $pid;
+        waitpid $pid, 0;
+        die "Test harness error: $capture_error\n";
+    }
+    my $exit_status = ($wait_status & 127)
+        ? 128 + ($wait_status & 127) : $wait_status >> 8;
+    return ($exit_status, $captured{stdout}, $captured{stderr});
+}
+
+sub run_value {
+    my (@arguments) = @_;
+    my ($status, $stdout, $stderr) = capture_bubble(@arguments);
+    die "bubble failed: exit=$status stderr=$stderr\n" if $status != 0;
+    die "Unexpected bubble stderr: $stderr\n" if $stderr ne '';
+    $stdout =~ /^\s*($number)\s*$/
+        or die "Unexpected bubble output: $stdout\n";
+    my $value = parse_finite_number($1);
+    defined $value or die "Unrepresentable bubble output: $stdout\n";
+    return $value;
+}
+
+sub read_reference {
+    my ($filename) = @_;
+    open my $input, '<', "$Bin/$filename"
+        or die "Cannot open $filename: $!\n";
+    my $contents = do { local $/; <$input> } // '';
+    close $input or die "Cannot close $filename: $!\n";
+    $contents =~ /^\s*($number)\s*$/
+        or die "Malformed reference $filename: $contents\n";
+    my $value = parse_finite_number($1);
+    defined $value or die "Unrepresentable reference $filename: $contents\n";
+    return $value;
+}
+
+open my $parameter_file, '<', "$Bin/param.loop"
+    or die "Cannot open param.loop: $!\n";
+my $temperature;
+while (my $line = <$parameter_file>) {
+    if ($line =~ /^\s*T\s*=\s*([^\s#]+)/) {
+        $temperature = parse_finite_number($1);
+        last;
+    }
+}
+close $parameter_file or die "Cannot close param.loop: $!\n";
+defined $temperature or die "Invalid or missing T in param.loop\n";
+
+my @common = ('-i', '3', '-k', '6');
+my $factor = 2*pi;
+my $a0 = $factor*run_value(@common, 5, 2, 0, $temperature, 0,
+    $resigma, $imsigma);
+my $a1 = $factor*run_value(@common, 5, 2, 1, $temperature, 0,
+    $resigma, $imsigma);
+my $a2 = $factor*run_value(@common, 5, 2, 2, $temperature, 0,
+    $resigma, $imsigma);
+my $A0 = $a0*$temperature;
+my $A1 = $a1;
+my $A2 = $a2/$temperature;
+my $thermopower = -$A1/$A0;
+my $kappa = $A2 - $A1*$A1/$A0;
+my $lorenz = $A2/$A0;
+my $zt = $thermopower*$thermopower*$a0*$temperature/$kappa;
+my $occupied = (2/pi)*run_value(@common, '-f', 4, 1, 0, $temperature, 0,
+    $resigma, $imsigma);
+
+my @checks = (
+    ['conductivity', $a0, read_reference('condMIR.dat.mma')],
+    ['thermopower', $thermopower, read_reference('thermopowerS.dat.mma')],
+    ['thermal conductivity', $kappa, read_reference('kappa.dat.mma')],
+    ['Lorenz ratio', $lorenz, read_reference('LL.dat.mma')],
+    ['figure of merit', $zt, read_reference('ZT.dat.mma')],
+    ['occupied kinetic energy', $occupied, read_reference('ekin.dat')],
+);
+
+my ($passed, $failed) = (0, 0);
+my ($max_absolute_error, $max_relative_error) = (0.0, 0.0);
+for my $check (@checks) {
+    my ($name, $value, $expected) = @$check;
+    my $absolute_error = abs($value - $expected);
+    my $relative_error = $expected == 0.0
+        ? 0.0 : $absolute_error/abs($expected);
+    my $allowed = $absolute_tolerance + $relative_tolerance*abs($expected);
+    my $ok = isfinite($value) && $absolute_error <= $allowed;
+    $ok ? ++$passed : ++$failed;
+    $max_absolute_error = $absolute_error
+        if $absolute_error > $max_absolute_error;
+    $max_relative_error = $relative_error
+        if $relative_error > $max_relative_error;
+    printf "%s: value=%.16g expected=%.16g %s\n",
+        $name, $value, $expected, $ok ? 'OK' : 'FAILED';
+}
+
+printf "BETHE TRANSPORT OK=%d FAILED=%d max_abs=%.6g max_rel=%.6g\n",
+    $passed, $failed, $max_absolute_error, $max_relative_error;
+exit($failed == 0 ? 0 : 1);

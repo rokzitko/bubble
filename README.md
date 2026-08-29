@@ -276,14 +276,16 @@ available as generalized moments.
 For example:
 
 ```bash
-./bubble -O 0.1 5 2 0 0.27 0 \
+./bubble -k 6 -O 0.1 5 2 0 0.27 0 \
   Bethe_lattice_test/resigma.dat \
   Bethe_lattice_test/imsigma.dat
 ```
 
 This is the regular absorptive bubble contribution. It does not add a separate
 Drude delta function or diamagnetic term, vertex corrections, or model-specific
-normalization factors.
+normalization factors. The 61-point outer rule selected by `-k 6` avoids the
+roundoff-limited status produced by the default 15-point rule for this input
+while retaining the default error tolerances.
 
 ## Built-in Kernels
 
@@ -357,9 +359,9 @@ as `mu=-0.25` does not require a preceding `--`. Numeric arguments must be
 complete finite values; malformed suffixes, overflow, and underflow are
 rejected.
 
-Integration tolerances must also form a combination accepted by GSL. In
-particular, when `-a 0` is used, `-r` must be at least
-$\max(50\epsilon_{\mathrm{double}},5\times10^{-29})$, approximately
+Outer and applicable custom-kernel integration tolerances must also form a
+combination accepted by GSL. In particular, when `-a 0` is used, `-r` must be
+at least $\max(50\epsilon_{\mathrm{double}},5\times10^{-29})$, approximately
 $1.11\times10^{-14}$ for binary64.
 
 The positional arguments are:
@@ -387,8 +389,8 @@ Options:
 | `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
 | `--phi-interpolation METHOD` | Phi interpolation: `auto`, `linear`, `cspline`, `akima`, or `steffen`; default `auto` |
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points; also used by transformed tabulated-kernel quadrature |
-| `-a A` | Nonnegative absolute integration tolerance, default `1e-7` |
-| `-r R` | Nonnegative relative integration tolerance, default `1e-8` |
+| `-a A` | Nonnegative outer/custom absolute integration tolerance, default `1e-7` |
+| `-r R` | Nonnegative outer/custom relative integration tolerance, default `1e-8` |
 | `--workspace-limit N` | Positive base capacity for frequency and restricted/tabulated epsilon workspaces; default `1000` |
 | `-c C` | Positive frequency cutoff in units of temperature, default `30`; unused by `-d` |
 | `-s S` | Positive in-table clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
@@ -405,7 +407,7 @@ Options:
 
 Without `-v`, a normal DC or optical integration prints one number with 16
 significant digits to standard output. With `-v`, the program prints the parsed
-parameters followed by `Result` and the outer quadrature's `Error` estimate.
+parameters followed by `Result` and `Outer quadrature error estimate`.
 This makes the executable convenient to call from shell, Python, Julia, or
 other DMFT post-processing workflows.
 
@@ -436,6 +438,15 @@ Best-effort continuation is not an accuracy guarantee. Allocation failures,
 non-finite results, malformed inputs, and subsequent validity checks remain
 fatal under every policy. A policy also cannot detect an inaccurate calculation
 for which GSL returned success.
+
+The reported outer estimate is not an end-to-end error bound. It excludes
+finite-cutoff truncation and any nested epsilon-quadrature uncertainty.
+Tabulated-kernel epsilon quadrature uses the requested `-a`, `-r`, and `-k`
+where applicable. Restricted built-in epsilon quadrature instead uses an
+internal relative target clamped to the interval from `5e-13` to `1e-12`.
+Its roundoff acceptance test uses a relative bound at least ten times that
+target and a separate internal absolute bound. These internal estimates are
+checked locally but are not propagated into the reported outer estimate.
 
 ## Self-Energy Input
 
@@ -597,7 +608,7 @@ Smooth tangencies use a curvature-scaled neighborhood, while slope reversals
 at interpolation knots receive explicit one-sided neighborhoods.
 Restricted built-in inner integrals use adaptive 61-point quadrature;
 their breakpoint-based `qagp` integrations do not use the `-k` selection. A
-roundoff-limited result is accepted only within the requested error bound or
+roundoff-limited result is accepted only within its internal error bound or
 after agreement with independent 64- and 128-point rules, and emits a warning
 unless `-q` is active.
 
@@ -866,21 +877,22 @@ extrapolation is enabled. A positive spectral-frequency window adds its
 unshifted and optical-shifted mask boundaries.
 
 The user options `-a`, `-r`, and `-k` govern the outer quadrature and applicable
-custom-kernel pieces. Built-in fallback paths use tighter internal policies, and
+custom-kernel pieces. Built-in fallback paths use fixed internal policies, and
 restricted breakpoint integrations use fixed internal rules. Every adaptive
 status and result is checked; route-specific roundoff or singularity failures
 are accepted only after a stated error bound or independent fixed-rule check.
 Other finite partial results follow `--gsl-error-policy`. In verbose mode,
-`Error` is only the outer frequency-quadrature estimate; nested epsilon
-uncertainty is checked separately and is not folded into it.
+`Outer quadrature error estimate` excludes nested epsilon uncertainty and
+finite-cutoff truncation.
 
 ## Validation
 
 The repository contains complementary DC, clean-kernel, restricted-window,
 optical, Faddeeva, input, and DMFT benchmark checks. `make check` runs the
-embedded Faddeeva suite, strict runner self-tests, all 384 legacy rows, all
+embedded Faddeeva suite, strict runner self-tests, all 348 unique legacy rows, all
 pointwise kernel tables, restricted-window and input command tests, optical
-checks, and the Bethe optical comparison without invoking Mathematica.
+checks, and the Bethe optical, DC-transport, and occupied comparisons without
+invoking Mathematica.
 
 ### Legacy Regression Data
 
@@ -895,10 +907,11 @@ cd regression
 
 To run one table, pass its suite number and optional suffix, for example
 `./run_tests 22 b`. Suite `11` uses `ReSigma=0`, `ImSigma=-0.01` and includes
-the broader `n=0,1,2,3` set. The runner validates child status and output and
-exits nonzero on any failed row. It accepts
-$|\Delta|<10^{-4}$ when $|R|<10^{-6}$ and
-$|\Delta|/|R|<10^{-4}$ otherwise.
+the broader `n=0,1,2,3` set. Its `c` suffix retains the unique `T=0.0001`
+coverage from the former duplicate suite 21. The runner validates child status
+and output and exits nonzero on any failed row. Exact-zero references use an
+absolute tolerance of `1e-12`; other rows retain the legacy tolerance described
+in `regression/README`.
 
 ### Clean-Kernel Regression
 
@@ -1042,7 +1055,9 @@ release together with the method reference most relevant to the calculation.
 The archived version 1.11 is available at
 [doi:10.5281/zenodo.21920817](https://doi.org/10.5281/zenodo.21920817). The
 [concept DOI](https://doi.org/10.5281/zenodo.21920816) resolves to the latest
-archived release.
+archived release. `CITATION.cff` intentionally describes that archived v1.11
+record; the source, executable, README, and release tag use the current program
+version independently until another archive is prepared.
 
 ## Authors
 

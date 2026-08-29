@@ -69,6 +69,20 @@ comparison and also writes `cond.opt.geo.dat`; `--quiet` writes the file while
 suppressing per-frequency progress. The nonwriting `--check` form is used by
 `make check`.
 
+DC and occupied regression
+
+`check_transport` runs strict, nonwriting `bubble` commands with `-i 3 -k 6`.
+It evaluates the `o=0,1,2` Bethe transport moments, derives conductivity,
+thermopower, thermal conductivity, the Lorenz ratio, and the figure of merit,
+and compares them with the frozen Mathematica files. It also checks the
+occupied `m=4,n=1` kinetic energy against `ekin.dat`. Run it from the repository
+root with:
+
+    perl ./Bethe_lattice_test/check_transport
+
+The comparison uses an absolute tolerance of `1e-10` and a relative tolerance
+of `2e-6`. It requires successful child exits and empty standard error.
+
 Historical scripts
 
 `bbl` evaluates the three DC m=5, n=2 moments, applies the 2 pi conversion, and

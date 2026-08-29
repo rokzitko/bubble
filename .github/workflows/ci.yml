@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.cxx }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
 
     steps:
       - name: Check out repository
@@ -19,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes g++ libgsl-dev make perl pkg-config
+          sudo apt-get install --yes clang g++ libgsl-dev make perl pkg-config
 
       - name: Build and test
-        run: make check
+        run: make clean && make check CXX="${{ matrix.cxx }}"

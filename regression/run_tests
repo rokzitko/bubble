@@ -7,20 +7,22 @@ use FindBin qw($Bin);
 use Getopt::Long qw(GetOptionsFromArray);
 use IO::Select;
 use IPC::Open3;
-use POSIX qw(isfinite strtod);
+use POSIX qw(isfinite strtod WNOHANG);
 use Symbol qw(gensym);
+use Time::HiRes qw(time);
 
 my $verbose = 0;
 my $run_all = 0;
 my $program = "$Bin/../bubble";
 my $data_dir = $Bin;
 my $number_pattern = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+my $command_timeout = $ENV{BUBBLE_TEST_TIMEOUT} // 120;
+my $output_limit = 1024*1024;
 
 my @all_suites = (
     [1,  '', 24], [1,  'a', 24], [1,  'b', 24], [1,  'c', 24], [1,  'd', 24],
     [2,  '', 24], [3,  '', 24], [4,  '', 24], [5,  '', 24],
-    [11, '', 24], [11, 'a', 24], [11, 'b', 24],
-    [21, '', 12], [21, 'a', 12], [21, 'b', 12], [21, 'c', 12],
+    [11, '', 24], [11, 'a', 24], [11, 'b', 24], [11, 'c', 12],
     [22, '', 12], [22, 'a', 12], [22, 'b', 12], [22, 'c', 12],
 );
 
@@ -131,25 +133,65 @@ sub capture_command
     );
     my $selector = IO::Select->new($stdout, $stderr);
     my $read_error;
-    while (my @ready = $selector->can_read()) {
+    my $deadline = time + $command_timeout;
+    CAPTURE: while ($selector->count) {
+        my $remaining = $deadline - time;
+        if ($remaining <= 0) {
+            $read_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        my @ready = $selector->can_read($remaining);
+        if (!@ready) {
+            $read_error = "command timed out after $command_timeout seconds";
+            last;
+        }
         for my $handle (@ready) {
             my $fd = fileno($handle);
             my $bytes = sysread($handle, my $chunk, 8192);
             if (!defined $bytes) {
                 $read_error = "unable to read $stream_name{$fd}: $!";
-                $selector->remove($handle);
-                close $handle;
+                last CAPTURE;
             } elsif ($bytes == 0) {
                 $selector->remove($handle);
                 close $handle;
             } else {
                 $captured{$stream_name{$fd}} .= $chunk;
+                if (length($captured{stdout}) + length($captured{stderr}) >
+                    $output_limit) {
+                    $read_error = "command output exceeded $output_limit bytes";
+                    last CAPTURE;
+                }
             }
         }
     }
 
-    waitpid($pid, 0);
-    return ($?, $captured{stdout}, $captured{stderr}, $read_error);
+    my $status;
+    unless (defined $read_error) {
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $read_error = "unable to wait for command: $!";
+                last;
+            }
+            my $remaining = $deadline - time;
+            if ($remaining <= 0) {
+                $read_error = "command timed out after $command_timeout seconds";
+                last;
+            }
+            my $pause = $remaining < 0.05 ? $remaining : 0.05;
+            select undef, undef, undef, $pause;
+        }
+    }
+    if (defined $read_error) {
+        kill 'KILL', $pid;
+        my $waited = waitpid($pid, 0);
+        $status = $? if $waited == $pid;
+    }
+    return ($status, $captured{stdout}, $captured{stderr}, $read_error);
 }
 
 sub display_output
@@ -229,9 +271,11 @@ sub run_suite
         my $diff;
         if (defined $result && !@failures) {
             $diff = $result - $row->{expected};
-            my $within_tolerance = abs($row->{expected}) < 1e-6
-              ? abs($diff) < 1e-4
-              : abs($diff) / abs($row->{expected}) < 1e-4;
+            my $within_tolerance = $row->{expected} == 0.0
+              ? abs($diff) <= 1e-12
+              : (abs($row->{expected}) < 1e-6
+                 ? abs($diff) < 1e-4
+                 : abs($diff) / abs($row->{expected}) < 1e-4);
             push @failures, 'result outside tolerance' unless $within_tolerance;
         }
 
@@ -262,8 +306,8 @@ for my $suite (@suites) {
 }
 
 if ($run_all) {
-    $total_rows == 384
-      or die "Internal manifest error: processed $total_rows rows; expected 384.\n";
+    $total_rows == 348
+      or die "Internal manifest error: processed $total_rows rows; expected 348.\n";
     print "ALL OK=$total_ok FAILED=$total_failed ROWS=$total_rows\n";
 }
 exit($total_failed == 0 ? 0 : 1);

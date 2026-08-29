@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
+use POSIX qw(WNOHANG);
+use Time::HiRes qw(time);
 
 my $temporary = tempdir(CLEANUP => 1);
 my $runner = "$Bin/run_tests";
@@ -30,8 +32,22 @@ sub capture_command
         die "Cannot execute $command[0]: $!\n";
     }
 
-    waitpid($pid, 0);
-    my $status = $?;
+    my $deadline = time + ($ENV{BUBBLE_TEST_TIMEOUT} // 120) + 5;
+    my $status;
+    while (1) {
+        my $waited = waitpid($pid, WNOHANG);
+        if ($waited == $pid) {
+            $status = $?;
+            last;
+        }
+        die "Cannot wait for $command[0]: $!\n" if $waited == -1;
+        if (time >= $deadline) {
+            kill 'KILL', $pid;
+            waitpid($pid, 0);
+            die "Test harness timed out waiting for $command[0]\n";
+        }
+        select undef, undef, undef, 0.05;
+    }
     seek $stdout_file, 0, 0 or die "Cannot rewind captured stdout: $!\n";
     seek $stderr_file, 0, 0 or die "Cannot rewind captured stderr: $!\n";
     local $/;
@@ -40,32 +56,39 @@ sub capture_command
     return ($status, $stdout, $stderr);
 }
 
-write_file("$temporary/reference_data_99.dat", "1 1 0 0.1 1.25\n");
 write_file("$temporary/resigma_99.dat", "-1 0\n1 0\n");
 write_file("$temporary/imsigma_99.dat", "-1 -0.1\n1 -0.1\n");
 
 my @cases = (
-    ['valid',          "print \"Result = 1.25\\n\";\n",                       1, qr/OK=1 FAILED=0/],
-    ['signal',         "kill 'TERM', \$\$;\nsleep 1;\n",                       0, qr/child terminated by signal/],
-    ['nonzero-exit',   "print \"Result = 1.25\\n\";\nexit 7;\n",              0, qr/child exited with status 7/],
-    ['silent',         "exit 0;\n",                                             0, qr/missing Result line/],
-    ['malformed',      "print \"Result = invalid\\n\";\n",                    0, qr/malformed Result line/],
-    ['overflow',       "print \"Result = 1e9999\\n\";\n",                     0, qr/unrepresentable Result value/],
-    ['underflow',      "print \"Result = 1e-9999\\n\";\n",                    0, qr/unrepresentable Result value/],
-    ['duplicate',      "print \"Result = 1.25\\nResult = 1.25\\n\";\n",     0, qr/multiple Result lines/],
+    ['valid',          "print \"Result = 1.25\\n\";\n",                       1, qr/OK=1 FAILED=0/, 1.25],
+    ['signal',         "kill 'TERM', \$\$;\nsleep 1;\n",                       0, qr/child terminated by signal/, 1.25],
+    ['nonzero-exit',   "print \"Result = 1.25\\n\";\nexit 7;\n",              0, qr/child exited with status 7/, 1.25],
+    ['silent',         "exit 0;\n",                                             0, qr/missing Result line/, 1.25],
+    ['malformed',      "print \"Result = invalid\\n\";\n",                    0, qr/malformed Result line/, 1.25],
+    ['overflow',       "print \"Result = 1e9999\\n\";\n",                     0, qr/unrepresentable Result value/, 1.25],
+    ['underflow',      "print \"Result = 1e-9999\\n\";\n",                    0, qr/unrepresentable Result value/, 1.25],
+    ['duplicate',      "print \"Result = 1.25\\nResult = 1.25\\n\";\n",     0, qr/multiple Result lines/, 1.25],
     ['stderr-warning', "print STDERR \"Warning: mock warning\\n\";\n"
-                       . "print \"Result = 1.25\\n\";\n",                    0, qr/unexpected stderr/],
-    ['stdout-warning', "print \"Warning: mock warning\\nResult = 1.25\\n\";\n", 0, qr/warning emitted on stdout/],
-    ['wrong-result',   "print \"Result = 2\\n\";\n",                          0, qr/result outside tolerance/],
+                       . "print \"Result = 1.25\\n\";\n",                    0, qr/unexpected stderr/, 1.25],
+    ['stdout-warning', "print \"Warning: mock warning\\nResult = 1.25\\n\";\n", 0, qr/warning emitted on stdout/, 1.25],
+    ['wrong-result',   "print \"Result = 2\\n\";\n",                          0, qr/result outside tolerance/, 1.25],
+    ['false-zero',     "print \"Result = 1e-8\\n\";\n",                       0, qr/result outside tolerance/, 0],
+    ['large-stderr',   "print STDERR 'x' x (2*1024*1024);\n",                   0, qr/output exceeded/, 1.25],
+    ['timeout',        "sleep 10;\n",                                             0, qr/command timed out/, 1.25, 0.2],
+    ['closed-stream-timeout', "close STDOUT; close STDERR; sleep 10;\n",           0, qr/command timed out/, 1.25, 0.2],
 );
 
 my ($passed, $failed) = (0, 0);
 for my $case (@cases) {
-    my ($name, $body, $should_succeed, $expected_output) = @$case;
+    my ($name, $body, $should_succeed, $expected_output,
+        $reference, $timeout) = @$case;
+    write_file("$temporary/reference_data_99.dat",
+        "1 1 0 0.1 $reference\n");
     my $program = "$temporary/mock-$name";
     write_file($program, "#!/usr/bin/env perl\nuse strict;\nuse warnings;\n$body");
     chmod 0755, $program or die "Cannot make $program executable: $!\n";
 
+    local $ENV{BUBBLE_TEST_TIMEOUT} = defined $timeout ? $timeout : 120;
     my ($status, $stdout, $stderr) = capture_command(
         $runner, '--program', $program, '--data-dir', $temporary, '99'
     );

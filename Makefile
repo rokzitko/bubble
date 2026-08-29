@@ -34,6 +34,7 @@ $(FADDEEVA_TEST): Faddeeva.cc Faddeeva.hh
 
 check: $(TARGET) $(CLEAN_KERNEL_TEST) $(FADDEEVA_TEST)
 	@./$(FADDEEVA_TEST) >/dev/null
+	@cd regression && perl ./check_version
 	@cd regression && ./run_runner_tests
 	@cd regression && ./run_tests --all
 	@cd regression && ./run_optical_tests
@@ -41,6 +42,7 @@ check: $(TARGET) $(CLEAN_KERNEL_TEST) $(FADDEEVA_TEST)
 	@cd regression && ./run_input_tests
 	@cd regression && perl ./run_window_tests
 	@cd Bethe_lattice_test && ./cond.opt.geo --check
+	@cd Bethe_lattice_test && perl ./check_transport
 
 clean:
 	$(RM) $(TARGET) $(OBJECTS) bubble_test.o $(CLEAN_KERNEL_TEST) $(FADDEEVA_TEST)

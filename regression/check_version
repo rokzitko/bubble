@@ -1,0 +1,135 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use IO::Select;
+use IPC::Open3;
+use POSIX qw(WNOHANG);
+use Symbol qw(gensym);
+use Time::HiRes qw(time);
+
+my $command_timeout = $ENV{BUBBLE_TEST_TIMEOUT} // 120;
+my $output_limit = 1024*1024;
+
+sub read_file {
+    my ($filename) = @_;
+    open my $input, '<', $filename or die "Cannot open $filename: $!\n";
+    my $contents = do { local $/; <$input> } // '';
+    close $input or die "Cannot close $filename: $!\n";
+    return $contents;
+}
+
+sub capture_command {
+    my (@command) = @_;
+    my $stdout = gensym;
+    my $stderr = gensym;
+    my $pid = open3(undef, $stdout, $stderr, @command);
+    my %captured = (stdout => '', stderr => '');
+    my %stream_name = (
+        fileno($stdout) => 'stdout',
+        fileno($stderr) => 'stderr',
+    );
+    my $selector = IO::Select->new($stdout, $stderr);
+    my $deadline = time + $command_timeout;
+    my $capture_error;
+    while ($selector->count) {
+        my $remaining = $deadline - time;
+        if ($remaining <= 0) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        my @ready = $selector->can_read($remaining);
+        if (!@ready) {
+            $capture_error = "command timed out after $command_timeout seconds";
+            last;
+        }
+        for my $handle (@ready) {
+            my $fd = fileno($handle);
+            my $bytes = sysread($handle, my $chunk, 8192);
+            if (!defined $bytes) {
+                $capture_error = "unable to read $stream_name{$fd}: $!";
+                last;
+            }
+            if ($bytes == 0) {
+                $selector->remove($handle);
+                close $handle;
+                next;
+            }
+            $captured{$stream_name{$fd}} .= $chunk;
+            if (length($captured{stdout}) + length($captured{stderr}) >
+                $output_limit) {
+                $capture_error = "command output exceeded $output_limit bytes";
+                last;
+            }
+        }
+        last if defined $capture_error;
+    }
+
+    my $wait_status;
+    unless (defined $capture_error) {
+        while (1) {
+            my $waited = waitpid($pid, WNOHANG);
+            if ($waited == $pid) {
+                $wait_status = $?;
+                last;
+            }
+            if ($waited == -1) {
+                $capture_error = "unable to wait for command: $!";
+                last;
+            }
+            my $remaining = $deadline - time;
+            if ($remaining <= 0) {
+                $capture_error = "command timed out after $command_timeout seconds";
+                last;
+            }
+            my $pause = $remaining < 0.05 ? $remaining : 0.05;
+            select undef, undef, undef, $pause;
+        }
+    }
+    if (defined $capture_error) {
+        kill 'KILL', $pid;
+        waitpid $pid, 0;
+        die "Test harness error: $capture_error\n";
+    }
+
+    my $status = ($wait_status & 127)
+        ? 128 + ($wait_status & 127) : $wait_status >> 8;
+    return ($status, $captured{stdout}, $captured{stderr});
+}
+
+my $source = read_file("$Bin/../bubble.cc");
+$source =~ /const\s+string\s+VERSION\s*=\s*"([^"]+)"\s*;/
+    or die "Cannot determine version from bubble.cc\n";
+my $source_version = $1;
+
+my $readme = read_file("$Bin/../README.md");
+$readme =~ /current executable is authoritative for version ([0-9][0-9.]*)\./
+    or die "Cannot determine version from README.md\n";
+my $readme_version = $1;
+$readme_version eq $source_version
+    or die "README version $readme_version does not match source version "
+        . "$source_version\n";
+
+my $bubble = "$Bin/../bubble";
+my ($help_status, $help_text, $help_stderr) =
+    capture_command($bubble, '--help');
+$help_status == 0
+    or die "bubble --help failed with status $help_status: $help_stderr\n";
+$help_stderr eq ''
+    or die "bubble --help emitted unexpected stderr: $help_stderr\n";
+$help_text =~ /^bubble version (\S+)$/m
+    or die "Cannot determine version from bubble --help\n";
+my $executable_version = $1;
+$executable_version eq $source_version
+    or die "Executable version $executable_version does not match source version "
+        . "$source_version\n";
+
+if (($ENV{GITHUB_REF_TYPE} // '') eq 'tag') {
+    my $expected_tag = "v$source_version";
+    my $actual_tag = $ENV{GITHUB_REF_NAME} // '';
+    $actual_tag eq $expected_tag
+        or die "Release tag $actual_tag does not match version $expected_tag\n";
+}
+
+print "VERSION OK=$source_version\n";
