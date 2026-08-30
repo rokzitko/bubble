@@ -119,6 +119,7 @@ void usage()
    cout << "Options must precede the positional arguments." << endl;
    cout << "Options:" << endl;
    cout << "-h, --help : show this help" << endl;
+   cout << "-V : show version" << endl;
    cout << "-v : increase verbosity" << endl;
    cout << "-q : suppress non-fatal warnings" << endl;
    cout << "-E, --ignore-integration-errors : legacy alias for --gsl-error-policy warn" << endl;
@@ -511,7 +512,7 @@ void parse_command_line(int argc, char *argv[])
       {"gsl-error-policy", required_argument, NULL, GSL_ERROR_POLICY},
       {NULL, 0, NULL, 0}
    };
-   static const char short_options[] = "+hvqEi:k:a:r:c:s:M:p:o:dfe:O:";
+   static const char short_options[] = "+hVvqEi:k:a:r:c:s:M:p:o:dfe:O:";
 
    {
       const int saved_opterr = opterr;
@@ -523,6 +524,11 @@ void parse_command_line(int argc, char *argv[])
          if (preliminary_option == 'h') {
             opterr = saved_opterr;
             usage();
+            exit(finish_standard_output());
+         }
+         if (preliminary_option == 'V') {
+            opterr = saved_opterr;
+            about();
             exit(finish_standard_output());
          }
          if (preliminary_option == 'M' &&
@@ -553,6 +559,9 @@ void parse_command_line(int argc, char *argv[])
       switch (c) {
       case 'h':
          usage();
+         exit(finish_standard_output());
+      case 'V':
+         about();
          exit(finish_standard_output());
       case 'v':
 	 verbose = true;

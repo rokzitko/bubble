@@ -381,6 +381,7 @@ Options:
 | Option | Meaning |
 |---|---|
 | `-h`, `--help` | Print usage and exit successfully without requiring positional arguments |
+| `-V` | Print the version and exit successfully without requiring positional arguments |
 | `-v` | Print parameters, numerical result, and outer integration error estimate |
 | `-q` | Suppress non-fatal warnings without suppressing results or errors |
 | `-E`, `--ignore-integration-errors` | Legacy alias for `--gsl-error-policy warn` |
@@ -413,9 +414,10 @@ other DMFT post-processing workflows.
 
 DOS mode `-d` writes the file selected by `-o`, or `dos.dat` by default, and
 normally prints no scalar result. If `n!=1`, its nonfatal warning is currently
-written to standard output unless `-q` is used. `-h` and `--help` print usage
-and exit successfully. Invoking the executable without all seven positional
-arguments and without a help option prints usage and exits unsuccessfully.
+written to standard output unless `-q` is used. `-h` and `--help` print usage,
+while `-V` prints only the version; all three exit successfully without
+positional arguments. Invoking the executable without all seven positional
+arguments and without one of these options prints usage and exits unsuccessfully.
 
 Fatal diagnostics are written to standard error and return a nonzero status.
 `-q` suppresses only nonfatal warnings; it does not hide numerical results,
