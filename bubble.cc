@@ -55,7 +55,7 @@ gsl_interp_accel *phi_accelerator;
 gsl_spline *phi_spline;
 double eps_min, eps_max; // Interval boundaries
 
-const string VERSION = "1.13";
+const string VERSION = "1.14";
 
 // Mandatory parameters
 int m, n, o;
@@ -64,7 +64,14 @@ double mu;
 string real_sigma_filename, imaginary_sigma_filename;
 
 // Optional parameters (with defaults)
-int interpolation_selector = 1;
+enum self_energy_interpolation_method {
+   SELF_ENERGY_INTERPOLATION_LINEAR = 1,
+   SELF_ENERGY_INTERPOLATION_CSPLINE,
+   SELF_ENERGY_INTERPOLATION_AKIMA,
+   SELF_ENERGY_INTERPOLATION_STEFFEN
+};
+self_energy_interpolation_method selected_self_energy_interpolation =
+   SELF_ENERGY_INTERPOLATION_LINEAR;
 bool verbose = false;
 bool quiet_warnings = false;
 enum gsl_error_policy { GSL_ERRORS_IGNORE, GSL_ERRORS_WARN, GSL_ERRORS_FAIL };
@@ -124,7 +131,8 @@ void usage()
    cout << "-q : suppress non-fatal warnings" << endl;
    cout << "-E, --ignore-integration-errors : legacy alias for --gsl-error-policy warn" << endl;
    cout << "--allow-legacy-self-energy-extrapolation : permit the historical exterior Sigma model" << endl;
-   cout << "-i I : self-energy interpolation (default = 1, 1=>linear, 2=>cspline, 3=>Akima spline)" << endl;
+   cout << "-i METHOD, --interpolation METHOD : self-energy interpolation: "
+           "1/linear, 2/cspline, 3/akima, or 4/steffen (default = linear)" << endl;
    cout << "--phi-interpolation METHOD : auto, linear, cspline, akima, or steffen (default = auto)" << endl;
    cout << "-k K : integration rule (default = 1, 1 => 15, 2 => 21, etc.)" << endl;
    cout << "-a A : nonnegative outer/custom absolute error (default = 1e-7)" << endl;
@@ -182,6 +190,47 @@ double parse_finite_double(const char *value, const char *description)
       invalid_numeric_value(description, value);
 
    return result;
+}
+
+self_energy_interpolation_method parse_self_energy_interpolation_method(const char *value)
+{
+   if (strcmp(value, "linear") == 0)
+      return SELF_ENERGY_INTERPOLATION_LINEAR;
+   if (strcmp(value, "cspline") == 0)
+      return SELF_ENERGY_INTERPOLATION_CSPLINE;
+   if (strcmp(value, "akima") == 0)
+      return SELF_ENERGY_INTERPOLATION_AKIMA;
+   if (strcmp(value, "steffen") == 0)
+      return SELF_ENERGY_INTERPOLATION_STEFFEN;
+
+   char *end = NULL;
+   errno = 0;
+   const long selector = strtol(value, &end, 10);
+   if (errno != ERANGE && end != value && *end == '\0') {
+      switch (selector) {
+      case 1: return SELF_ENERGY_INTERPOLATION_LINEAR;
+      case 2: return SELF_ENERGY_INTERPOLATION_CSPLINE;
+      case 3: return SELF_ENERGY_INTERPOLATION_AKIMA;
+      case 4: return SELF_ENERGY_INTERPOLATION_STEFFEN;
+      }
+   }
+
+   cerr << "Self-energy interpolation method must be one of: "
+           "1/linear, 2/cspline, 3/akima, 4/steffen." << endl;
+   exit(EXIT_FAILURE);
+}
+
+const gsl_interp_type *self_energy_interpolation_type(
+   self_energy_interpolation_method method)
+{
+   switch (method) {
+   case SELF_ENERGY_INTERPOLATION_LINEAR: return gsl_interp_linear;
+   case SELF_ENERGY_INTERPOLATION_CSPLINE: return gsl_interp_cspline;
+   case SELF_ENERGY_INTERPOLATION_AKIMA: return gsl_interp_akima;
+   case SELF_ENERGY_INTERPOLATION_STEFFEN: return gsl_interp_steffen;
+   }
+   cerr << "Unknown self-energy interpolation method." << endl;
+   exit(EXIT_FAILURE);
 }
 
 const char *phi_interpolation_method_name(phi_interpolation_method method)
@@ -507,6 +556,7 @@ void parse_command_line(int argc, char *argv[])
       {"ignore-integration-errors", no_argument, NULL, 'E'},
       {"allow-legacy-self-energy-extrapolation", no_argument, NULL,
        ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION},
+      {"interpolation", required_argument, NULL, 'i'},
       {"phi-interpolation", required_argument, NULL, PHI_INTERPOLATION},
       {"workspace-limit", required_argument, NULL, WORKSPACE_LIMIT},
       {"gsl-error-policy", required_argument, NULL, GSL_ERROR_POLICY},
@@ -585,7 +635,8 @@ void parse_command_line(int argc, char *argv[])
          selected_gsl_error_policy = parse_gsl_error_policy(optarg);
          break;
       case 'i':
-	 interpolation_selector = parse_integer(optarg, "interpolation selector");
+	 selected_self_energy_interpolation =
+	    parse_self_energy_interpolation_method(optarg);
 	 break;
       case 'k':
          integration_rule = parse_integer(optarg, "integration rule");
@@ -662,10 +713,6 @@ void parse_command_line(int argc, char *argv[])
    }
    if (n < 0 || (m != 0 && n > 3)) {
       cerr << "Unsupported spectral power n=" << n << " for m=" << m << "." << endl;
-      exit(EXIT_FAILURE);
-   }
-   if (interpolation_selector < 1 || interpolation_selector > 3) {
-      cerr << "Unsupported interpolation selector i=" << interpolation_selector << "." << endl;
       exit(EXIT_FAILURE);
    }
    if (integration_rule < GSL_INTEG_GAUSS15 || integration_rule > GSL_INTEG_GAUSS61) {
@@ -769,7 +816,8 @@ void parse_command_line(int argc, char *argv[])
       cout << " n=" << n << " o=" << o;
       cout << " T=" << T << " mu=" << mu;
       cout << " Sigma: re=" << real_sigma_filename << ",im=" << imaginary_sigma_filename << endl;
-      cout << "i=" << interpolation_selector << " key=" << integration_rule << endl;
+      cout << "i=" << selected_self_energy_interpolation
+           << " key=" << integration_rule << endl;
       cout << "abs_error=" << abs_error << " rel_error=" << rel_error << " cutoff=" << cutoff << endl;
       cout << "workspace_limit=" << integration_workspace_limit << endl;
       cout << "GSL error policy=" << gsl_error_policy_name(selected_gsl_error_policy)
@@ -4109,21 +4157,8 @@ void load_self_energy_tables()
       }
    }
 
-   const gsl_interp_type *interpolation_type;
-   switch (interpolation_selector) {
-   case 1:
-      interpolation_type = gsl_interp_linear;
-      break;
-   case 2:
-      interpolation_type = gsl_interp_cspline;
-      break;
-   case 3:
-      interpolation_type = gsl_interp_akima;
-      break;
-   default:
-      cerr << "Interpolation " << interpolation_selector << " is not implemented." << endl;
-      exit(EXIT_FAILURE);
-   }
+   const gsl_interp_type *interpolation_type =
+      self_energy_interpolation_type(selected_self_energy_interpolation);
    require_interpolation_size(real_rows, interpolation_type, "ReSigma",
                               real_sigma_filename);
    require_interpolation_size(imaginary_rows, interpolation_type, "ImSigma",
@@ -4177,6 +4212,7 @@ void load_self_energy_tables()
    imaginary_sigma_spline = imaginary_candidate.spline;
 
    if (verbose) {
+      cout << "Sigma interpolation=" << gsl_spline_name(real_sigma_spline) << endl;
       cout << "omega_min=" << omega_min << " omega_max=" << omega_max << endl;
       cout << "reSigma asymptotic values neg=" << real_sigma_left_endpoint
            << " pos=" << real_sigma_right_endpoint << endl;

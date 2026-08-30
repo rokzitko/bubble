@@ -66,14 +66,15 @@ even positive kernels, and the exact coincident identity K_m(z,z)=J_m2(z).
 Command-level tests
 
 `run_input_tests` covers strict Phi and self-energy table parsing, grid
-validation, all selectable Phi interpolation minima, workspace and policy
-validation, and controlled malformed-input failures.
+validation, all selectable interpolation aliases and table-size minima,
+workspace and policy validation, and controlled malformed-input failures.
 
 `run_window_tests` covers all `-M` modes, the `-Mp` spectral-frequency mask,
 exact zero-window behavior, full and empty domain intersections, tabulated
 kernels, default and named DOS output with atomic replacement, occupied moments,
-narrow outer crossings, self-energy coverage, help output, workspace limits,
-all GSL error policies, fatal GSL precondition failures, and explicit legacy
+narrow outer crossings, Steffen self-energy values and derivatives, causal and
+optical interpolation, self-energy coverage, help output, workspace limits, all
+GSL error policies, fatal GSL precondition failures, and explicit legacy
 extrapolation.
 
 `run_optical_tests` covers the exact Omega=0 DC path, small positive Omega,

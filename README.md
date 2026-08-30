@@ -25,7 +25,8 @@ and other model-dependent prefactors must be supplied separately.
 - Numerical support for arbitrary tabulated kernels $\Phi(\epsilon)$.
 - Built-in spectral-function powers $n=0,1,2,3$, arbitrary nonnegative
   powers for tabulated kernels, and frequency moments $\omega^o$.
-- Linear, cubic-spline, or Akima interpolation of a tabulated self-energy.
+- Linear, natural-cubic, Akima, or Steffen interpolation of a tabulated
+  self-energy.
 - Adaptive Gauss-Kronrod integration through GSL.
 - Fermi-derivative transport moments, finite-frequency optical conductivity,
   occupied spectral moments, and frequency-resolved DOS output.
@@ -344,8 +345,11 @@ natural cubic (`cspline`) and Steffen require three, and Akima requires five.
 Steffen stays within each interval's endpoint range and therefore preserves
 positivity for nonnegative samples. Natural cubic and Akima can overshoot.
 
-The self-energy option `-i` remains separate and numeric. The energy integration
-is restricted to the Phi table interval. Use `-p FILE` to select the table.
+Self-energy interpolation remains separate. `-i METHOD` and
+`--interpolation METHOD` accept `linear`, `cspline`, `akima`, or `steffen`,
+with numeric aliases `1` through `4`, respectively. Names are case-sensitive,
+and `auto` is available only for Phi interpolation. The energy integration is
+restricted to the Phi table interval. Use `-p FILE` to select the table.
 
 ## Command Line
 
@@ -387,7 +391,7 @@ Options:
 | `-E`, `--ignore-integration-errors` | Legacy alias for `--gsl-error-policy warn` |
 | `--gsl-error-policy POLICY` | Handle unverified integration failures with `ignore`, `warn`, or `fail`; default `fail` |
 | `--allow-legacy-self-energy-extrapolation` | Explicitly permit the historical out-of-table self-energy model |
-| `-i I` | Self-energy interpolation: `1` linear, `2` cubic spline, `3` Akima |
+| `-i METHOD`, `--interpolation METHOD` | Self-energy interpolation: `1`/`linear`, `2`/`cspline`, `3`/`akima`, or `4`/`steffen`; default `linear` |
 | `--phi-interpolation METHOD` | Phi interpolation: `auto`, `linear`, `cspline`, `akima`, or `steffen`; default `auto` |
 | `-k K` | GSL `qag` rule: `1` through `6` select 15, 21, 31, 41, 51, or 61 points; also used by transformed tabulated-kernel quadrature |
 | `-a A` | Nonnegative outer/custom absolute integration tolerance, default `1e-7` |
@@ -463,9 +467,10 @@ omega_1  ReSigma_1         omega_1  ImSigma_1
 
 Both files must have the same number of rows and exactly identical, strictly
 increasing frequency grids. Generate or copy the frequency column once rather
-than independently rounding it in the two files. The selected interpolation
-requires at least two rows for linear mode, three for cubic-spline mode, and
-five for Akima mode. Physical retarded input should satisfy
+than independently rounding it in the two files. One selected method is applied
+to both components. It requires at least two rows for linear mode, three for
+natural-cubic or Steffen mode, and five for Akima mode. Physical retarded input
+should satisfy
 $\mathrm{Im}\thinspace{}\Sigma^R\le0$, but the program corrects rather than rejects
 positive values. For clipping floor $S$, it constructs
 
@@ -528,11 +533,16 @@ $[-30T,30T]$; increase `-c` if broader thermal tails matter. Optical mode extend
 the lower endpoint by `OMEGA` and evaluates the shifted propagator up to
 `cutoff*T+OMEGA`.
 
-Interpolation mode `-i 1` is the conservative default for noisy DMFT data.
-Higher-order interpolation can be useful for smooth, well-resolved
-self-energies but may introduce artifacts when the grid is sparse. The
-post-interpolation imaginary-part floor preserves causality but can create
-continuous floor plateaus with derivative kinks.
+Linear interpolation (`-i linear`, or its alias `-i 1`) is the conservative
+default for noisy DMFT data. Higher-order interpolation can be useful for
+smooth, well-resolved self-energies but may introduce artifacts when the grid
+is sparse. Natural cubic and Akima can overshoot between samples. Steffen is a
+monotonicity-preserving piecewise cubic that stays within each interval's
+endpoint range, so clipped causal ImSigma knots remain causal between knots.
+The post-interpolation imaginary-part floor remains active for every method.
+Steffen is continuously differentiable, but its second derivative can be
+discontinuous at knots; restricted-window root searches partition the spline at
+those knots.
 
 ## Restricted Epsilon Window
 
@@ -1039,7 +1049,7 @@ available in:
 
 The invocation section of the 2017 notes describes an earlier
 interface. The command line documented in this README and printed by the
-current executable is authoritative for version 1.13.
+current executable is authoritative for version 1.14.
 
 ## References
 

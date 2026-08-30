@@ -131,6 +131,35 @@ my @frequencies = (-10, -5, 0, 5, 10);
 my $resigma = write_table('resigma.dat', map { "$_ 0" } @frequencies);
 my $imsigma = write_table('imsigma.dat', map { "$_ -0.1" } @frequencies);
 
+for my $case (
+    [1, 'linear'],
+    [2, 'cspline'],
+    [3, 'akima'],
+    [4, 'steffen'],
+) {
+    my ($selector, $method) = @$case;
+    my @arguments = ('-v', 1, 0, 0, 0.1, 0, $resigma, $imsigma);
+    my ($numeric_status, $numeric_stdout, $numeric_stderr) =
+        run_bubble('-i', $selector, @arguments);
+    my ($named_status, $named_stdout, $named_stderr) =
+        run_bubble('-i', $method, @arguments);
+    my ($long_numeric_status, $long_numeric_stdout, $long_numeric_stderr) =
+        run_bubble("--interpolation=$selector", @arguments);
+    my ($long_named_status, $long_named_stdout, $long_named_stderr) =
+        run_bubble("--interpolation=$method", @arguments);
+    check_result("numeric and named $method interpolation aliases agree",
+        $numeric_status == 0 && $named_status == 0 &&
+        $long_numeric_status == 0 && $long_named_status == 0 &&
+        $numeric_stderr eq '' && $named_stderr eq '' &&
+        $long_numeric_stderr eq '' && $long_named_stderr eq '' &&
+        $numeric_stdout eq $named_stdout &&
+        $numeric_stdout eq $long_numeric_stdout &&
+        $numeric_stdout eq $long_named_stdout &&
+        $numeric_stdout =~ /Sigma interpolation=\Q$method\E/,
+        "short=$numeric_status/$named_status long=" .
+        "$long_numeric_status/$long_named_status");
+}
+
 if (-e '/dev/full') {
     my @stdout_failure_cases = (
         ['calculation standard-output write failure is fatal',
@@ -300,6 +329,37 @@ check_failure('undersized Akima self-energy table is rejected',
     qr/interpolation 'akima' requires at least 5 rows; found 4/,
     '-i', 3, 1, 0, 0, 0.1, 0, $four_resigma, $four_imsigma);
 
+my $two_resigma = write_table('two-resigma.dat', '-10 0', '10 0');
+my $two_imsigma = write_table('two-imsigma.dat', '-10 -0.1', '10 -0.1');
+check_failure('undersized numeric Steffen self-energy table is rejected',
+    qr/interpolation 'steffen' requires at least 3 rows; found 2/,
+    '-i', 4, 1, 0, 0, 0.1, 0, $two_resigma, $two_imsigma);
+check_failure('undersized named Steffen self-energy table is rejected',
+    qr/interpolation 'steffen' requires at least 3 rows; found 2/,
+    '--interpolation', 'steffen', 1, 0, 0, 0.1, 0,
+    $two_resigma, $two_imsigma);
+
+my $three_resigma = write_table('three-resigma.dat', '-10 0', '0 1', '10 0');
+my $three_imsigma = write_table('three-imsigma.dat',
+    '-10 -0.1', '0 -0.2', '10 -0.1');
+my ($three_row_status, undef, $three_row_stderr) = run_bubble(
+    '--interpolation=steffen', 1, 0, 0, 0.1, 0,
+    $three_resigma, $three_imsigma);
+check_result('three-row Steffen self-energy table succeeds',
+    $three_row_status == 0 && $three_row_stderr eq '',
+    "exit=$three_row_status stderr=$three_row_stderr");
+
+my ($last_linear_status, undef, $last_linear_stderr) = run_bubble(
+    '-i', 'akima', '--interpolation', 'linear',
+    1, 0, 0, 0.1, 0, $two_resigma, $two_imsigma);
+check_result('last self-energy interpolation option wins',
+    $last_linear_status == 0 && $last_linear_stderr eq '',
+    "exit=$last_linear_status stderr=$last_linear_stderr");
+check_failure('last self-energy interpolation option sets the row minimum',
+    qr/interpolation 'akima' requires at least 5 rows; found 2/,
+    '-i', 'linear', '--interpolation', 'akima',
+    1, 0, 0, 0.1, 0, $two_resigma, $two_imsigma);
+
 my $one_row_phi = write_table('one-row-phi.dat', '0 1');
 check_failure('undersized Phi table is rejected',
     qr/interpolation 'steffen' requires at least 3 rows; found 1/,
@@ -361,6 +421,22 @@ check_failure('invalid Phi interpolation is rejected',
 check_failure('case-mismatched Phi interpolation is rejected',
     qr/Phi interpolation method must be one of/,
     '--phi-interpolation', 'Steffen', 1, 0, 0, 0.1, 0, $resigma, $imsigma);
+for my $case (
+    ['automatic', 'auto'],
+    ['case-mismatched', 'Steffen'],
+    ['unknown', 'nearest'],
+    ['zero', '0'],
+    ['out-of-range', '5'],
+    ['malformed numeric', '1junk'],
+) {
+    my ($name, $method) = @$case;
+    check_failure("$name self-energy interpolation is rejected",
+        qr/Self-energy interpolation method must be one of/,
+        '-i', $method, 1, 0, 0, 0.1, 0, $resigma, $imsigma);
+}
+check_failure('invalid long self-energy interpolation is rejected',
+    qr/Self-energy interpolation method must be one of/,
+    '--interpolation=auto', 1, 0, 0, 0.1, 0, $resigma, $imsigma);
 check_failure('invalid GSL error policy is rejected',
     qr/GSL error policy must be one of/,
     '--gsl-error-policy', 'abort', 1, 0, 0, 0.1, 0, $resigma, $imsigma);

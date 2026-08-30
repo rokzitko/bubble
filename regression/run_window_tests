@@ -35,6 +35,14 @@ my $clean_imsigma = write_table('clean-imsigma.dat', '-10 -1e-8', '10 -1e-8');
 my $ultraclean_imsigma = write_table('ultraclean-imsigma.dat',
     '-10 -1e-16', '10 -1e-16');
 my $shifted_resigma = write_table('shifted-resigma.dat', '-10 0.3', '10 0.3');
+my $steffen_shape_resigma = write_table('steffen-shape-resigma.dat',
+    '-1 0', '1 1', '2 0');
+my $steffen_shape_imsigma = write_table('steffen-shape-imsigma.dat',
+    '-1 -0.1', '1 -0.1', '2 -0.1');
+my $varying_imsigma_resigma = write_table('varying-imsigma-resigma.dat',
+    '-0.1 0', '0.1 0', '0.2 0');
+my $varying_imsigma = write_table('varying-imsigma.dat',
+    '-0.1 -0.2', '0.1 -0.02', '0.2 -0.3');
 my $outside_resigma = write_table('outside-resigma.dat', '1 0', '2 0');
 my $outside_imsigma = write_table('outside-imsigma.dat', '1 -0.1', '2 -0.1');
 my $narrow_sigma_resigma = write_table('narrow-sigma-resigma.dat',
@@ -258,7 +266,9 @@ for my $help_option ('-h', '--help') {
     my ($help_status, $help_stdout, $help_stderr) = run_bubble($help_option);
     check_result("$help_option succeeds without positional arguments",
         $help_status == 0 && $help_stderr eq '' &&
-        $help_stdout =~ /bubble version 1\.13/ &&
+        $help_stdout =~ /bubble version 1\.14/ &&
+        $help_stdout =~ /-i METHOD, --interpolation METHOD/ &&
+        $help_stdout =~ /1\/linear, 2\/cspline, 3\/akima, or 4\/steffen/ &&
         $help_stdout =~ /--phi-interpolation METHOD/ &&
         $help_stdout =~ /--workspace-limit N/ &&
         $help_stdout =~ /--gsl-error-policy POLICY/,
@@ -267,7 +277,7 @@ for my $help_option ('-h', '--help') {
 
 my ($option_help_status, $option_help_stdout, $option_help_stderr) = run_bubble(
     '--workspace-limit', '10', '--gsl-error-policy', 'fail',
-    '--phi-interpolation', 'linear', '-h');
+    '--interpolation', 'steffen', '--phi-interpolation', 'linear', '-h');
 check_result('help succeeds after preceding options without positionals',
     $option_help_status == 0 && $option_help_stderr eq '' &&
     $option_help_stdout =~ /Usage: bubble/,
@@ -587,6 +597,27 @@ check_result('window centered by ReSigma(0)',
     close_enough($shifted_mass, $shifted_expected, 1e-12, 1e-12),
     defined $shifted_mass ? "value=$shifted_mass" : $shifted_mass_error);
 
+my ($linear_shape_status, $linear_shape_stdout, $linear_shape_stderr) = run_bubble(
+    '-q', '-v', '-i', 'linear', '-M', '0.1',
+    1, 0, 0, 0.1, 0, $steffen_shape_resigma, $steffen_shape_imsigma);
+my ($linear_shape_token) = $linear_shape_stdout =~ /ReSigma\(0\)=($number)/;
+my $linear_shape_value = parse_finite_number($linear_shape_token);
+my ($steffen_shape_status, $steffen_shape_stdout, $steffen_shape_stderr) =
+    run_bubble('-q', '-v', '--interpolation', 'steffen', '-M', '0.1',
+        1, 0, 0, 0.1, 0, $steffen_shape_resigma, $steffen_shape_imsigma);
+my ($steffen_shape_token) = $steffen_shape_stdout =~ /ReSigma\(0\)=($number)/;
+my $steffen_shape_value = parse_finite_number($steffen_shape_token);
+check_result('Steffen self-energy interpolation is selected and evaluated',
+    $linear_shape_status == 0 && $steffen_shape_status == 0 &&
+    $linear_shape_stderr eq '' && $steffen_shape_stderr eq '' &&
+    close_enough($linear_shape_value, 0.5, 0.0, 1e-15) &&
+    close_enough($steffen_shape_value, 0.625, 0.0, 1e-15) &&
+    $steffen_shape_stdout =~ /i=4 key=/ &&
+    $steffen_shape_stdout =~ /Sigma interpolation=steffen/,
+    defined $linear_shape_value && defined $steffen_shape_value
+        ? "linear=$linear_shape_value steffen=$steffen_shape_value"
+        : "linear output=$linear_shape_stdout steffen output=$steffen_shape_stdout");
+
 my ($narrow, $narrow_error) = run_value('-M', '1e-4', '-a', '1e-8', '-r', '1e-10',
     1, 2, 0, 0.1, 0, $resigma, $clean_imsigma);
 my $narrow_expected = 7957.746491449217;
@@ -615,6 +646,22 @@ for my $case (@close_crossing_cases) {
         defined $value ? "value=$value" : $value_error);
 }
 
+my @steffen_crossing_arguments = (
+    '-q', '-M', '0.82', '-s', '1e-10', '-a', '1e-7', '-r', '1e-8', '-c', '5',
+    1, 2, 0, 0.1, 0, $close_resigma, $close_imsigma,
+);
+my ($steffen_crossing_15, $steffen_crossing_15_error) = run_value(
+    '-i', 'steffen', '-k', '1', @steffen_crossing_arguments);
+my ($steffen_crossing_61, $steffen_crossing_61_error) = run_value(
+    '--interpolation', '4', '-k', '6', @steffen_crossing_arguments);
+check_result('Steffen restricted crossings are quadrature-stable',
+    defined $steffen_crossing_15 && defined $steffen_crossing_61 &&
+    $steffen_crossing_15 > 0.0 &&
+    close_enough($steffen_crossing_15, $steffen_crossing_61, 2e-9, 1e-3),
+    defined $steffen_crossing_15 && defined $steffen_crossing_61
+        ? "15-point=$steffen_crossing_15 61-point=$steffen_crossing_61"
+        : "$steffen_crossing_15_error $steffen_crossing_61_error");
+
 my ($causal_cubic, $causal_cubic_error) = run_value(
     '-i', '2', '-a', '1e-12', '-r', '1e-12', '-c', '15',
     1, 1, 0, 0.001, 0, $causal_cubic_resigma, $causal_cubic_imsigma);
@@ -628,6 +675,28 @@ my ($causal_akima, $causal_akima_error) = run_value(
 check_result('Akima ImSigma interpolation remains causal',
     close_enough($causal_akima, 0.9999993818293523, 2e-12, 2e-12),
     defined $causal_akima ? "value=$causal_akima" : $causal_akima_error);
+
+my ($causal_steffen, $causal_steffen_error) = run_value(
+    '-i', 'steffen', '-a', '1e-12', '-r', '1e-12', '-c', '15',
+    1, 1, 0, 0.001, 0, $causal_cubic_resigma, $causal_cubic_imsigma);
+check_result('Steffen ImSigma interpolation remains causal',
+    close_enough($causal_steffen, 0.9999993818293524, 2e-12, 2e-12),
+    defined $causal_steffen ? "value=$causal_steffen" : $causal_steffen_error);
+
+my @varying_imsigma_arguments = (
+    '-q', '-a', '1e-12', '-r', '1e-12', '-c', '15',
+    1, 1, 0, 0.001, 0, $varying_imsigma_resigma, $varying_imsigma,
+);
+my ($varying_im_linear, $varying_im_linear_error) = run_value(
+    '-i', 'linear', @varying_imsigma_arguments);
+my ($varying_im_steffen, $varying_im_steffen_error) = run_value(
+    '-i', 'steffen', @varying_imsigma_arguments);
+check_result('Steffen is applied to varying ImSigma in the DC path',
+    defined $varying_im_linear && defined $varying_im_steffen &&
+    abs($varying_im_steffen - $varying_im_linear) > 1e-4,
+    defined $varying_im_linear && defined $varying_im_steffen
+        ? "linear=$varying_im_linear steffen=$varying_im_steffen"
+        : "$varying_im_linear_error $varying_im_steffen_error");
 
 my ($causal_floor, $causal_floor_error) = run_value(
     '-i', '2', '-s', '1e-4', '-a', '1e-12', '-r', '1e-12', '-c', '15',
@@ -666,6 +735,37 @@ check_result('optical kernel uses causal ImSigma floor',
     defined $causal_optical && defined $causal_optical_control
         ? "value=$causal_optical control=$causal_optical_control"
         : "$causal_optical_error $causal_optical_control_error");
+
+my @steffen_optical_arguments = (
+    '-q', '--interpolation', 'steffen', '-s', '1e-4',
+    '-a', '1e-9', '-r', '1e-9', '-O', '1e-4',
+    1, 2, 0, 0.001, 0, $causal_cubic_resigma,
+);
+my ($steffen_optical, $steffen_optical_error) = run_value(
+    @steffen_optical_arguments, $causal_cubic_imsigma);
+my ($steffen_optical_control, $steffen_optical_control_error) = run_value(
+    @steffen_optical_arguments, $causal_cubic_control);
+check_result('optical kernel uses Steffen self-energy interpolation',
+    defined $steffen_optical && $steffen_optical > 0.0 &&
+    close_enough($steffen_optical, $steffen_optical_control, 2e-10, 2e-10),
+    defined $steffen_optical && defined $steffen_optical_control
+        ? "value=$steffen_optical control=$steffen_optical_control"
+        : "$steffen_optical_error $steffen_optical_control_error");
+
+my @varying_im_optical_arguments = (
+    '-q', '-a', '1e-10', '-r', '1e-10', '-c', '15', '-O', '0.005',
+    1, 2, 0, 0.001, 0, $varying_imsigma_resigma, $varying_imsigma,
+);
+my ($varying_im_optical_linear, $varying_im_optical_linear_error) = run_value(
+    '-i', 'linear', @varying_im_optical_arguments);
+my ($varying_im_optical_steffen, $varying_im_optical_steffen_error) = run_value(
+    '--interpolation', 'steffen', @varying_im_optical_arguments);
+check_result('Steffen is applied to varying ImSigma in the optical path',
+    defined $varying_im_optical_linear && defined $varying_im_optical_steffen &&
+    abs($varying_im_optical_steffen - $varying_im_optical_linear) > 1e-4,
+    defined $varying_im_optical_linear && defined $varying_im_optical_steffen
+        ? "linear=$varying_im_optical_linear steffen=$varying_im_optical_steffen"
+        : "$varying_im_optical_linear_error $varying_im_optical_steffen_error");
 
 my ($tangent, $tangent_error) = run_value(
     '-q', '-i', '1', '-M', '0.1', '-s', '1e-10',
@@ -1026,6 +1126,8 @@ my @invalid_cases = (
         '-o', @base],
     ['missing Phi interpolation', qr/Invalid or incomplete command-line option/,
         '--phi-interpolation', @base],
+    ['missing self-energy interpolation', qr/Invalid or incomplete command-line option/,
+        '--interpolation', @base],
     ['missing workspace limit', qr/Invalid or incomplete command-line option/,
         '--workspace-limit', @base],
     ['missing GSL error policy', qr/Invalid or incomplete command-line option/,
@@ -1054,8 +1156,9 @@ my @invalid_cases = (
         1, 0, 0, -0.1, 0, $resigma, $imsigma],
     ['negative active epsilon power', qr/epsilon power e must be nonnegative/,
         '-e', '-1', '-p', $phi, 0, 1, 0, 0.1, 0, $resigma, $imsigma],
-    ['invalid interpolation selector', qr/Unsupported interpolation selector i=4/,
-        '-i', '4', @base],
+    ['invalid self-energy interpolation',
+        qr/Self-energy interpolation method must be one of/,
+        '-i', '5', @base],
     ['invalid integration rule', qr/Unsupported integration rule k=7/,
         '-k', '7', @base],
     ['negative absolute tolerance', qr/Absolute integration tolerance must be nonnegative/,
@@ -1086,7 +1189,8 @@ for my $case (@invalid_cases) {
 }
 
 my @invalid_numeric_cases = (
-    ['malformed interpolation', qr/Invalid interpolation selector/, '-i', '1junk', @base],
+    ['malformed interpolation', qr/Self-energy interpolation method must be one of/,
+        '-i', '1junk', @base],
     ['malformed integration rule', qr/Invalid integration rule/, '-k', '1junk', @base],
     ['malformed absolute tolerance', qr/Invalid absolute integration tolerance/,
         '-a', '1e-7junk', @base],
