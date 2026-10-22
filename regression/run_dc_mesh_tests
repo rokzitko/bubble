@@ -1,0 +1,216 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use File::Temp qw(tempdir);
+use FindBin qw($Bin);
+use POSIX qw(isfinite WNOHANG);
+use Time::HiRes qw(sleep time);
+
+my $bubble = "$Bin/../bubble";
+my $directory = tempdir(CLEANUP => 1);
+my $pi = 4*atan2(1, 1);
+my ($passed, $failed, $sequence) = (0, 0, 0);
+
+sub table {
+    my ($name, $rows) = @_;
+    my $path = "$directory/$name";
+    open my $file, '>', $path or die "$path: $!";
+    printf {$file} "%.17g %.17g\n", @$_ for @$rows;
+    close $file or die "$path: $!";
+    return $path;
+}
+
+sub run {
+    my (@args) = @_;
+    my $prefix = "$directory/run-" . ++$sequence;
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+    if ($pid == 0) {
+        open STDOUT, '>', "$prefix.out" or die $!;
+        open STDERR, '>', "$prefix.err" or die $!;
+        exec {$bubble} $bubble, @args;
+        die "exec: $!";
+    }
+    my $deadline = time() + 30;
+    while (waitpid($pid, WNOHANG) == 0) {
+        if (time() > $deadline) {
+            kill 'KILL', $pid;
+            waitpid($pid, 0);
+            die "DC mesh command timed out: @args\n";
+        }
+        sleep 0.01;
+    }
+    my $status = $?;
+    open my $out, '<', "$prefix.out" or die $!;
+    open my $err, '<', "$prefix.err" or die $!;
+    local $/;
+    return ($status, scalar(<$out>), scalar(<$err>));
+}
+
+sub check {
+    my ($name, $ok, $detail) = @_;
+    if ($ok) {
+        ++$passed;
+    } else {
+        ++$failed;
+        print STDERR "FAIL $name: $detail\n";
+    }
+}
+
+sub close_result {
+    my ($name, $reference, $tolerance, @args) = @_;
+    my ($status, $out, $err) = run(@args);
+    my $numeric = $out =~ /^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$/;
+    my $value = $numeric ? 0+$1 : 0;
+    check($name, !$status && $numeric && isfinite($value) && $err eq '' &&
+          abs($value-$reference) <= $tolerance,
+          "status=$status expected=$reference actual=$out stderr=$err");
+}
+
+# Only two knots: all-knot splitting alone still misses this conducting window.
+# Integral over x of J_52 is 3/(16*gamma). Its normalized second moment is
+# 1/6+gamma^2, so replacing the slowly varying thermal weight by its value at
+# the crossing has <2e-9 relative error here (including the finite-window tail).
+my ($center, $slope, $gamma) = (2.75, 16384, 0.125);
+my $re = table('affine.re', [map { [$_, $_-$slope*($_-$center)] } (-30, 30)]);
+my $im = table('affine.im', [[-30, -$gamma], [30, -$gamma]]);
+my $weight = exp(-$center)/(1+exp(-$center))**2;
+my $reference = 3/(16*$gamma*$slope)*$weight;
+my @controls = ('--dc-mesh', '-i1', '-s1e-12', '-a1e-14', '-r1e-8');
+for my $rule (1, 6) {
+    for my $moment (0, 1, 2) {
+        my $expected = $reference*$center**$moment;
+        close_result("hidden affine band k=$rule o=$moment", $expected, 1e-8*$expected,
+                     @controls, "-k$rule", '5', '2', $moment, '1', '0', $re, $im);
+    }
+}
+my ($status, $out, $err) = run('-i1', '-s1e-12', '-a1e-14', '-r1e-8', '-k1',
+                             '5', '2', '0', '1', '0', $re, $im);
+check('fixture exposes unpartitioned false success', !$status && abs(0+$out) < $reference*1e-6,
+      "status=$status result=$out stderr=$err");
+
+# Clipping a huge input cell must preserve x=w-2.75, not interpolate x from
+# endpoints whose opposite magnitudes cancel away the entire retained window.
+# The same kernel mass gives 3/(16*gamma)/(4*T)=3.75e-9; thermal variation
+# changes this by less than 1e-15 relative and the omitted tails are smaller.
+for my $extent (3e9, 1e100) {
+    my $wide_re = table("wide-$extent.re", [[-$extent, 0], [$extent, 0]]);
+    my $wide_im = table("wide-$extent.im", [[-$extent, -$gamma], [$extent, -$gamma]]);
+    for my $rule (1, 6) {
+        close_result("clipped affine band extent=$extent k=$rule", 3.75e-9, 3.75e-17,
+                     @controls, '-a1e-20', "-k$rule", '5', '2', '0', '1e8', '-2.75',
+                     $wide_re, $wide_im);
+    }
+}
+
+# The existing thermal denominator overflows even at w=0 for T=1e308.
+# With x=0, gamma=1e-300 and window [-1e8,1e8], the actual moment tends to
+# 1/(4*pi), not zero. The scoped mesh path must reject this unsupported scale.
+my $hot_re = table('thermal-overflow.re', [[-1e8, -1e8], [1e8, 1e8]]);
+my $hot_im = table('thermal-overflow.im', [[-1e8, -1e-300], [1e8, -1e-300]]);
+for my $rule (1, 6) {
+    for my $options ([], ['-E', '-q']) {
+        my ($status, $out, $err) = run(@controls, '-s1e-300', '-c1e-300', "-k$rule",
+                                     @$options, '5', '2', '0', '1e308', '0', $hot_re, $hot_im);
+        check("reject thermal overflow k=$rule @$options", $status && $out eq '' &&
+              index($err, '--dc-mesh unsupported thermal denominator') >= 0,
+              "status=$status stdout=$out stderr=$err");
+    }
+}
+
+# At x=0 an antiderivative of J_52(i*g) is
+# [sqrt(1+g^2) + log(g/(sqrt(1+g^2)+1)) - 2/3*(1+g^2)^(3/2) + 2/3*g^3]/(2*pi).
+# T=1e6 makes the thermal weight constant to <2.6e-11 across [-10,10].
+sub primitive {
+    my ($g) = @_;
+    my $root = sqrt(1+$g*$g);
+    return ($root + log($g/($root+1)) - 2/3*$root**3 + 2/3*$g**3)/(2*$pi);
+}
+my ($gmin, $gmax, $temperature) = (1e-10, 0.01, 1e6);
+my $ramp_re = table('ramp.re', [[-10, -10], [10, 10]]);
+my $ramp_reference = 20*(primitive($gmax)-primitive($gmin))/($gmax-$gmin)/(4*$temperature);
+for my $reverse (0, 1) {
+    my @values = $reverse ? ($gmax, $gmin) : ($gmin, $gmax);
+    my $ramp_im = table("ramp-$reverse.im", [[-10, -$values[0]], [10, -$values[1]]]);
+    for my $rule (1, 6) {
+        close_result("affine gamma ramp reverse=$reverse k=$rule", $ramp_reference,
+                     1e-8*$ramp_reference, @controls, '-c1e-5', "-k$rule",
+                     '5', '2', '0', $temperature, '0', $ramp_re, $ramp_im);
+    }
+}
+
+# A narrow clean plateau and its ramps must retain every original knot.
+# Again x=0, so both the plateau and ramp areas have analytic references.
+my $width = 2**-16;
+my $pocket_min = 1e-8;
+my @knots = (-10, 2.75, 2.75+$width, 2.75+2*$width, 2.75+3*$width, 10);
+my @gammas = ($gmax, $gmax, $pocket_min, $pocket_min, $gmax, $gmax);
+my $pocket_re = table('pocket.re', [map { [$_, $_] } @knots]);
+my $pocket_im = table('pocket.im', [map { [$knots[$_], -$gammas[$_]] } 0..$#knots]);
+sub kernel_zero {
+    my ($g) = @_;
+    my $b = 1/(sqrt(1+$g*$g)+$g);
+    return $b*(3-$b*$b)/(4*$pi*$g);
+}
+my $pocket_reference = ((20-3*$width)*kernel_zero($gmax) + $width*kernel_zero($pocket_min) +
+    2*$width*(primitive($gmax)-primitive($pocket_min))/($gmax-$pocket_min))/(4*$temperature);
+for my $rule (1, 6) {
+    close_result("all knots retained k=$rule", $pocket_reference, 1e-8*$pocket_reference,
+                 @controls, '-c1e-5', "-k$rule", '5', '2', '0', $temperature, '0',
+                 $pocket_re, $pocket_im);
+}
+
+# Knot clipping happens before interpolation, not by flooring the affine ramp.
+my $clip_im = table('clip.im', [[-10, 0.1], [10, -$gmax]]);
+my $floor = 1e-4;
+my $clip_reference = 20*(primitive($gmax)-primitive($floor))/($gmax-$floor)/(4*$temperature);
+close_result('clip before interpolating', $clip_reference, 1e-8*$clip_reference,
+             @controls, "-s$floor", '-c1e-5', '5', '2', '0', $temperature, '0', $ramp_re, $clip_im);
+
+my $constant_re = table('constant.re', [[-30, -30], [30, 30]]);
+for my $rule (1, 6) {
+    for my $moment (0, 1, 2) {
+        my $thermal_reference = kernel_zero($gamma)*
+            ($moment == 0 ? 1 : $moment == 1 ? 0 : $pi*$pi*1e-8/3);
+        close_result("thermal support and signed sum k=$rule o=$moment", $thermal_reference,
+                     1e-14+1e-8*abs($thermal_reference), @controls, '-c512', "-k$rule",
+                     '5', '2', $moment, '1e-4', '0', $constant_re, $im);
+    }
+}
+($status, $out, $err) = run('--dc-mesh', '-a1e-25', '-r1e-8',
+                          '5', '2', '1', '1', '0', $constant_re, $im);
+check('signed cancellation enforces global error budget', $status && $out eq '' &&
+      index($err, 'DC mesh integration total') >= 0,
+      "status=$status stdout=$out stderr=$err");
+
+for my $options (['-i2'], ['-i3'], ['-i4'], ['-O0'], ['-O1'], ['-f'], ['-d'],
+                 ['-M0.5'], ['-Mp', '0.5'], ['--allow-legacy-self-energy-extrapolation'],
+                 ['--phi-interpolation', 'linear'], ['-p', 'unused'], ['-e1'], ['-c513']) {
+    my ($status, $out, $err) = run('--dc-mesh', @$options, '5', '2', '0', '1', '0', $re, $im);
+    check("reject @$options", $status && $out eq '' && index($err, '--dc-mesh') >= 0,
+          "status=$status stdout=$out stderr=$err");
+}
+for my $indices ([0, 2, 0], [3, 2, 0], [5, 1, 0], [5, 2, 3], [5, 2, -1]) {
+    my ($status, $out, $err) = run('--dc-mesh', @$indices, '1', '0', $re, $im);
+    check("reject indices @$indices", $status && $out eq '' && index($err, '--dc-mesh') >= 0,
+          "status=$status stdout=$out stderr=$err");
+}
+my $tiny_im = table('unresolved.im', [[-30, -1e-30], [30, -$gmax]]);
+my $tiny_re = table('unresolved.re', [[-30, -30], [30, 30]]);
+for my $options ([], ['-E', '-q']) {
+    my ($status, $out, $err) = run('--dc-mesh', '-s1e-30', @$options,
+                                 '5', '2', '0', '1', '0', $tiny_re, $tiny_im);
+    check("reject unresolvable gamma @$options", $status && $out eq '' && index($err, 'unresolvable') >= 0,
+          "status=$status stdout=$out stderr=$err");
+}
+my $tiny_band_re = table('unresolved-band.re', [map { [$_, $_-1e20*($_-2.75)] } (-30, 30)]);
+($status, $out, $err) = run(@controls, '5', '2', '0', '1', '0', $tiny_band_re, $im);
+check('reject sub-ulp conducting window', $status && $out eq '' && index($err, 'unresolvable') >= 0,
+      "status=$status stdout=$out stderr=$err");
+my $cancel_re = table('unresolved-cancellation.re', [[-30, 1e20], [30, 1e20]]);
+($status, $out, $err) = run(@controls, '5', '2', '0', '1', '1e20', $cancel_re, $im);
+check('reject unresolvable x cancellation', $status && $out eq '' && index($err, 'unresolvable') >= 0,
+      "status=$status stdout=$out stderr=$err");
+
+print "DC mesh tests: $passed passed, $failed failed\n";
+exit($failed ? 1 : 0);

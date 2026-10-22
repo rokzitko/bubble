@@ -104,6 +104,7 @@ enum phi_interpolation_method {
 phi_interpolation_method selected_phi_interpolation = PHI_INTERPOLATION_AUTO;
 bool optical_mode = false;
 double optical_frequency = 0.0;
+bool dc_mesh = false;
 
 const double LEGACY_EXTERIOR_IM_SIGMA = 1e-10;
 
@@ -111,7 +112,8 @@ enum long_option_code {
    ALLOW_LEGACY_SELF_ENERGY_EXTRAPOLATION = 1000,
    PHI_INTERPOLATION,
    WORKSPACE_LIMIT,
-   GSL_ERROR_POLICY
+   GSL_ERROR_POLICY,
+   DC_MESH
 };
 
 void about()
@@ -138,6 +140,7 @@ void usage()
    cout << "-a A : nonnegative outer/custom absolute error (default = 1e-7)" << endl;
    cout << "-r R : nonnegative outer/custom relative error (default = 1e-8)" << endl;
    cout << "--workspace-limit N : positive base GSL workspace limit (default = 1000)" << endl;
+   cout << "--dc-mesh : mesh-resolved ordinary DC (m=5, n=2, o=0/1/2, linear Sigma)" << endl;
    cout << "--gsl-error-policy POLICY : ignore, warn, or fail (default = fail)" << endl;
    cout << "-c C : positive frequency cutoff in units of T (default = 30)" << endl;
    cout << "-s FLOOR : positive in-table ImSigma clipping floor (default = 1e-8)" << endl;
@@ -560,6 +563,7 @@ void parse_command_line(int argc, char *argv[])
       {"phi-interpolation", required_argument, NULL, PHI_INTERPOLATION},
       {"workspace-limit", required_argument, NULL, WORKSPACE_LIMIT},
       {"gsl-error-policy", required_argument, NULL, GSL_ERROR_POLICY},
+      {"dc-mesh", no_argument, NULL, DC_MESH},
       {NULL, 0, NULL, 0}
    };
    static const char short_options[] = "+hVvqEi:k:a:r:c:s:M:p:o:dfe:O:";
@@ -634,6 +638,9 @@ void parse_command_line(int argc, char *argv[])
       case GSL_ERROR_POLICY:
          selected_gsl_error_policy = parse_gsl_error_policy(optarg);
          break;
+      case DC_MESH:
+         dc_mesh = true;
+         break;
       case 'i':
 	 selected_self_energy_interpolation =
 	    parse_self_energy_interpolation_method(optarg);
@@ -707,6 +714,22 @@ void parse_command_line(int argc, char *argv[])
    real_sigma_filename = string(argv[first_positional + 5]);
    imaginary_sigma_filename = string(argv[first_positional + 6]);
 
+   if (dc_mesh && (m != 5 || n != 2 || o < 0 || o > 2 ||
+       selected_self_energy_interpolation != SELF_ENERGY_INTERPOLATION_LINEAR ||
+       optical_mode || dos_mode || selected_frequency_weight != MINUS_FERMI_DERIVATIVE ||
+       epsilon_window_half_width != 0.0 || spectral_frequency_window_half_width != 0.0 ||
+       allow_legacy_self_energy_extrapolation || epsilon_power != 0 ||
+       selected_phi_interpolation != PHI_INTERPOLATION_AUTO || phi_filename != "Phi.dat")) {
+      cerr << "Error: --dc-mesh requires ordinary DC m=5, n=2, o=0/1/2 and linear Sigma; "
+              "optical, DOS, occupied, windowed, extrapolated and tabulated modes/options "
+              "are unsupported." << endl;
+      exit(EXIT_FAILURE);
+   }
+   if (dc_mesh && cutoff > 512.0) {
+      cerr << "Error: --dc-mesh currently requires -c <= 512." << endl;
+      exit(EXIT_FAILURE);
+   }
+
    if (m < 0 || m > 8) {
       cerr << "Unsupported kernel index m=" << m << "." << endl;
       exit(EXIT_FAILURE);
@@ -776,6 +799,12 @@ void parse_command_line(int argc, char *argv[])
       if (!isfinite(thermal_bound) || thermal_bound <= 0.0 ||
           (optical_mode && !isfinite(thermal_bound + optical_frequency))) {
          cerr << "The frequency integration bounds are not representable." << endl;
+         exit(EXIT_FAILURE);
+      }
+      if (dc_mesh && T >= numeric_limits<double>::max()/
+          (2.0 + 2.0*cosh(thermal_bound/T))) {
+         cerr << "Error: --dc-mesh unsupported thermal denominator: "
+                 "T*(2+2*cosh(omega/T)) may overflow in the frequency window." << endl;
          exit(EXIT_FAILURE);
       }
    }
@@ -3867,22 +3896,129 @@ vector<double> restricted_outer_points(double lower, double upper,
    return filter_integration_points(points, lower, upper);
 }
 
+vector<double> dc_mesh_points(double lower, double upper)
+{
+   vector<double> points{lower, upper, 0.0};
+   // Unit-T panels protect thermal support even on very broad input cells.
+   for (int step = 1; step <= static_cast<int>(ceil(cutoff)); ++step) {
+      const double location = step*T;
+      if (location < upper) points.push_back(location);
+      if (-location > lower) points.push_back(-location);
+   }
+   for (size_t cell = 1; cell < sigma_omega_knots.size(); ++cell) {
+      const long double w0 = sigma_omega_knots[cell - 1];
+      const long double w1 = sigma_omega_knots[cell];
+      const long double left = max(w0, static_cast<long double>(lower));
+      const long double right = min(w1, static_cast<long double>(upper));
+      if (!(left < right)) continue;
+      points.push_back(static_cast<double>(left));
+      points.push_back(static_cast<double>(right));
+      const long double re0 = real_sigma_spline->y[cell - 1];
+      const long double re1 = real_sigma_spline->y[cell];
+      const long double g0 = -imaginary_sigma_spline->y[cell - 1];
+      const long double g1 = -imaginary_sigma_spline->y[cell];
+      // Interpolate Sigma first: interpolating x from remote knots can cancel
+      // the retained frequency itself. Normalize both weights before products.
+      const long double left0 = (w1-left)/(w1-w0), left1 = (left-w0)/(w1-w0);
+      const long double right0 = (w1-right)/(w1-w0), right1 = (right-w0)/(w1-w0);
+      const long double xl = left + mu - (re0*left0 + re1*left1);
+      const long double xr = right + mu - (re0*right0 + re1*right1);
+      const long double gl = g0*left0 + g1*left1;
+      const long double gr = g0*right0 + g1*right1;
+      // GSL still evaluates Sigma at global double frequencies. Check feature
+      // scales before rounding/merging roots; coincident roots alone are benign.
+      const double scale = max(abs(static_cast<double>(left)), abs(static_cast<double>(right)));
+      const long double resolution = 16.0L*(nextafter(scale,
+         numeric_limits<double>::infinity())-scale);
+      const long double real_resolution = 16.0L*numeric_limits<double>::epsilon()*
+         max(static_cast<long double>(scale), max(abs(static_cast<long double>(mu)),
+            max(abs(static_cast<long double>(real_sigma_spline->y[cell-1])),
+                abs(static_cast<long double>(real_sigma_spline->y[cell])))));
+      const long double span = right-left;
+      const bool gamma_unresolved = span*min(gl, gr) <= resolution*abs(gr-gl);
+      const bool band_active = min(xl, xr) <= 1.0L && max(xl, xr) >= -1.0L;
+      bool edge_unresolved = band_active && span <= resolution*abs(xr-xl);
+      for (int edge = -1; edge <= 1; edge += 2) {
+         if (min(xl, xr) <= edge+min(gl, gr) && max(xl, xr) >= edge-min(gl, gr) &&
+             (span*min(gl, gr) <= resolution*abs(xr-xl) ||
+              (xl != xr && min(gl, gr) <= real_resolution)))
+            edge_unresolved = true;
+      }
+      if (!isfinite(xl) || !isfinite(xr) || !isfinite(gl) || !isfinite(gr) ||
+          min(gl, gr) < 32.0L*numeric_limits<double>::min() ||
+          real_resolution >= (band_active ? 1.0L : max(1.0L, min(abs(xl), abs(xr)))) ||
+          gamma_unresolved || edge_unresolved) {
+         cerr << setprecision(17) << "Error: --dc-mesh unresolvable frequency/linewidth "
+              "scale in [" << static_cast<double>(left) << ", " << static_cast<double>(right)
+              << "]; global double Sigma evaluation requires higher precision." << endl;
+         exit(EXIT_FAILURE);
+      }
+      const auto crossing = [&](long double a, long double b) {
+         if (!((a < 0.0L && b > 0.0L) || (a > 0.0L && b < 0.0L))) return;
+         const long double fraction = abs(a)/(abs(a)+abs(b));
+         const long double location = fraction <= 0.5L
+            ? left + (right-left)*fraction
+            : right - (right-left)*(abs(b)/(abs(a)+abs(b)));
+         points.push_back(static_cast<double>(location));
+      };
+      // Affine x, gamma and signed (x-edge)/gamma have exact algebraic roots.
+      for (int edge = -1; edge <= 1; ++edge)
+         crossing(xl-edge, xr-edge);
+      int exponent;
+      frexp(min(gl, gr), &exponent);
+      for (long double level = ldexp(1.0L, exponent); level < max(gl, gr); level *= 2.0L)
+         crossing(gl-level, gr-level);
+      for (int edge = -1; edge <= 1; edge += 2) {
+         const long double extent = max(abs((xl-edge)/gl), abs((xr-edge)/gr));
+         if (!isfinite(extent)) {
+            cerr << "Error: --dc-mesh unresolvable band-edge ratio." << endl;
+            exit(EXIT_FAILURE);
+         }
+         for (long double level = 1.0L; isfinite(level) && level <= extent; level *= 2.0L) {
+            crossing(xl-edge-level*gl, xr-edge-level*gr);
+            crossing(xl-edge+level*gl, xr-edge+level*gr);
+         }
+      }
+   }
+   points = filter_integration_points(points, lower, upper);
+   if (verbose) cout << "DC mesh panels=" << points.size()-1 << endl;
+   return points;
+}
+
 bool integrate_outer_piecewise_qag(gsl_function &function,
                                    const vector<double> &points,
                                    gsl_integration_workspace *workspace,
                                    size_t workspace_size,
                                    const char *description,
-                                   double &total, double &total_error)
+                                   double &total, double &total_error,
+                                   bool mesh_budget = false)
 {
    total = 0.0;
    total_error = 0.0;
    double compensation = 0.0;
    const size_t segment_count = points.size() > 1 ? points.size() - 1 : 1;
+   double panel_absolute_error = abs_error/segment_count;
+   if (mesh_budget) {
+      // Estimate the global scale before allocating local absolute budgets.
+      // Otherwise insignificant panels can fail at abs_error/N even when the
+      // requested relative tolerance permits a much larger total error.
+      long double estimate = 0.0L;
+      for (size_t segment = 1; segment < points.size(); ++segment) {
+         double value, error, absolute, asc;
+         gsl_integration_qk15(&function, points[segment-1], points[segment],
+                             &value, &error, &absolute, &asc);
+         if (!integration_result_acceptable(description, GSL_SUCCESS, value, error))
+            return false;
+         estimate += value;
+      }
+      panel_absolute_error = static_cast<double>((abs_error + rel_error*abs(estimate))
+         /(2.0L*segment_count));
+   }
    for (size_t segment = 1; segment < points.size(); ++segment) {
       double result = numeric_limits<double>::quiet_NaN();
       double error = numeric_limits<double>::quiet_NaN();
       const int status = gsl_integration_qag(&function,
-         points[segment - 1], points[segment], abs_error/segment_count,
+         points[segment - 1], points[segment], panel_absolute_error,
          rel_error, workspace_size, integration_rule, workspace, &result, &error);
       if (!integration_result_acceptable(description, status, result, error))
          return false;
@@ -4330,6 +4466,13 @@ void calculate_dc()
        (epsilon_window_half_width > 0.0 && interval.empty)) {
       result = 0.0;
       error = 0.0;
+   } else if (dc_mesh) {
+      const vector<double> points = dc_mesh_points(lower_limit, upper_limit);
+      if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
+                                          "DC mesh integration", result, error, true)) {
+         gsl_integration_workspace_free(work_ptr);
+         exit(EXIT_FAILURE);
+      }
    } else if (m == 0) {
       vector<double> points;
       points.push_back(lower_limit);

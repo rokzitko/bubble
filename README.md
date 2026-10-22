@@ -28,6 +28,7 @@ and other model-dependent prefactors must be supplied separately.
 - Linear, natural-cubic, Akima, or Steffen interpolation of a tabulated
   self-energy.
 - Adaptive Gauss-Kronrod integration through GSL.
+- Opt-in mesh-resolved Bethe DC integration for piecewise-linear self-energies.
 - Fermi-derivative transport moments, finite-frequency optical conductivity,
   occupied spectral moments, and frequency-resolved DOS output.
 - DC, optical-limit, and independent Bethe-lattice regression tests.
@@ -397,6 +398,7 @@ Options:
 | `-a A` | Nonnegative outer/custom absolute integration tolerance, default `1e-7` |
 | `-r R` | Nonnegative outer/custom relative integration tolerance, default `1e-8` |
 | `--workspace-limit N` | Positive base capacity for frequency and restricted/tabulated epsilon workspaces; default `1000` |
+| `--dc-mesh` | Resolve linear-Sigma mesh and feature scales for ordinary Bethe DC: `m=5`, `n=2`, `o=0/1/2`; opt-in |
 | `-c C` | Positive frequency cutoff in units of temperature, default `30`; unused by `-d` |
 | `-s S` | Positive in-table clipping floor for $-\mathrm{Im}\ \Sigma$, default `1e-8` |
 | `-M M` | Restrict epsilon to a half-width `M` around the interacting Fermi level; default `0` is unrestricted |
@@ -897,6 +899,61 @@ Other finite partial results follow `--gsl-error-policy`. In verbose mode,
 `Outer quadrature error estimate` excludes nested epsilon uncertainty and
 finite-cutoff truncation.
 
+### Mesh-Resolved DC
+
+An adaptive frequency rule can miss a narrow conducting region altogether and
+report success with a nearly zero result. Increasing the workspace does not fix
+an error estimate formed without sampling that region. For ordinary full-band
+Bethe DC moments, opt into mesh-resolved frequency integration:
+
+```bash
+./bubble --dc-mesh -i1 -k1 -a1e-10 -r1e-8 -c30 -s1e-12 \
+  5 2 0 0.27 0 Bethe_lattice_test/resigma.dat Bethe_lattice_test/imsigma.dat
+```
+
+This path supports only `m=5`, `n=2`, `o=0,1,2`, linear self-energy
+interpolation, the ordinary Fermi-derivative weight, and `0 < -c <= 512`.
+Optical mode (including `-O0`), DOS, occupied moments, positive `-M`/`-Mp`
+windows, legacy self-energy extrapolation, and nondefault tabulated-kernel
+options are rejected explicitly. Both tables must cover the full closed
+frequency window. Temperatures/cutoffs for which the existing thermal denominator
+`T*(2+2*cosh(omega/T))` may overflow anywhere in that window are also rejected,
+even with `-E` or an ignore policy, rather than returning a spurious zero.
+Without `--dc-mesh`, existing dispatch and defaults are unchanged.
+
+The mesh retains every in-window self-energy knot. On each affine cell it adds
+the algebraic crossings of `x = omega + mu - ReSigma` through `-1,0,1`, powers
+of two in `gamma`, and signed powers of two in `(x-edge)/gamma` for both band
+edges `edge = -1,1`. At clipped cell endpoints, Sigma is interpolated with
+independently computed, normalized endpoint weights before forming `x` from the
+retained frequency; remote input knots must not cancel away in-window crossings.
+Partitions at zero and integer multiples of `T` prevent missing thermal support
+on broad cells. The cutoff cap bounds this thermal mesh and the `cosh` argument;
+the separate denominator check protects the subsequent multiplication by `T`.
+The clipped knot values are used: `-s` still clips the imaginary self-energy
+**before interpolation**, with no new floor or kernel formula.
+
+A preliminary 15-point rule on these panels estimates the global scale for
+allocating local absolute error budgets. Each panel then uses adaptive QAG with
+the requested `-k` rule and `--workspace-limit`. Results are accumulated with
+compensated summation, and the sum of panel error estimates must satisfy
+`-a + -r * abs(total)`, including for the signed `o=1` moment. Every adaptive
+status is checked using the existing error policy. No failure is automatically
+converted to success and `-E` is not needed for well-resolved data.
+
+This is not arbitrary-precision integration. Roots are located using
+`long double` arithmetic, but the integrand still evaluates the original GSL
+splines at global `double` frequencies. Conservative preflight checks reject
+linewidth ramps, band/edge features, and energy cancellations that cannot be
+resolved at those coordinates, rather than silently losing their scale when
+roots coincide after rounding. Very small linewidths near the floating-point
+underflow limit are also rejected. These checks can reject even an insignificant
+edge or tail; passing them is not a precision certificate. More demanding cases
+can still fail with GSL roundoff or singularity errors. Do not use `-E` to turn
+such failures into validated transport values; use a suitable higher-precision
+integrator instead. The reported error estimates cover quadrature, not input,
+interpolation, floating-point model, or unprovided-tail uncertainty.
+
 ## Validation
 
 The repository contains complementary DC, clean-kernel, restricted-window,
@@ -905,6 +962,15 @@ embedded Faddeeva suite, strict runner self-tests, all 348 unique legacy rows, a
 pointwise kernel tables, restricted-window and input command tests, optical
 checks, and the Bethe optical, DC-transport, and occupied comparisons without
 invoking Mathematica.
+
+`regression/run_dc_mesh_tests` generates small temporary fixtures and checks
+both 15- and 61-point rules against analytic kernel masses, gamma-ramp
+antiderivatives, and thermal moments. It includes an affine conducting window
+missed by unpartitioned QAG, a narrow clean pocket requiring all input knots,
+both directions of a gamma ramp, pre-interpolation clipping, signed moments,
+clipped cells with remote knots, thermal support and denominator overflow,
+unsupported CLI modes, and explicit precision failures.
+Run it separately with `perl regression/run_dc_mesh_tests` after `make`.
 
 ### Legacy Regression Data
 

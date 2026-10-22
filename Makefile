@@ -41,6 +41,7 @@ check: $(TARGET) $(CLEAN_KERNEL_TEST) $(FADDEEVA_TEST)
 	@cd regression && ./clean_kernel_tests
 	@cd regression && ./run_input_tests
 	@cd regression && perl ./run_window_tests
+	@cd regression && perl ./run_dc_mesh_tests
 	@cd Bethe_lattice_test && ./cond.opt.geo --check
 	@cd Bethe_lattice_test && perl ./check_transport
 
