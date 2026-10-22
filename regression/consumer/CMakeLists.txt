@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.12)
+project(BubbleConsumer LANGUAGES CXX)
+add_subdirectory(../.. bubble-build)
+add_executable(consumer ../library_tests.cc)
+target_link_libraries(consumer PRIVATE Bubble::bubble)
+enable_testing()
+add_test(NAME consumer COMMAND consumer "${CMAKE_CURRENT_SOURCE_DIR}/../..")

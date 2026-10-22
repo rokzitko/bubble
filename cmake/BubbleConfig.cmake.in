@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(GSL 2.0)
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/BubbleTargets.cmake")
+check_required_components(Bubble)

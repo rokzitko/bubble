@@ -44,10 +44,11 @@ the Kondo lattice model (KLM).
 
 ### Requirements
 
-- A C++ compiler
+- A C++11 compiler
 - [GNU Scientific Library (GSL)](https://www.gnu.org/software/gsl/) 2.0 or newer
 - GNU Make and `pkg-config`
 - Perl, only for `make check`
+- CMake 3.12 or newer, only for library builds
 
 The complex error-function implementation needed by the Gaussian kernels is
 included in `Faddeeva.cc` and `Faddeeva.hh`.
@@ -101,6 +102,200 @@ The expected raw transport moment is
 ```text
 1.556196516510379
 ```
+
+## Native C++ API
+
+`bubble.hh` exposes an owning `bubble::Context`. It accepts in-memory arrays,
+constructs its own interpolants, and returns numerical values. It does not invoke
+`main`, parse arguments/files, launch subprocesses, or capture numeric stdout.
+The CLI and library use the same numerical engine and defaults. GSL is a runtime
+dependency; no scripting runtime is required by the library.
+
+### Build and Link
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUBBLE_BUILD_TESTS=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+This builds `libbubble.a`. Add `-DBUILD_SHARED_LIBS=ON` to build `libbubble.so`
+instead. The library has no CLI entry point. The existing `make` and `make check`
+commands continue to build and test the command-line executable. For an embedding
+CMake project:
+
+```cmake
+add_subdirectory(/home/zitko/repos/bubble bubble-build)
+target_link_libraries(my_dmft PRIVATE Bubble::bubble)
+```
+
+The target propagates its include path, C++11 requirement, GSL, and thread-library
+dependencies; the implementation-only `BUBBLE_LIBRARY` definition stays private.
+`BUBBLE_BUILD_TESTS` defaults to `OFF` for embedding. The small
+`regression/consumer` CMake project tests `add_subdirectory` consumption.
+
+### Installed Package
+
+To deploy without a checkout, configure an installation prefix and install the
+library, public header, and CMake package:
+
+```bash
+cmake -S . -B build-install -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/path/to/bubble-prefix
+cmake --build build-install --target install -j
+```
+
+Add `-DBUILD_SHARED_LIBS=ON` for a shared library. Static and shared installations
+use the same imported target; use separate prefixes if both are needed. Standard
+`GNUInstallDirs` overrides such as `CMAKE_INSTALL_LIBDIR=lib64` are supported.
+The default layout is:
+
+```text
+<prefix>/include/bubble.hh
+<prefix>/<libdir>/libbubble.a              # or libbubble.so
+<prefix>/<libdir>/cmake/Bubble/BubbleConfig.cmake
+<prefix>/<libdir>/cmake/Bubble/BubbleConfigVersion.cmake
+<prefix>/<libdir>/cmake/Bubble/BubbleTargets.cmake
+```
+
+`<libdir>` is `CMAKE_INSTALL_LIBDIR` (usually `lib`, `lib64`, or a multiarch
+subdirectory). Configure the consuming project with
+`-DCMAKE_PREFIX_PATH=/path/to/bubble-prefix`, or set
+`-DBubble_DIR=/path/to/bubble-prefix/<libdir>/cmake/Bubble`, then use:
+
+```cmake
+find_package(Bubble 1.14 CONFIG REQUIRED)
+target_link_libraries(my_dmft PRIVATE Bubble::bubble)
+```
+
+The package finds GSL 2.0 or newer and Threads through `find_dependency`; their
+development files must be available when configuring a consumer. No source
+checkout, private compile definition, or manual include/link flags are needed.
+With relative install directories, the installation prefix can be relocated.
+For shared builds, deployment must also make Bubble and GSL's shared libraries
+discoverable by the runtime loader. Version compatibility is conservatively
+limited to the same major/minor release (`1.14.x`); there is no stable binary ABI
+promise across future releases.
+
+With `BUBBLE_BUILD_TESTS=ON`, CTest also runs `bubble_installed_static` and
+`bubble_installed_shared`. Each builds and installs into an isolated temporary
+tree beneath the test build directory, relocates the prefix, removes the producer
+build, and compiles/runs a copied standalone `find_package` consumer. The shared
+case additionally tests custom library/header install directories. These tests
+verify numerical smoke results and that `BUBBLE_LIBRARY` does not leak. Their
+temporary trees are retained for inspection; verbose CTest output reports the
+installed package directories. The existing Makefile CLI is unchanged.
+
+### Calling the API
+
+```cpp
+#include "bubble.hh"
+
+// omega, re_sigma and im_sigma are std::vector<double> supplied by the solver.
+bubble::SelfEnergy sigma{omega, re_sigma, im_sigma};
+bubble::Config config;
+config.temperature = 0.27;
+config.chemical_potential = 0.0;
+bubble::Context context(config, sigma);
+
+const auto dc0 = context.dc();              // m=5, n=2, o=0
+const auto dc1 = context.dc(5, 1);           // m=5, n=2, o=1
+const auto dc2 = context.dc(5, 2);           // m=5, n=2, o=2
+const auto mesh = context.dc(5, 0, 2, true); // opt-in --dc-mesh
+const auto optical = context.optical(0.1);   // external Omega, m=5, o=0
+const auto kinetic = context.kinetic_energy(); // occupied m=4, n=1, o=0
+const auto lattice = context.spectral({-0.1, 0.0, 0.1}); // m=3, n=1
+double raw_dc = dc0.value;
+double outer_error = dc0.outer_error;
+```
+
+The signature is `dc(kernel, frequency_power, spectral_power, mesh)`; the last
+three arguments default to `0, 2, false`. Optical and occupied moments, and
+spectral evaluation, accept the same kernel indices documented below. Built-ins
+support `n=0..3`; tabulated kernels support any nonnegative `n`. All four Sigma
+interpolations and all five Phi interpolation policies are available. In
+particular, the default remains linear Sigma, `k=1`, `a=1e-7`, `r=1e-8`,
+workspace `1000`, cutoff `30`, clipping floor `1e-8`, and strict error handling.
+Optical calculations on the supplied DMFT dataset may need `integration_rule=6`,
+just as the documented CLI command does; the API does not silently relax errors.
+
+For a tabulated transport function, pass a `PhiTable` to the constructor and
+select kernel `0` in each call:
+
+```cpp
+bubble::PhiTable phi;
+phi.epsilon = epsilon_grid;
+phi.value = transport_phi;
+bubble::Context tabulated(config, sigma, phi);
+const auto dc = tabulated.dc(0);
+const auto optical = tabulated.optical(0.1, 0);
+```
+
+For lattice spectral values, supply a DOS instead of a transport Phi and call
+`spectral(frequencies, 0)`. For tabulated kinetic energy, supply a DOS with
+`phi.epsilon_power=1` and call `kinetic_energy(0)`. This multiplication is applied
+to the knots before interpolation, exactly as for CLI `-e1 -f`. The helper does
+not guess a DOS or multiply arbitrary kernels by epsilon itself. The built-in
+default kinetic kernel `4` already contains epsilon.
+
+All values retain the CLI's **raw normalization**. For example, a normalized
+Bethe DOS or kinetic energy requires multiplying built-in `m=3` or `m=4` results
+by `2/pi`; conductivity prefactors are also the caller's responsibility. Occupied
+integrals run from the supplied Sigma grid's lower endpoint to `cutoff*T`.
+Neither unprovided occupied tails nor finite-temperature cutoffs are corrected.
+`outer_error` is only the outer quadrature estimate, not an end-to-end bound.
+
+### Ownership and Errors
+
+Inputs are copied; caller arrays may be modified or destroyed after construction.
+Configuration and tables are fixed for the context's lifetime. Construct a new
+context for a new dataset; multiple contexts may remain alive and be interleaved.
+Every context owns its splines, accelerators, Phi mass caches, warning state,
+and quadrature storage. Temporary workspaces are reclaimed after each native
+operation, including failures. There is no active-context global or thread-local
+dataset binding.
+
+Invalid input and numerical failures throw `std::runtime_error` (allocation
+failures may throw `std::bad_alloc`); they never exit the embedding process.
+Exceptions raised inside an integrand are caught at the GSL callback boundary and
+rethrown after returning from C. The original CLI error sites now throw inside
+the engine; `main` alone translates these into exit statuses. A failed operation
+does not invalidate a context. A subsequent call resets mode and warning state.
+`Result::diagnostics` contains warnings instead of writing to stdout/stderr;
+`Context::diagnostics()` returns the most recent diagnostic text. Error details
+are available from the exception's `what()`. As with the CLI, `warn` and `ignore`
+can return unverified finite partial results and are not accuracy guarantees.
+
+The only mutable production global is a mutex protecting GSL handler changes.
+Each native construction/calculation saves, disables, and restores the caller's
+GSL error handler on both success and exception. All Bubble calls are serialized
+by this mutex, including calls on different contexts. **Do not concurrently call
+unrelated GSL code or change its error handler while Bubble is running**: GSL's
+handler is process-global and external users do not share Bubble's lock. Ordinary
+C++ lifetime rules still apply; do not destroy a context during a call. There is
+no parallel numerical execution or callback/reentrancy API in this first version.
+The pointwise regression executable alone retains a small test-only bridge with
+legacy test globals; these symbols are not compiled into the library or CLI.
+
+### Initial Scope
+
+Supported: built-in and tabulated-Phi DC, optical, occupied/kinetic moments,
+arbitrary requested lattice spectral frequencies, and the existing narrowly
+scoped Bethe DC-mesh path. Mesh restrictions and precision guards are unchanged.
+`T` must be positive for integrals; `spectral()` also works at `T=0`. Sigma arrays
+must have equal lengths, finite values, and a strictly increasing common grid.
+The existing clipping and exact closed-interval coverage checks apply.
+
+Not exposed by the initial API: epsilon windows (`-M`), spectral-frequency masks
+(`-Mp`), legacy Sigma extrapolation, CLI file output, table replacement in place,
+or a C ABI. These remain available through the unchanged CLI where applicable.
+The native API never extrapolates outside its supplied Sigma table for `n>0`.
+
+`make check` includes native A/B/A and reconstruction tests, nested failure
+recovery, handler restoration, different workspace/error-policy/interpolation
+profiles, same-domain/different-Phi mass caches, mesh references, independent
+optical/DMFT references, and direct CLI/native comparisons. Only the scripted
+test harness launches executables; the native tests call the API directly.
 
 ## Physical Quantity
 

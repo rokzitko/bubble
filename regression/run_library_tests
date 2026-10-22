@@ -1,0 +1,105 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use File::Temp qw(tempdir);
+use FindBin qw($Bin);
+use POSIX qw(isfinite WNOHANG);
+use Time::HiRes qw(sleep time);
+
+# Subprocesses exist only in this regression harness, never in the native API.
+my $directory = tempdir(CLEANUP => 1);
+my $sequence = 0;
+sub run {
+    my (@command) = @_;
+    my $prefix = "$directory/run-" . ++$sequence;
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+    if ($pid == 0) {
+        open STDOUT, '>', "$prefix.out" or die $!;
+        open STDERR, '>', "$prefix.err" or die $!;
+        exec {$command[0]} @command;
+        die "exec: $!";
+    }
+    my $deadline = time() + 120;
+    while (waitpid($pid, WNOHANG) == 0) {
+        if (time() > $deadline) {
+            kill 'KILL', $pid;
+            waitpid($pid, 0);
+            die "Library test timed out: @command\n";
+        }
+        sleep 0.01;
+    }
+    my $status = $?;
+    open my $out, '<', "$prefix.out" or die $!;
+    open my $err, '<', "$prefix.err" or die $!;
+    local $/;
+    my ($stdout, $stderr) = (scalar(<$out>), scalar(<$err>));
+    die "Command failed ($status): @command\n$stderr" if $status;
+    die "Unexpected stderr: @command\n$stderr" if length($stderr);
+    return $stdout;
+}
+sub table {
+    my ($name, $rows) = @_;
+    open my $file, '>', "$directory/$name" or die $!;
+    print {$file} "$_->[0] $_->[1]\n" for @$rows;
+    close $file or die $!;
+    return "$directory/$name";
+}
+
+my $output = run("$Bin/library_tests", "$Bin/..");
+my %native;
+my $summaries = 0;
+my $number = qr/[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+for my $line (split /\n/, $output) {
+    if ($line =~ /^VALUE (\w+) ($number)$/) {
+        die "Duplicate native result: $1" if exists $native{$1};
+        $native{$1} = 0+$2;
+    } elsif ($line =~ /^LIBRARY OK=\d+ FAILED=0$/) {
+        ++$summaries;
+        print "$line\n";
+    } else {
+        die "Unexpected native output: $line\n";
+    }
+}
+die "Missing/duplicate native test summary\n" unless $summaries == 1;
+my $re = table('re', [map { [$_, 0] } (-10, -5, 0, 5, 10)]);
+my $im = table('im', [map { [$_, -0.1] } (-10, -5, 0, 5, 10)]);
+my $phi = table('phi', [map { [$_, 1] } (-1, -0.5, 0, 0.5, 1)]);
+my @cases = (
+    (map { ["dc$_", 5, 2, $_, 0.1, 0, $re, $im] } (0, 1, 2)),
+    ['optical', '-O', 0.3, 5, 2, 0, 0.1, 0, $re, $im],
+    ['kinetic', '-f', 4, 1, 0, 0.1, 0, $re, $im],
+    ['tab_dc', '-p', $phi, 0, 2, 0, 0.1, 0, $re, $im],
+    ['tab_optical', '-p', $phi, '-O', 0.3, 0, 2, 0, 0.1, 0, $re, $im],
+    ['tab_kinetic', '-p', $phi, '-e', 1, '-f', 0, 1, 0, 0.1, 0, $re, $im],
+);
+my @dmft = (0.27, 0, "$Bin/../Bethe_lattice_test/resigma.dat", "$Bin/../Bethe_lattice_test/imsigma.dat");
+push @cases, ['dmft_dc', '-i3', '-k6', 5, 2, 0, @dmft],
+    ['dmft_optical', '-i3', '-k6', '-O', 0.1, 5, 2, 0, @dmft],
+    ['dmft_kinetic', '-i3', '-k6', '-f', 4, 1, 0, @dmft];
+my $passed = 0;
+sub compare {
+    my ($name, $value) = @_;
+    die "Missing native result $name\n" unless exists $native{$name};
+    my $expected = delete $native{$name};
+    die "Mismatch $name: native=$expected CLI=$value\n"
+        unless isfinite($value) && abs($value-$expected) <= 1e-13 + 2e-14*abs($expected);
+    ++$passed;
+}
+for my $case (@cases) {
+    my ($name, @args) = @$case;
+    my $value = run("$Bin/../bubble", @args);
+    $value =~ /^\s*($number)\s*$/ or die "Invalid CLI value: $value\n";
+    compare($name, 0+$1);
+}
+my $dos = "$directory/dos";
+my $stdout = run("$Bin/../bubble", '-d', '-o', $dos, '-p', $phi,
+                 0, 1, 0, 0.1, 0, $re, $im);
+die "Unexpected DOS stdout: $stdout" if length($stdout);
+open my $file, '<', $dos or die $!;
+while (<$file>) {
+    my ($omega, $value) = split;
+    compare('tab_spectral_zero', $value) if $omega == 0;
+}
+die "Uncompared native results: " . join(', ', keys %native) if keys %native;
+print "LIBRARY/CLI OK=$passed FAILED=0\n";

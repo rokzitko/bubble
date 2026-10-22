@@ -27,6 +27,10 @@
 #include <cmath>
 #include <complex>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <exception>
 
 #include <gsl/gsl_math.h>
 #include <gsl/gsl_errno.h>
@@ -37,30 +41,133 @@
 #include <unistd.h>
 
 #include "Faddeeva.hh"
+#include "bubble.hh"
 
 using namespace std;
 
+namespace {
+
+// GSL's handler belongs to the process, not to a workspace. Restore the caller's
+// handler even on construction/validation failures, and serialize Bubble calls.
+mutex gsl_mutex;
+struct gsl_scope {
+   lock_guard<mutex> lock;
+   gsl_error_handler_t *previous;
+   gsl_scope() : lock(gsl_mutex), previous(gsl_set_error_handler_off()) {}
+   ~gsl_scope() { gsl_set_error_handler(previous); }
+};
+
+struct engine_exit : runtime_error {
+   int status;
+   engine_exit(int code, const string &message) : runtime_error(message), status(code) {}
+};
+
+struct Engine {
+   ostringstream messages;
+   ostream &cerr;
+   exception_ptr callback_failure;
+   explicit Engine(bool cli = false) : cerr(cli ? std::cerr : messages) {}
+
+   // Preserve the existing error sites, but unwind owned resources instead of
+   // terminating the host. Only the CLI main translates this to an exit status.
+   [[noreturn]] void exit(int status) {
+      if (callback_failure) rethrow_exception(callback_failure);
+      throw engine_exit(status, messages.str().empty() ? "Bubble calculation failed" : messages.str());
+   }
+
+   // The legacy numerical routines use GSL callbacks. Bind the owning engine
+   // explicitly, and never unwind a C++ exception through GSL's C stack.
+   struct bound_function : gsl_function {
+      Engine &engine;
+      double (Engine::*method)(double, void *);
+      void *argument;
+      bound_function(Engine &owner, double (Engine::*fn)(double, void *), void *arg)
+         : engine(owner), method(fn), argument(arg) {
+         function = &invoke;
+         params = this;
+      }
+      bound_function(const bound_function &) = delete;
+      bound_function &operator=(const bound_function &) = delete;
+      static double invoke(double x, void *raw) noexcept {
+         bound_function &self = *static_cast<bound_function *>(raw);
+         if (!self.engine.callback_failure) {
+            try { return (self.engine.*self.method)(x, self.argument); }
+            catch (...) { self.engine.callback_failure = current_exception(); }
+         }
+         return numeric_limits<double>::quiet_NaN();
+      }
+   };
+
+   template<class Resource, void (*Free)(Resource *)>
+   struct resources {
+      vector<unique_ptr<Resource, decltype(Free)> > owned;
+      Resource *keep(Resource *pointer) {
+         unique_ptr<Resource, decltype(Free)> candidate(pointer, Free);
+         if (pointer) owned.push_back(std::move(candidate));
+         return pointer;
+      }
+      void release(Resource *pointer) {
+         const auto found = find_if(owned.begin(), owned.end(),
+            [pointer](const unique_ptr<Resource, decltype(Free)> &p) { return p.get() == pointer; });
+         if (found != owned.end()) owned.erase(found);
+      }
+   };
+   resources<gsl_spline, ::gsl_spline_free> splines;
+   resources<gsl_interp_accel, ::gsl_interp_accel_free> accelerators;
+   resources<gsl_integration_workspace, ::gsl_integration_workspace_free> workspaces;
+   resources<gsl_integration_glfixed_table, ::gsl_integration_glfixed_table_free> fixed_tables;
+   gsl_spline *allocate_spline(const gsl_interp_type *type, size_t size) {
+      return splines.keep(::gsl_spline_alloc(type, size));
+   }
+   gsl_interp_accel *allocate_accelerator() {
+      return accelerators.keep(::gsl_interp_accel_alloc());
+   }
+   gsl_integration_workspace *allocate_workspace(size_t size) {
+      return workspaces.keep(::gsl_integration_workspace_alloc(size));
+   }
+   void free_workspace(gsl_integration_workspace *p) { workspaces.release(p); }
+   gsl_integration_glfixed_table *allocate_fixed_table(size_t size) {
+      return fixed_tables.keep(::gsl_integration_glfixed_table_alloc(size));
+   }
+   gsl_integration_workspace *epsilon_workspace = nullptr;
+   gsl_integration_glfixed_table *coarse_table = nullptr, *fine_table = nullptr;
+   set<string> warned_operations;
+   bool warning_emitted = false;
+   struct mass_cache {
+      bool valid = false;
+      int kernel = -1;
+      double lower = 0.0, upper = 0.0, value = 0.0;
+   } tabulated_mass, restricted_mass;
+
+   void begin_call() {
+      messages.str("");
+      messages.clear();
+      callback_failure = nullptr;
+      warned_operations.clear();
+      warning_emitted = false;
+   }
+
 // Interpolants for the real and imaginary parts of Sigma(omega).
-gsl_interp_accel *real_sigma_accelerator;
-gsl_spline *real_sigma_spline;
-gsl_interp_accel *imaginary_sigma_accelerator;
-gsl_spline *imaginary_sigma_spline;
-double omega_min, omega_max;
-double real_sigma_left_endpoint, real_sigma_right_endpoint;
+gsl_interp_accel *real_sigma_accelerator = nullptr;
+gsl_spline *real_sigma_spline = nullptr;
+gsl_interp_accel *imaginary_sigma_accelerator = nullptr;
+gsl_spline *imaginary_sigma_spline = nullptr;
+double omega_min = 0.0, omega_max = 0.0;
+double real_sigma_left_endpoint = 0.0, real_sigma_right_endpoint = 0.0;
 vector<double> sigma_omega_knots;
 bool particle_hole_symmetric_sigma = false;
 
 // Interpolant for a tabulated Phi(epsilon).
-gsl_interp_accel *phi_accelerator;
-gsl_spline *phi_spline;
-double eps_min, eps_max; // Interval boundaries
+gsl_interp_accel *phi_accelerator = nullptr;
+gsl_spline *phi_spline = nullptr;
+double eps_min = 0.0, eps_max = 0.0; // Interval boundaries
 
 const string VERSION = "1.14";
 
 // Mandatory parameters
-int m, n, o;
-double T;
-double mu;
+int m = 5, n = 2, o = 0;
+double T = 0.0;
+double mu = 0.0;
 string real_sigma_filename, imaginary_sigma_filename;
 
 // Optional parameters (with defaults)
@@ -464,9 +571,9 @@ struct interpolation_state {
 void free_interpolation_state(interpolation_state &state)
 {
    if (state.spline != NULL)
-      gsl_spline_free(state.spline);
+      splines.release(state.spline);
    if (state.accelerator != NULL)
-      gsl_interp_accel_free(state.accelerator);
+      accelerators.release(state.accelerator);
    state.spline = NULL;
    state.accelerator = NULL;
 }
@@ -479,7 +586,7 @@ bool create_interpolation_state(const gsl_interp_type *type,
                                 string &error_message)
 {
    state.accelerator = NULL;
-   state.spline = gsl_spline_alloc(type, x.size());
+   state.spline = allocate_spline(type, x.size());
    if (state.spline == NULL) {
       error_message = "unable to allocate " + description + " interpolation spline";
       return false;
@@ -496,7 +603,7 @@ bool create_interpolation_state(const gsl_interp_type *type,
       return false;
    }
 
-   state.accelerator = gsl_interp_accel_alloc();
+   state.accelerator = allocate_accelerator();
    if (state.accelerator == NULL) {
       error_message = "unable to allocate " + description + " interpolation accelerator";
       free_interpolation_state(state);
@@ -714,6 +821,12 @@ void parse_command_line(int argc, char *argv[])
    real_sigma_filename = string(argv[first_positional + 5]);
    imaginary_sigma_filename = string(argv[first_positional + 6]);
 
+   validate_parameters();
+   print_parameters();
+}
+
+void validate_parameters(bool frequency_integral = true)
+{
    if (dc_mesh && (m != 5 || n != 2 || o < 0 || o > 2 ||
        selected_self_energy_interpolation != SELF_ENERGY_INTERPOLATION_LINEAR ||
        optical_mode || dos_mode || selected_frequency_weight != MINUS_FERMI_DERIVATIVE ||
@@ -782,7 +895,7 @@ void parse_command_line(int argc, char *argv[])
       cerr << "Options -O and -f cannot be used together." << endl;
       exit(EXIT_FAILURE);
    }
-   if (!dos_mode) {
+   if (!dos_mode && frequency_integral) {
       if (o < 0) {
          cerr << "Frequency power o must be nonnegative during frequency integration." << endl;
          exit(EXIT_FAILURE);
@@ -808,7 +921,10 @@ void parse_command_line(int argc, char *argv[])
          exit(EXIT_FAILURE);
       }
    }
-    
+}
+
+void print_parameters()
+{
    if (verbose) {
       about();
       cout << "m=" << m << "(";
@@ -903,6 +1019,7 @@ bool integration_status_has_partial_result(int status)
 bool integration_result_acceptable(const string &operation,
                                    int status, double result, double error)
 {
+   if (callback_failure) rethrow_exception(callback_failure);
    const bool finite_result = isfinite(result);
    const bool valid_error = isfinite(error) && error >= 0.0;
    if (status == GSL_SUCCESS && finite_result && valid_error)
@@ -925,7 +1042,6 @@ bool integration_result_acceptable(const string &operation,
 
    if (selected_gsl_error_policy != GSL_ERRORS_FAIL) {
       if (selected_gsl_error_policy == GSL_ERRORS_WARN && !quiet_warnings) {
-         static set<string> warned_operations;
          if (warned_operations.insert(operation).second)
             cerr << "Warning: ignoring integration error: " << message.str() << endl;
       }
@@ -947,9 +1063,7 @@ bool integration_error_within_bound(const string &operation,
    return integration_result_acceptable(operation, GSL_ETOL, result, error);
 }
 
-const complex<double> imaginary_unit(0,1);
-
-double J_builtin(int kernel, int power, complex<double> z);
+const complex<double> imaginary_unit = complex<double>(0,1);
 
 double J_builtin_mass(int kernel)
 {
@@ -989,6 +1103,11 @@ const gsl_interp_type *phi_interpolation_type(bool nonnegative_phi)
 void load_phi_table()
 {
    const vector<table_row> rows = read_two_column_table(phi_filename, "Phi");
+   initialize_phi(rows);
+}
+
+void initialize_phi(const vector<table_row> &rows)
+{
    require_strictly_increasing(rows, "Phi", phi_filename);
 
    vector<double> eps;
@@ -1036,36 +1155,22 @@ struct epsilon_interval {
    bool empty;
 };
 
-epsilon_interval restricted_epsilon_interval(int kernel);
-double J_restricted_single(int kernel, int power, complex<double> z,
-                           double lower, double upper);
-double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
-                            double lower, double upper);
-double J_tabulated_single(int power, complex<double> z,
-                          double lower, double upper);
-double J_tabulated_optical(complex<double> z1, complex<double> z2,
-                           double lower, double upper);
-
 double J_tabulated_mass(double lower, double upper)
 {
-   static bool cached = false;
-   static double cached_lower = 0.0;
-   static double cached_upper = 0.0;
-   static double cached_value = 0.0;
-   if (!cached || cached_lower != lower || cached_upper != upper) {
+   mass_cache &cache = tabulated_mass;
+   if (!cache.valid || cache.lower != lower || cache.upper != upper) {
       double result = numeric_limits<double>::quiet_NaN();
-      gsl_set_error_handler_off();
       const int status = gsl_spline_eval_integ_e(phi_spline, lower, upper,
                                                   phi_accelerator, &result);
       if (!integration_result_acceptable("Custom epsilon integration",
                                          status, result, 0.0))
          exit(EXIT_FAILURE);
-      cached_lower = lower;
-      cached_upper = upper;
-      cached_value = result;
-      cached = true;
+      cache.lower = lower;
+      cache.upper = upper;
+      cache.value = result;
+      cache.valid = true;
    }
-   return cached_value;
+   return cache.value;
 }
 
 // Selects the requested tabulated, restricted, or built-in J_mn(z) path.
@@ -1088,21 +1193,17 @@ double J_selected(complex<double> z)
 	 return 0.0;
       if (interval.truncated) {
 	 if (n == 0) {
-	    static bool cached = false;
-	    static double cached_value = 0.0;
-	    static int cached_kernel = -1;
-	    static double cached_lower = 0.0;
-	    static double cached_upper = 0.0;
-	    if (!cached || cached_kernel != m || cached_lower != interval.lower ||
-		cached_upper != interval.upper) {
-               cached_value = J_restricted_single(m, n, z,
+	    mass_cache &cache = restricted_mass;
+	    if (!cache.valid || cache.kernel != m || cache.lower != interval.lower ||
+		cache.upper != interval.upper) {
+               cache.value = J_restricted_single(m, n, z,
 		  interval.lower, interval.upper);
-	       cached_kernel = m;
-	       cached_lower = interval.lower;
-	       cached_upper = interval.upper;
-	       cached = true;
+	       cache.kernel = m;
+	       cache.lower = interval.lower;
+	       cache.upper = interval.upper;
+	       cache.valid = true;
 	    }
-	    return cached_value;
+	    return cache.value;
 	 }
          return J_restricted_single(m, n, z, interval.lower, interval.upper);
       }
@@ -1116,7 +1217,7 @@ double J_selected(complex<double> z)
    }
 
    cerr << "Jmn not implemented for m=" << m << ", n=" << n << endl;
-   abort();
+   exit(EXIT_FAILURE);
 }
 
 struct HilbertDerivatives {
@@ -1254,8 +1355,6 @@ HilbertDerivatives H_builtin(int kernel, complex<double> z)
    cerr << "Optical kernel not implemented for m=" << kernel << endl;
    exit(EXIT_FAILURE);
 }
-
-namespace {
 
 const long double PI_L = acosl(-1.0L);
 
@@ -1667,8 +1766,7 @@ bool gaussian_quadrature_kernel(int kernel, int power,
 {
    // This path is only used when cancellation diagnostics reject the exact
    // Faddeeva identities and the asymptotic series is not applicable.
-   gsl_set_error_handler_off();
-   gsl_integration_workspace *workspace = gsl_integration_workspace_alloc(300);
+   gsl_integration_workspace *workspace = allocate_workspace(300);
    if (workspace == NULL)
       return false;
 
@@ -1684,9 +1782,7 @@ bool gaussian_quadrature_kernel(int kernel, int power,
    direct_points.erase(unique(direct_points.begin(), direct_points.end()), direct_points.end());
 
    gaussian_quadrature_params params = {kernel, power, x, y, false};
-   gsl_function function;
-   function.function = &gaussian_quadrature_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::gaussian_quadrature_integrand, &params);
    long double sum = 0.0L;
    bool success = true;
    if (local_lower < local_upper) {
@@ -1718,7 +1814,7 @@ bool gaussian_quadrature_kernel(int kernel, int power,
       success = integrate_gaussian_segment(function, lower, upper, workspace, sum);
    }
 
-   gsl_integration_workspace_free(workspace);
+   free_workspace(workspace);
    result = sum;
    return success && isfinite(result) && result >= 0.0L;
 }
@@ -1802,8 +1898,6 @@ long double J_n1(int kernel, long double x, long double y)
    return result;
 }
 
-} // namespace
-
 // J_mn(z) = integral Phi_m(epsilon) A_epsilon(z)^n d epsilon,
 // where A_epsilon(z) = -Im[1/(z-epsilon)]/pi.
 double J_builtin(int kernel, int power, complex<double> z)
@@ -1880,18 +1974,15 @@ epsilon_interval restricted_epsilon_interval(int kernel)
    return epsilon_interval{lower, upper, true, !(lower < upper)};
 }
 
-namespace {
-
 gsl_integration_workspace *restricted_workspace()
 {
-   gsl_set_error_handler_off();
-   static gsl_integration_workspace *workspace =
-      gsl_integration_workspace_alloc(integration_workspace_limit);
-   if (workspace == NULL) {
+   if (!epsilon_workspace)
+      epsilon_workspace = allocate_workspace(integration_workspace_limit);
+   if (epsilon_workspace == NULL) {
       cerr << "Unable to allocate restricted epsilon integration workspace." << endl;
       exit(EXIT_FAILURE);
    }
-   return workspace;
+   return epsilon_workspace;
 }
 
 double restricted_relative_error()
@@ -2018,7 +2109,6 @@ void warn_restricted_roundoff(const char *description)
 {
    if (quiet_warnings)
       return;
-   static bool warning_emitted = false;
    if (!warning_emitted) {
       cerr << "Warning: " << description
            << " was limited by roundoff within the accepted error bound." << endl;
@@ -2207,10 +2297,8 @@ struct restricted_fixed_result {
 restricted_fixed_result integrate_restricted_fixed_check(gsl_function &function,
                                                           double lower, double upper)
 {
-   static gsl_integration_glfixed_table *coarse_table =
-      gsl_integration_glfixed_table_alloc(64);
-   static gsl_integration_glfixed_table *fine_table =
-      gsl_integration_glfixed_table_alloc(128);
+   if (!coarse_table) coarse_table = allocate_fixed_table(64);
+   if (!fine_table) fine_table = allocate_fixed_table(128);
    if (coarse_table == NULL || fine_table == NULL) {
       cerr << "Unable to allocate restricted integration check table." << endl;
       exit(EXIT_FAILURE);
@@ -2222,9 +2310,8 @@ restricted_fixed_result integrate_restricted_fixed_check(gsl_function &function,
 
 double integrate_restricted_qag(gsl_function &function, double lower, double upper,
                                  const char *description,
-                                 long double result_scale = 1.0L,
-                                 const epsilon_integration_policy &policy =
-                                    restricted_epsilon_policy(),
+                                 long double result_scale,
+                                 const epsilon_integration_policy &policy,
                                  double *estimated_error = NULL)
 {
    double result = numeric_limits<double>::quiet_NaN();
@@ -2259,6 +2346,13 @@ double integrate_restricted_qag(gsl_function &function, double lower, double upp
    if (estimated_error != NULL)
       *estimated_error = verified_error;
    return result;
+}
+
+double integrate_restricted_qag(gsl_function &function, double lower, double upper,
+                                 const char *description, long double scale = 1.0L)
+{
+   return integrate_restricted_qag(function, lower, upper, description, scale,
+                                   restricted_epsilon_policy());
 }
 
 struct restricted_optical_params {
@@ -2320,9 +2414,8 @@ vector<double> filter_integration_points(vector<double> points,
 
 double integrate_restricted_qagp(gsl_function &function, vector<double> points,
                                   const char *description,
-                                  long double result_scale = 1.0L,
-                                  const epsilon_integration_policy &policy =
-                                     restricted_epsilon_policy(),
+                                  long double result_scale,
+                                  const epsilon_integration_policy &policy,
                                   double *estimated_error = NULL)
 {
    double result = numeric_limits<double>::quiet_NaN();
@@ -2330,7 +2423,7 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
    const size_t workspace_limit = qagp_workspace_limit(points.size());
    gsl_integration_workspace *workspace =
       workspace_limit == integration_workspace_limit
-      ? restricted_workspace() : gsl_integration_workspace_alloc(workspace_limit);
+      ? restricted_workspace() : allocate_workspace(workspace_limit);
    if (workspace == NULL) {
       cerr << "Unable to allocate restricted epsilon integration workspace." << endl;
       exit(EXIT_FAILURE);
@@ -2339,7 +2432,7 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
       normalized_absolute_error(policy, result_scale), policy.relative_error,
       workspace_limit, workspace, &result, &error);
    if (workspace_limit != integration_workspace_limit)
-      gsl_integration_workspace_free(workspace);
+      free_workspace(workspace);
    double verified_error = error;
    if (status == GSL_EROUND) {
       double fine = 0.0;
@@ -2372,12 +2465,18 @@ double integrate_restricted_qagp(gsl_function &function, vector<double> points,
    return result;
 }
 
+double integrate_restricted_qagp(gsl_function &function, vector<double> points,
+                                  const char *description, long double scale = 1.0L)
+{
+   return integrate_restricted_qagp(function, std::move(points), description, scale,
+                                    restricted_epsilon_policy());
+}
+
 double integrate_restricted_piecewise_qag(gsl_function &function,
                                             const vector<double> &points,
                                             const char *description,
-                                            long double result_scale = 1.0L,
-                                            const epsilon_integration_policy &policy =
-                                               restricted_epsilon_policy(),
+                                            long double result_scale,
+                                            const epsilon_integration_policy &policy,
                                             double *estimated_error = NULL)
 {
    double total = 0.0;
@@ -2535,9 +2634,7 @@ double integrate_restricted_optical_direct(int kernel, complex<double> z1,
                                             double *estimated_error = NULL)
 {
    restricted_optical_params params = {kernel, z1, z2};
-   gsl_function function;
-   function.function = &restricted_optical_direct_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::restricted_optical_direct_integrand, &params);
    vector<double> points;
    points.push_back(lower);
    points.push_back(upper);
@@ -2591,9 +2688,7 @@ double integrate_restricted_optical_exterior_log(int kernel,
    restricted_optical_log_params params = {
       kernel, center, width, near_distance, direction, other, integrand_scale
    };
-   gsl_function function;
-   function.function = &restricted_optical_log_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::restricted_optical_log_integrand, &params);
 
    vector<double> energy_points;
    const double energy_lower = static_cast<double>(lower);
@@ -2665,9 +2760,7 @@ double integrate_restricted_optical_transformed(int kernel,
    restricted_optical_transformed_params params = {
       kernel, center, width, theta_lower, other, integrand_scale
    };
-   gsl_function function;
-   function.function = &restricted_optical_transformed_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::restricted_optical_transformed_integrand, &params);
 
    vector<double> energy_points;
    const double energy_lower = static_cast<double>(lower);
@@ -2758,9 +2851,7 @@ double integrate_restricted_odd_pair(int kernel, int power,
    restricted_odd_pair_params params = {
       kernel, power, center, width, angle_origin, integrand_scale, !direct
    };
-   gsl_function function;
-   function.function = &restricted_odd_pair_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::restricted_odd_pair_integrand, &params);
    const long double normalized = integrate_restricted_qag(function, 0.0, angle_span,
       "Symmetry-paired restricted epsilon integration", result_scale);
    return checked_scaled_epsilon_result(
@@ -2803,6 +2894,15 @@ double integrate_restricted_single_exterior_log(gsl_function &function,
    return checked_scaled_epsilon_result(description, result_scale, normalized);
 }
 
+double integrate_restricted_piecewise_qag(gsl_function &function,
+                                          const vector<double> &points,
+                                          const char *description,
+                                          long double scale = 1.0L)
+{
+   return integrate_restricted_piecewise_qag(function, points, description, scale,
+                                             restricted_epsilon_policy());
+}
+
 double integrate_restricted_single_band_edge(gsl_function &function,
                                              restricted_single_params &params,
                                              double lower, double upper)
@@ -2837,8 +2937,6 @@ double integrate_restricted_single_band_edge(gsl_function &function,
       result_scale, normalized);
 }
 
-} // namespace
-
 double J_bounded_single(int kernel, int power, complex<double> z,
                         double lower, double upper,
                         const epsilon_integration_policy &policy)
@@ -2858,9 +2956,7 @@ double J_bounded_single(int kernel, int power, complex<double> z,
    restricted_single_params params = {kernel, power, z.real(), width,
                                        z.imag(), false, false, false,
                                        0.0L, 0.0L, 0, 1.0L};
-   gsl_function function;
-   function.function = &restricted_single_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::restricted_single_integrand, &params);
    if (power == 0)
       return integrate_restricted_single_direct(function, kernel, lower, upper,
 					 epsilon_description(policy,
@@ -3007,8 +3103,6 @@ double J_tabulated_optical(complex<double> z1, complex<double> z2,
                             tabulated_epsilon_policy());
 }
 
-namespace {
-
 const long double GAUSSIAN_CENTRAL_LIMIT = 10.0L;
 
 double gaussian_optical_theta_segment(int kernel,
@@ -3041,9 +3135,7 @@ double gaussian_optical_theta_segment(int kernel,
    restricted_optical_transformed_params params = {
       kernel, center, width, theta_lower, other, integrand_scale
    };
-   gsl_function function;
-   function.function = &restricted_optical_transformed_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::restricted_optical_transformed_integrand, &params);
 
    vector<double> points;
    points.push_back(0.0);
@@ -3285,9 +3377,7 @@ double J_finite_optical_full_domain(int kernel,
       kernel, z1.real(), abs(z1.imag()), z2.real(), abs(z2.imag()),
       integrand_scale
    };
-   gsl_function function;
-   function.function = &finite_optical_odd_pair_integrand;
-   function.params = &params;
+   bound_function function(*this, &Engine::finite_optical_odd_pair_integrand, &params);
    const long double normalized = integrate_restricted_qag(function, 0.0, 1.0,
       "Symmetry-paired full-domain optical epsilon integration", result_scale,
       restricted_epsilon_policy());
@@ -3295,8 +3385,6 @@ double J_finite_optical_full_domain(int kernel,
       "Symmetry-paired full-domain optical epsilon integration", result_scale,
       normalized);
 }
-
-} // namespace
 
 bool same_analytic_region(int kernel, complex<double> a, complex<double> b)
 {
@@ -3641,8 +3729,6 @@ void add_sigma_transition_points(vector<double> &points,
        shifted_max < static_cast<long double>(upper))
       points.push_back(static_cast<double>(shifted_max));
 }
-
-namespace {
 
 double x_of_omega(double omega)
 {
@@ -4094,8 +4180,6 @@ vector<double> symmetric_outer_points(const vector<double> &points, double upper
    return filter_integration_points(symmetric_points, 0.0, upper);
 }
 
-} // namespace
-
 double optical_fermi_factor(double omega)
 {
    // Algebraic branches avoid both exponential overflow and close subtraction.
@@ -4165,7 +4249,6 @@ double frequency_integrand_optical(double omega, void *)
 void write_dos_table()
 {
    assert(m == 0);
-   gsl_set_error_handler_off();
    if (n != 1 && !quiet_warnings) {
       cout << "Warning: maybe you want n=1 here?" << endl;
    }
@@ -4271,6 +4354,12 @@ void load_self_energy_tables()
 {
    const vector<table_row> real_rows = read_two_column_table(real_sigma_filename, "ReSigma");
    const vector<table_row> imaginary_rows = read_two_column_table(imaginary_sigma_filename, "ImSigma");
+   initialize_self_energy(real_rows, imaginary_rows);
+}
+
+void initialize_self_energy(const vector<table_row> &real_rows,
+                            const vector<table_row> &imaginary_rows)
+{
    require_strictly_increasing(real_rows, "ReSigma", real_sigma_filename);
    require_strictly_increasing(imaginary_rows, "ImSigma", imaginary_sigma_filename);
 
@@ -4412,7 +4501,7 @@ size_t breakpoint_workspace_limit(size_t point_count)
    return max(integration_workspace_limit, generated_limit);
 }
 
-void calculate_dc()
+bubble::Result calculate_dc()
 {
    // GSL integration
    const size_t ws_size = integration_workspace_limit;
@@ -4439,7 +4528,7 @@ void calculate_dc()
    lower_limit = active.lower;
    upper_limit = active.upper;
    const bool frequency_interval_empty = !(lower_limit < upper_limit);
-   gsl_integration_workspace *work_ptr = gsl_integration_workspace_alloc(ws_size);
+   gsl_integration_workspace *work_ptr = allocate_workspace(ws_size);
    if (work_ptr == NULL) {
       cerr << "Unable to allocate frequency integration workspace." << endl;
       exit(EXIT_FAILURE);
@@ -4447,12 +4536,8 @@ void calculate_dc()
    double result = numeric_limits<double>::quiet_NaN();
    double error = numeric_limits<double>::quiet_NaN();
     
-   gsl_function function;
-   function.function = &frequency_integrand_dc;
-   void *params_ptr = &T;
-   function.params = params_ptr;
+   bound_function function(*this, &Engine::frequency_integrand_dc, &T);
     
-   gsl_set_error_handler_off();
    const epsilon_interval interval = epsilon_window_half_width > 0.0
       ? restricted_epsilon_interval(m)
       : (m == 0
@@ -4470,7 +4555,7 @@ void calculate_dc()
       const vector<double> points = dc_mesh_points(lower_limit, upper_limit);
       if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
                                           "DC mesh integration", result, error, true)) {
-         gsl_integration_workspace_free(work_ptr);
+         free_workspace(work_ptr);
          exit(EXIT_FAILURE);
       }
    } else if (m == 0) {
@@ -4481,7 +4566,7 @@ void calculate_dc()
          points = restricted_outer_points(lower_limit, upper_limit, interval, false);
       if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
                                          "Frequency integration", result, error)) {
-	 gsl_integration_workspace_free(work_ptr);
+	 free_workspace(work_ptr);
 	 exit(EXIT_FAILURE);
       }
    } else if (epsilon_window_half_width > 0.0 && interval.truncated) {
@@ -4492,22 +4577,20 @@ void calculate_dc()
          points = restricted_outer_points(lower_limit, upper_limit, interval, false);
       gsl_function *integration_function = &function;
       symmetric_outer_params paired_params;
-      gsl_function paired_function;
+      bound_function paired_function(*this, &Engine::symmetric_outer_integrand, &paired_params);
       if (selected_frequency_weight == MINUS_FERMI_DERIVATIVE && particle_hole_symmetric_sigma &&
           m != 0 && m % 2 == 0 && o % 2 == 0 &&
           lower_limit == -upper_limit && interval.lower == -interval.upper) {
          paired_params.function = function.function;
          paired_params.params = function.params;
-         paired_function.function = &symmetric_outer_integrand;
-         paired_function.params = &paired_params;
          integration_function = &paired_function;
          points = symmetric_outer_points(points, upper_limit);
       }
       const size_t restricted_size = breakpoint_workspace_limit(points.size());
       gsl_integration_workspace *restricted_work = restricted_size == ws_size
-         ? work_ptr : gsl_integration_workspace_alloc(restricted_size);
+         ? work_ptr : allocate_workspace(restricted_size);
       if (restricted_work == NULL) {
-	 gsl_integration_workspace_free(work_ptr);
+	 free_workspace(work_ptr);
 	 cerr << "Unable to allocate restricted frequency integration workspace." << endl;
 	 exit(EXIT_FAILURE);
       }
@@ -4516,7 +4599,7 @@ void calculate_dc()
 					     abs_error, rel_error, restricted_size,
 					     restricted_work, &result, &error);
       if (restricted_work != work_ptr)
-	 gsl_integration_workspace_free(restricted_work);
+	 free_workspace(restricted_work);
       double verified_error = error;
       const bool acceptable_failure = restricted_outer_failure_acceptable(
          status, *integration_function, points, result, error, &verified_error);
@@ -4525,7 +4608,7 @@ void calculate_dc()
       if (!successful && !acceptable_failure &&
           !integration_result_acceptable("Restricted frequency integration",
                                          status, result, error)) {
-	 gsl_integration_workspace_free(work_ptr);
+	 free_workspace(work_ptr);
 	 exit(EXIT_FAILURE);
       }
       if (acceptable_failure)
@@ -4547,7 +4630,7 @@ void calculate_dc()
       if (points.size() > 2) {
          if (!integrate_outer_piecewise_qag(function, points, work_ptr, ws_size,
                                             "Frequency integration", result, error)) {
-            gsl_integration_workspace_free(work_ptr);
+            free_workspace(work_ptr);
             exit(EXIT_FAILURE);
          }
       } else {
@@ -4564,13 +4647,19 @@ void calculate_dc()
 	    &error);            // estimate of absolute error
          if (!integration_result_acceptable("Frequency integration",
                                             status, result, error)) {
-	    gsl_integration_workspace_free(work_ptr);
+	    free_workspace(work_ptr);
 	    exit(EXIT_FAILURE);
          }
       }
    }
-   gsl_integration_workspace_free(work_ptr);
-    
+   free_workspace(work_ptr);
+   if (callback_failure) rethrow_exception(callback_failure);
+   return bubble::Result{result, error, messages.str()};
+}
+
+void print_result(const bubble::Result &calculation)
+{
+   const double result = calculation.value, error = calculation.outer_error;
    const int width = 20;
    const int precision_result = 16;
    const int precision_error = 4;
@@ -4584,12 +4673,12 @@ void calculate_dc()
    }
 }
 
-void calculate_optical()
+bubble::Result calculate_optical()
 {
    assert(optical_mode && optical_frequency > 0.0);
 
    const size_t ws_size = integration_workspace_limit;
-   gsl_integration_workspace *work = gsl_integration_workspace_alloc(ws_size);
+   gsl_integration_workspace *work = allocate_workspace(ws_size);
    if (work == NULL) {
       cerr << "Unable to allocate optical frequency integration workspace." << endl;
       exit(EXIT_FAILURE);
@@ -4602,11 +4691,8 @@ void calculate_optical()
    const bool frequency_interval_empty = !(lower_limit < upper_limit);
    const double boundaries[] = {lower_limit, -optical_frequency, 0.0, upper_limit};
 
-   gsl_function function;
-   function.function = &frequency_integrand_optical;
-   function.params = NULL;
+   bound_function function(*this, &Engine::frequency_integrand_optical, nullptr);
 
-   gsl_set_error_handler_off();
    double result = 0.0;
    double error = 0.0;
    bool independently_verified = false;
@@ -4628,7 +4714,7 @@ void calculate_optical()
       if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
                                          "Optical frequency integration",
                                          result, error)) {
-	 gsl_integration_workspace_free(work);
+	 free_workspace(work);
 	 exit(EXIT_FAILURE);
       }
    } else if (epsilon_window_half_width > 0.0 && interval.truncated) {
@@ -4639,9 +4725,9 @@ void calculate_optical()
       points = filter_integration_points(points, lower_limit, upper_limit);
       const size_t restricted_size = breakpoint_workspace_limit(points.size());
       gsl_integration_workspace *restricted_work = restricted_size == ws_size
-         ? work : gsl_integration_workspace_alloc(restricted_size);
+         ? work : allocate_workspace(restricted_size);
       if (restricted_work == NULL) {
-	 gsl_integration_workspace_free(work);
+	 free_workspace(work);
 	 cerr << "Unable to allocate restricted optical frequency integration workspace."
 	      << endl;
 	 exit(EXIT_FAILURE);
@@ -4650,7 +4736,7 @@ void calculate_optical()
 					     abs_error, rel_error, restricted_size,
 					     restricted_work, &result, &error);
       if (restricted_work != work)
-	 gsl_integration_workspace_free(restricted_work);
+	 free_workspace(restricted_work);
       double verified_error = error;
       const bool acceptable_failure = restricted_outer_failure_acceptable(
           status, function, points, result, error, &verified_error);
@@ -4659,7 +4745,7 @@ void calculate_optical()
       if (!successful && !acceptable_failure &&
           !integration_result_acceptable("Restricted optical frequency integration",
                                          status, result, error)) {
-	 gsl_integration_workspace_free(work);
+	 free_workspace(work);
 	 exit(EXIT_FAILURE);
       }
       if (acceptable_failure)
@@ -4673,11 +4759,11 @@ void calculate_optical()
       if (!integrate_outer_piecewise_qag(function, points, work, ws_size,
                                          "Optical frequency integration",
                                          result, error)) {
-         gsl_integration_workspace_free(work);
+         free_workspace(work);
          exit(EXIT_FAILURE);
       }
    }
-   gsl_integration_workspace_free(work);
+   free_workspace(work);
 
    if (!integration_error_within_bound("Optical frequency integration total",
          result, error, static_cast<long double>(abs_error) +
@@ -4689,37 +4775,212 @@ void calculate_optical()
            << "verification; verified error=" << error << "." << endl;
    }
 
-   const int width = 20;
-   const int precision_result = 16;
-   const int precision_error = 4;
-   if (verbose) {
-      cout << "Result = " << setprecision(precision_result) << setw(width) << result << endl;
-      cout << "Outer quadrature error estimate = "
-           << setprecision(precision_error) << setw(width) << error << endl;
-   } else {
-      cout << setprecision(precision_result) << result << endl;
-   }
+   if (callback_failure) rethrow_exception(callback_failure);
+   return bubble::Result{result, error, messages.str()};
 }
 
-#ifndef BUBBLE_NO_MAIN
+}; // Engine
+} // namespace
+
+struct bubble::Context::Impl : Engine {
+   Impl(const Config &config, const SelfEnergy &sigma, const PhiTable &phi) {
+      T = config.temperature;
+      mu = config.chemical_potential;
+      integration_rule = config.integration_rule;
+      abs_error = config.absolute_error;
+      rel_error = config.relative_error;
+      cutoff = config.cutoff;
+      sigma_clip_floor = config.sigma_clip_floor;
+      integration_workspace_limit = config.workspace_limit;
+      const int interpolation = static_cast<int>(config.interpolation);
+      const int phi_interpolation = static_cast<int>(config.phi_interpolation);
+      const int policy = static_cast<int>(config.error_policy);
+      if (interpolation < 1 || interpolation > 4 || phi_interpolation < 0 ||
+          phi_interpolation > 4 || policy < 0 || policy > 2)
+         throw runtime_error("Invalid Bubble interpolation/error policy selector");
+      selected_self_energy_interpolation = static_cast<self_energy_interpolation_method>(interpolation);
+      selected_phi_interpolation = static_cast<phi_interpolation_method>(phi_interpolation);
+      selected_gsl_error_policy = static_cast<gsl_error_policy>(policy);
+      if (!isfinite(T) || !isfinite(mu) || !isfinite(abs_error) ||
+          !isfinite(rel_error) || !isfinite(cutoff) || cutoff <= 0.0 ||
+          !isfinite(sigma_clip_floor) || sigma_clip_floor <= 0.0 ||
+          integration_workspace_limit == 0 ||
+          integration_workspace_limit > maximum_workspace_limit())
+         throw runtime_error("Invalid finite Bubble configuration/tolerance/workspace");
+      validate_parameters(false);
+      real_sigma_filename = "<ReSigma>";
+      imaginary_sigma_filename = "<ImSigma>";
+      phi_filename = "Phi.dat"; // The mesh validator uses the CLI default sentinel.
+      initialize_self_energy(rows(sigma.omega, sigma.real, "ReSigma"),
+                             rows(sigma.omega, sigma.imaginary, "ImSigma"));
+      if (phi.epsilon_power < 0)
+         throw runtime_error("Phi epsilon power must be nonnegative");
+      epsilon_power = phi.epsilon_power;
+      if (!phi.epsilon.empty() || !phi.value.empty())
+         initialize_phi(rows(phi.epsilon, phi.value, "Phi"));
+      else if (epsilon_power != 0)
+         throw runtime_error("Phi epsilon power requires a Phi table");
+   }
+
+   vector<table_row> rows(const vector<double> &x, const vector<double> &y,
+                          const char *name) {
+      if (x.empty() || x.size() != y.size())
+         throw runtime_error(string(name) + ": empty or mismatched arrays");
+      vector<table_row> result;
+      result.reserve(x.size());
+      for (size_t i = 0; i < x.size(); ++i) {
+         if (!isfinite(x[i]) || !isfinite(y[i]))
+            throw runtime_error(string(name) + ": non-finite table value");
+         result.push_back(table_row{x[i], y[i], i + 1});
+      }
+      return result;
+   }
+
+   // Reclaim temporary workspaces on every return/exception, not just at context
+   // destruction. Immutable splines and fixed-rule tables remain context-owned.
+   struct operation {
+      gsl_scope scope;
+      Impl &engine;
+      explicit operation(Impl &owner) : engine(owner) { engine.begin_call(); }
+      ~operation() {
+         engine.workspaces.owned.clear();
+         engine.epsilon_workspace = nullptr;
+      }
+   };
+
+   void select(int kernel, int power, int moment, bool optical, double frequency,
+               bool occupied, bool mesh) {
+      m = kernel;
+      n = power;
+      o = moment;
+      optical_mode = optical;
+      optical_frequency = frequency;
+      selected_frequency_weight = occupied ? FERMI_FUNCTION : MINUS_FERMI_DERIVATIVE;
+      dc_mesh = mesh;
+      if (m == 0 && !phi_spline)
+         throw runtime_error("Kernel m=0 requires a Phi table");
+      if (!isfinite(frequency) || frequency < 0.0)
+         throw runtime_error("Optical frequency must be finite and nonnegative");
+   }
+
+   Result integrate(int kernel, int power, int moment, bool optical,
+                    double frequency, bool occupied, bool mesh) {
+      operation call(*this);
+      select(kernel, power, moment, optical, frequency, occupied, mesh);
+      validate_parameters();
+      validate_self_energy_coverage();
+      return optical && frequency > 0.0 ? calculate_optical() : calculate_dc();
+   }
+};
+
+bubble::Context::Context(const Config &config, const SelfEnergy &sigma, const PhiTable &phi)
+{
+   gsl_scope scope;
+   impl_.reset(new Impl(config, sigma, phi));
+}
+bubble::Context::~Context() = default;
+
+bubble::Result bubble::Context::dc(int kernel, int moment, int power, bool mesh)
+{
+   return impl_->integrate(kernel, power, moment, false, 0.0, false, mesh);
+}
+bubble::Result bubble::Context::optical(double frequency, int kernel, int moment)
+{
+   return impl_->integrate(kernel, 2, moment, true, frequency, false, false);
+}
+bubble::Result bubble::Context::occupied(int kernel, int power, int moment)
+{
+   return impl_->integrate(kernel, power, moment, false, 0.0, true, false);
+}
+bubble::Result bubble::Context::kinetic_energy(int kernel)
+{
+   return occupied(kernel, 1, 0);
+}
+vector<double> bubble::Context::spectral(const vector<double> &frequencies,
+                                        int kernel, int power)
+{
+   Impl::operation call(*impl_);
+   impl_->select(kernel, power, 0, false, 0.0, false, false);
+   impl_->validate_parameters(false);
+   vector<double> result;
+   result.reserve(frequencies.size());
+   for (double omega : frequencies) {
+      if (!isfinite(omega)) throw runtime_error("Spectral frequency must be finite");
+      const double value = impl_->J_selected(power == 0 ? complex<double>(0.0, 0.0)
+                                                      : impl_->z_of_omega(omega));
+      if (impl_->callback_failure) rethrow_exception(impl_->callback_failure);
+      if (!isfinite(value)) throw runtime_error("Non-finite lattice spectral value");
+      result.push_back(value);
+   }
+   return result;
+}
+string bubble::Context::diagnostics() const
+{
+   lock_guard<mutex> lock(gsl_mutex);
+   return impl_->messages.str();
+}
+
+// Private compatibility bridge for the existing pointwise regression executable.
+// These symbols are not present in the library or CLI builds.
+#if defined(BUBBLE_NO_MAIN) && !defined(BUBBLE_LIBRARY)
+bool allow_legacy_self_energy_extrapolation = false;
+double omega_min = 0.0, omega_max = 0.0, optical_frequency = 0.0;
+double spectral_frequency_window_half_width = 0.0;
+double J_builtin(int kernel, int power, complex<double> z) {
+   gsl_scope scope; Engine engine(true);
+   return engine.J_builtin(kernel, power, z);
+}
+double K_builtin(int kernel, complex<double> z1, complex<double> z2) {
+   gsl_scope scope; Engine engine(true);
+   return engine.K_builtin(kernel, z1, z2);
+}
+double J_restricted_single(int kernel, int power, complex<double> z, double lower, double upper) {
+   gsl_scope scope; Engine engine(true);
+   return engine.J_restricted_single(kernel, power, z, lower, upper);
+}
+double J_restricted_optical(int kernel, complex<double> z1, complex<double> z2,
+                            double lower, double upper) {
+   gsl_scope scope; Engine engine(true);
+   return engine.J_restricted_optical(kernel, z1, z2, lower, upper);
+}
+void add_sigma_transition_points(vector<double> &points, double lower, double upper, bool shifted) {
+   Engine engine;
+   engine.allow_legacy_self_energy_extrapolation = allow_legacy_self_energy_extrapolation;
+   engine.omega_min = omega_min; engine.omega_max = omega_max;
+   engine.optical_frequency = optical_frequency;
+   engine.add_sigma_transition_points(points, lower, upper, shifted);
+}
+void add_spectral_frequency_transition_points(vector<double> &points, double lower,
+                                              double upper, bool shifted) {
+   Engine engine;
+   engine.spectral_frequency_window_half_width = spectral_frequency_window_half_width;
+   engine.optical_frequency = optical_frequency;
+   engine.add_spectral_frequency_transition_points(points, lower, upper, shifted);
+}
+#endif
+
+#if !defined(BUBBLE_NO_MAIN) && !defined(BUBBLE_LIBRARY)
 int main (int argc, char *argv[])
 {
-   gsl_set_error_handler_off();
-   parse_command_line(argc, argv);
-
-   load_self_energy_tables();
-   if (m == 0)
-      load_phi_table();
-   initialize_epsilon_window();
-   validate_self_energy_coverage();
-   
-   if (dos_mode)
-      write_dos_table();
-   else if (optical_mode && optical_frequency > 0.0)
-      calculate_optical();
-   else
-      calculate_dc();
-
-   return finish_standard_output();
+   gsl_scope scope;
+   Engine engine(true);
+   try {
+      engine.parse_command_line(argc, argv);
+      engine.load_self_energy_tables();
+      if (engine.m == 0) engine.load_phi_table();
+      engine.initialize_epsilon_window();
+      engine.validate_self_energy_coverage();
+      if (engine.dos_mode)
+         engine.write_dos_table();
+      else
+         engine.print_result(engine.optical_mode && engine.optical_frequency > 0.0
+            ? engine.calculate_optical() : engine.calculate_dc());
+      return engine.finish_standard_output();
+   } catch (const engine_exit &error) {
+      return error.status;
+   } catch (const exception &error) {
+      cerr << "Error: " << error.what() << endl;
+      return EXIT_FAILURE;
+   }
 }
 #endif
